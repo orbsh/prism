@@ -1,4 +1,4 @@
-# 0017 — Prism connection plane: dual identity, connection sets, and the unified action protocol
+# 0017 — Prism connection plane: dual identity, connection sets, and the unified event protocol
 
 > **Languages:** [English](0017-prism-connection-plane.md) (primary) · [中文](0017-prism-connection-plane.zh-CN.md)
 
@@ -21,16 +21,16 @@ Constraints carried over from earlier rulings:
 
 ### 1. Prism is the connection plane, hosted as an Aura-resident component
 
-A new connection-plane crate in the aura repo owns: WS accept/upgrade, route dispatch (`/probe/<alias>`, `/admin/...`, application routes, `/assets/...`), the identity model, and the action protocol codec. The protocol definition stays owned by the Prism side of the contract (per PLAN Phase 8), but the connection plane is Aura code and rides realm events for turn delivery. Gravity, krystallizer and delivered fluxen applications are actors reached *through* Prism, not wired into it.
+A new connection-plane crate in the aura repo owns: WS accept/upgrade, route dispatch (`/probe/<alias>`, `/admin/...`, application routes, `/assets/...`), the identity model, and the event protocol codec. The protocol definition stays owned by the Prism side of the contract (per PLAN Phase 8), but the connection plane is Aura code and rides realm events for turn delivery. Gravity, krystallizer and delivered fluxen applications are actors reached *through* Prism, not wired into it.
 
 ### 2. Dual identity: device and account; authentication is a business-layer decision
 
 The framework recognises exactly two identities:
 
-- **Device identity** — on first connect the server assigns a `device_id`; the client persists it in localstorage. Every action defaults to the device identity as sender. Dashboards, browsing, add-to-cart and chat itself all work with no account at all.
-- **Account identity** — a `login` action (username + password) binds the `device_id` to a `user_id`. After binding, the sender on that connection is the `user_id`; the device binding persists across reconnects (re-login restores it).
+- **Device identity** — on first connect the server assigns a `device_id`; the client persists it in localstorage. Every event defaults to the device identity as sender. Dashboards, browsing, add-to-cart and chat itself all work with no account at all.
+- **Account identity** — a `login` event (username + password) binds the `device_id` to a `user_id`. After binding, the sender on that connection is the `user_id`; the device binding persists across reconnects (re-login restores it).
 
-The localstorage `device_id` is the anchor the framework maintains: the only framework duty is the device↔user binding record. Whether a given action requires an account is a business decision — each actor type declares per action whether it needs an authenticated sender; the framework only makes "is the current sender a device or a user" queryable and returns a standard error when a required-auth action meets an anonymous sender. Commerce declares it on "place order", chat may never declare it.
+The localstorage `device_id` is the anchor the framework maintains: the only framework duty is the device↔user binding record. Whether a given event requires an account is a business decision — each actor type declares per event whether it needs an authenticated sender; the framework only makes "is the current sender a device or a user" queryable and returns a standard error when a required-auth event meets an anonymous sender. Commerce declares it on "place order", chat may never declare it.
 
 There is no idle eviction of unauthenticated connections: public services legitimately live on anonymous connections.
 
@@ -40,11 +40,13 @@ The gateway holds connections in two sets — unauthenticated and authenticated.
 
 Actors may declare whether they require authentication. `user_id` and `device_id` are attached to the actor ctx at delivery time — queryable by handlers, and deliberately NOT the storage partition key: a partition may be keyed by `channel_id` or any other business dimension, identity rides the ctx as metadata, not as the address.
 
-### 4. One action protocol, JSON and CBOR
+### 4. One event protocol, one field, JSON and CBOR
 
-Client→server frames are `{"action": "xxx", ...}`; server→client frames distinguish themselves by their own field (`type`/`event`), never by reusing `action` — dispatch never branches on value ranges. Two encodings: CBOR (default) and JSON (debugging). Selection happens at handshake via a query parameter (`?protocol=json`); the codec is fixed for the lifetime of the connection.
+The wire carries ONE field — `ev` — in BOTH directions; the protocol does not encode direction. An event is an event: the client's `{"ev": "order.submit", ...}` and the server's `{"ev": "order.created", ...}` are the same shape. `emit`/`on` are per-end implementation details: on the aura side, an actor's `@on` declaration and `emit` call; on the client side, `ws.send` / `ws.on`. Prism is the natural extension of aura's event semantics to the user end — there is no client-action/server-event vocabulary split to translate through (aura ADR-0026, naming section) — the "action" word is retired altogether. The earlier draft's ruling (server→client frames distinguish themselves by their own field, never reusing the client's field) is satisfied a fortiori: one field, direction does not exist at the protocol layer — dispatch cannot branch on it.
 
-The persistent WS stays connected; `login` is an ordinary action on it, not a separate HTTP round trip.
+Business operations (login, view manipulation, placing an order) are a client emitting an event with a business name — "action" is retired: a client action IS an emitted event, and the unified vocabulary says so exactly. Two encodings: CBOR (default) and JSON (debugging). Selection happens at handshake via a query parameter (`?protocol=json`); the codec is fixed for the lifetime of the connection.
+
+The persistent WS stays connected; `login` is an ordinary event on it, not a separate HTTP round trip.
 
 ### 5. Admin prefix and actor upload
 
@@ -60,7 +62,7 @@ A dedicated registry table: `user_id` (fixed-width binary) as key; username, nic
 
 ### 8. Fluxen integration: envelope shape and assets
 
-View-manipulation operations are ordinary actions on the same channel; the message envelope reuses fluxora's shape — `Envelope { receiver: Vec<Session>, message: { sender, created, content } }` — so delivered bricks carry the same structure across both systems. Static resources are served from `/assets/` as plain downloads carrying no action semantics.
+View-manipulation operations are ordinary events on the same channel; the message envelope reuses fluxora's shape — `Envelope { receiver: Vec<Session>, message: { sender, created, content } }` — so delivered bricks carry the same structure across both systems. Static resources are served from `/assets/` as plain downloads carrying no event semantics.
 
 ## Honest semantic cost
 
@@ -71,8 +73,8 @@ View-manipulation operations are ordinary actions on the same channel; the messa
 
 ## Consequences
 
-- Integration tests gain a real entry point: a WS client speaks the action protocol end to end — upload actor via `/admin`, connect, `login`, drive actions, observe realm events.
+- Integration tests gain a real entry point: a WS client speaks the event protocol end to end — upload actor via `/admin`, connect, `login`, drive events, observe realm events.
 - Phase 8's "turn delivery = realm events" is now the binding contract for Prism, not a plan note.
 - ADR-0015's step 3 (fold node approval into account auth) becomes implementable: the four endpoints exist and hang under the user registry.
-- A later chat/commerce application defines its own per-action auth declarations; the framework ships with none beyond the `login` action itself.
-- Implementation sequence: `crates/prism` (WS, identity, sets, codec) → `/admin` + upload endpoint + node-approval folding → `/probe/<alias>` mount → user registry table → `/assets/` + envelope-shaped view actions.
+- A later chat/commerce application defines its own per-event auth declarations; the framework ships with none beyond the `login` event itself.
+- Implementation sequence: `crates/prism` (WS, identity, sets, codec) → `/admin` + upload endpoint + node-approval folding → `/probe/<alias>` mount → user registry table → `/assets/` + envelope-shaped view events.

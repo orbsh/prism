@@ -1,4 +1,4 @@
-# 0017 — Prism 连接面：双重身份、连接集合与统一 action 协议
+# 0017 — Prism 连接面：双重身份、连接集合与统一 event 协议
 
 > **Languages:** [English](0017-prism-connection-plane.md) (primary) · [中文](0017-prism-connection-plane.zh-CN.md)
 
@@ -21,16 +21,16 @@ Aura 的集成链路缺少客户端入口。Gravity/krystallizer actor 已存在
 
 ### 1. Prism 是连接面，以 Aura-resident component 形态托管
 
-aura 侧新增连接面 crate，持有：WS accept/upgrade、路由分发（`/probe/<alias>`、`/admin/...`、应用路由、`/assets/...`）、身份模型与 action 协议编解码。协议定义按 PLAN Phase 8 归 Prism 侧所有，但连接面是 Aura 代码，回合投递走 realm events。Gravity、krystallizer 与被投递的 fluxen 应用都是*经由* Prism 到达的 actor，不接进 Prism。
+aura 侧新增连接面 crate，持有：WS accept/upgrade、路由分发（`/probe/<alias>`、`/admin/...`、应用路由、`/assets/...`）、身份模型与 event 协议编解码。协议定义按 PLAN Phase 8 归 Prism 侧所有，但连接面是 Aura 代码，回合投递走 realm events。Gravity、krystallizer 与被投递的 fluxen 应用都是*经由* Prism 到达的 actor，不接进 Prism。
 
 ### 2. 双重身份：device 与 account；认证是业务层决策
 
 框架只承认两种身份：
 
-- **设备身份**——首次连接时服务端分配 `device_id`，客户端持久化在 localstorage。所有 action 默认以设备身份作为 sender。看板、浏览、加购物车乃至 chat 本身都在无账户的情况下工作。
-- **账户身份**——`login` action（用户名+密码）将 `device_id` 绑定到 `user_id`。绑定后该连接的 sender 是 `user_id`；设备绑定跨重连保留（重新登录即恢复）。
+- **设备身份**——首次连接时服务端分配 `device_id`，客户端持久化在 localstorage。所有 event 默认以设备身份作为 sender。看板、浏览、加购物车乃至 chat 本身都在无账户的情况下工作。
+- **账户身份**——`login` event（用户名+密码）将 `device_id` 绑定到 `user_id`。绑定后该连接的 sender 是 `user_id`；设备绑定跨重连保留（重新登录即恢复）。
 
-localstorage 中的 `device_id` 是框架维护的锚点：框架的职责只有 device↔user 这条绑定记录。某个 action 是否需要账户是业务决策——每个 actor 类型按 action 声明是否需要已认证的 sender；框架只保证"当前 sender 是 device 还是 user"可查询，并在"要求认证的 action 遇到匿名 sender"时返回标准错误。商城在"下单"上声明，chat 可以永不声明。
+localstorage 中的 `device_id` 是框架维护的锚点：框架的职责只有 device↔user 这条绑定记录。某个 event 是否需要账户是业务决策——每个 actor 类型按 event 声明是否需要已认证的 sender；框架只保证"当前 sender 是 device 还是 user"可查询，并在"要求认证的 event 遇到匿名 sender"时返回标准错误。商城在"下单"上声明，chat 可以永不声明。
 
 未认证连接不做 idle 踢出：公共服务本就合理地活在匿名连接上。
 
@@ -40,11 +40,13 @@ localstorage 中的 `device_id` 是框架维护的锚点：框架的职责只有
 
 actor 可声明是否要求认证。`user_id` 与 `device_id` 在投递时挂到 actor ctx 上——handler 可查询，且刻意不作为存储分区 key：分区可以按 `channel_id` 或任何业务维度，身份作为元数据挂 ctx，不作为地址。
 
-### 4. 单一 action 协议，JSON 与 CBOR
+### 4. 单一 event 协议，一个字段，JSON 与 CBOR
 
-client→server 帧是 `{"action": "xxx", ...}`；server→client 帧以自己的字段（`type`/`event`）区分，不复用 `action`——分发不靠值域判断。两种编码：CBOR（默认）与 JSON（调试）。选择发生在握手时通过查询参数（`?protocol=json`）；编解码器在连接生命周期内固定。
+线上双向只携带一个字段——`ev`；协议不编码方向。事件就是事件：客户端的 `{"ev": "order.submit", ...}` 与服务端的 `{"ev": "order.created", ...}` 是同一种形状。`emit`/`on` 是各端实现细节：aura 侧是 actor 的 `@on` 声明与 `emit` 调用；客户端侧是 `ws.send` / `ws.on`。Prism 是 aura 的 event 语义到用户端的自然延伸——不存在「客户端 action / 服务端 event」的词汇分叉需要翻译（aura ADR-0026 命名节）——「action」一词一并废弃。早期草稿的裁决（server→client 帧以自己的字段区分、不复用 client 侧字段）被更强地满足：一个字段，方向在协议层不存在——分发无从依它分支。
 
-WS 常连接；`login` 是其上的普通 action，不是独立的 HTTP 往返。
+业务操作（login、视图操作、下单）就是客户端 emit 一个业务命名的 event——「action」一词废弃：客户端的 action 本来就是 emit 出去的 event，统一词汇把这层关系说得更精确。两种编码：CBOR（默认）与 JSON（调试）。选择发生在握手时通过查询参数（`?protocol=json`）；编解码器在连接生命周期内固定。
+
+WS 常连接；`login` 是其上的普通 event，不是独立的 HTTP 往返。
 
 ### 5. admin 前缀与 actor 上传
 
@@ -60,7 +62,7 @@ WS 常连接；`login` 是其上的普通 action，不是独立的 HTTP 往返�
 
 ### 8. Fluxen 集成：信封形状与资源
 
-视图操作是同一通道上的普通 action；消息信封沿用 fluxora 的形状——`Envelope { receiver: Vec<Session>, message: { sender, created, content } }`——被投递的 brick 在两个系统间携带相同结构。静态资源从 `/assets/` 以纯下载形式提供，不携带 action 语义。
+视图操作是同一通道上的普通 event；消息信封沿用 fluxora 的形状——`Envelope { receiver: Vec<Session>, message: { sender, created, content } }`——被投递的 brick 在两个系统间携带相同结构。静态资源从 `/assets/` 以纯下载形式提供，不携带 event 语义。
 
 ## Honest semantic cost
 
@@ -71,8 +73,8 @@ WS 常连接；`login` 是其上的普通 action，不是独立的 HTTP 往返�
 
 ## Consequences
 
-- 集成测试获得真实入口：WS 客户端端到端地说 action 协议——经 `/admin` 上传 actor，连接、`login`、驱动 action、观察 realm events。
+- 集成测试获得真实入口：WS 客户端端到端地说 event 协议——经 `/admin` 上传 actor，连接、`login`、驱动 event、观察 realm events。
 - Phase 8 的"turn delivery = realm events"自此成为对 Prism 的约束性契约，不再是计划注记。
 - ADR-0015 的第 3 步（节点审批并入账户 auth）变得可实现：四个端点存在且挂在用户注册表之下。
-- 后续的 chat/商城应用各自定义自己的按 action 认证声明；框架出厂只带 `login` 这一个 action。
-- 实现顺序：`crates/prism`（WS、身份、集合、编解码）→ `/admin` + 上传端点 + 节点审批并入 → `/probe/<alias>` 挂载 → 用户注册表 → `/assets/` + 信封形状的视图 action。
+- 后续的 chat/商城应用各自定义自己的按 event 认证声明；框架出厂只带 `login` 这一个 event。
+- 实现顺序：`crates/prism`（WS、身份、集合、编解码）→ `/admin` + 上传端点 + 节点审批并入 → `/probe/<alias>` 挂载 → 用户注册表 → `/assets/` + 信封形状的视图 event。
