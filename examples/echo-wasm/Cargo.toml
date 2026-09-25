@@ -1,0 +1,20 @@
+[package]
+name = "echo-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Standalone crate (workspace-excluded): compiles only for
+# wasm32-unknown-unknown via build.sh, not as a host target.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# none — a pure echo crosses no bridge, declares no schema, needs no okm
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

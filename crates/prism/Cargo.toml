@@ -1,0 +1,32 @@
+[package]
+name = "prism"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-protocol = { path = "../prism-protocol" }
+aura-actor = { path = "../../../aura/crates/actor" }
+aura-engine = { path = "../../../aura/crates/engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.24", features = ["handshake"] }
+futures-util = "0.3"
+base64 = "0.22"
+
+[features]
+default = ["steel", "python", "nushell", "wasmtime", "fjall"]
+steel = ["aura-engine/steel"]
+python = ["aura-engine/python"]
+nushell = ["aura-engine/nushell"]
+wasmtime = ["aura-engine/wasmtime"]
+fjall = ["aura-engine/fjall"]
+
+[dev-dependencies]
+tokio-tungstenite = { version = "0.24", features = ["handshake"] }
+
+[[bin]]
+name = "prism"
+path = "src/main.rs"
