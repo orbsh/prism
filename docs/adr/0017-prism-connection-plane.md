@@ -1,4 +1,4 @@
-# 0017 — Prism connection plane: dual identity, connection sets, and the unified event protocol
+# 0017 — Prism connection plane: dual identity, the connection set, and the unified event protocol
 
 > **Languages:** [English](0017-prism-connection-plane.md) (primary) · [中文](0017-prism-connection-plane.zh-CN.md)
 
@@ -34,11 +34,13 @@ The localstorage `device_id` is the anchor the framework maintains: the only fra
 
 There is no idle eviction of unauthenticated connections: public services legitimately live on anonymous connections.
 
-### 3. Connection sets: two collections, moved on login
+### 3. One connection set; auth state is a per-connection field
 
-The gateway holds connections in two sets — unauthenticated and authenticated. A successful `login` moves the WS connection from the unauthenticated set to the authenticated one. Group fan-out (broadcast to all authenticated users, or to a declared-optional subset) iterates the target set directly instead of filtering every connection by auth state per message.
+The gateway holds ONE set of connections. Each connection carries its own auth state as a field: anonymous (`None`) until a successful `login` binds it to a `user_id`. Group fan-out (broadcast to all, to authenticated-only, or to a declared subset) iterates the single set and selects by that field — the selection is a predicate evaluated once per fan-out, not a second collection kept in sync.
 
-Actors may declare whether they require authentication. `user_id` and `device_id` are attached to the actor ctx at delivery time — queryable by handlers, and deliberately NOT the storage partition key: a partition may be keyed by `channel_id` or any other business dimension, identity rides the ctx as metadata, not as the address.
+The earlier ruling (two sets, the connection physically moved on login) is superseded: two collections store the same fact twice, and every state change — login today, logout or server-side revocation whenever they land — must write both or the sets drift. One set with a per-connection field makes drift unrepresentable, and the fan-out traversal the two sets saved is not a hot path at connection scale.
+
+Actors may declare whether they require authentication. Identity reaches a handler through the delivery PAYLOAD (the 2026-09-22 amendment below §7): prism wraps the sender envelope into the event args; `Ctx`, `Job`, `InstanceId` carry no identity fields. Identity is deliberately NOT the storage partition key either: a partition may be keyed by `channel_id` or any other business dimension (partitioning.md §2.1) — the address answers "who serially processes", the envelope answers "who initiated".
 
 ### 4. One event protocol, one field, JSON and CBOR
 
@@ -66,7 +68,7 @@ View-manipulation operations are ordinary events on the same channel; the messag
 
 ## Honest semantic cost
 
-- **Two connection sets express one-to-many membership, not a duplicated state fact.** Auth state is derivable from the device↔user binding, but that binding is one (user) to many (devices): each of a user's devices holds its own connection, the sets hold members per connection, and fan-out traversal naturally covers "all of a user's online devices". Set membership is a per-connection derived view; a logout/re-login on another connection, or a binding revoked server-side, can leave the cached set membership stale. The set move on login is the only write; any future server-side revocation must also traverse both sets. Accepted because fan-out traversal is the hot path and per-message auth filtering is not.
+- **Fan-out filters per connection.** With one set, every broadcast evaluates the auth predicate over all connections — O(all) instead of O(target). Accepted: connection counts are machine-scale small, and the alternative (two sets, moved on login) duplicated the auth fact and left every future revocation path a second collection to remember.
 - **Unauthenticated connections are unmetered.** No idle eviction means an anonymous flood holds connections indefinitely. Mitigation belongs to deployment (connection caps per IP), not to the protocol.
 - **Device identity is a convenience anchor whose loss is bounded by business design, not by the framework.** A stolen device_id impersonates the device's anonymous history. How much that matters is a per-application decision: the commerce pattern keeps the cart in localstorage and syncs/merges with the server only after login, so the pre-auth history's authority stays local. Account credentials are the real secret; the framework treats device identity as an addressable convenience identity, and applications decide what to entrust to it.
 - **Dual encoding doubles the codec surface.** Every frame type has two serialization paths; protocol evolution must keep CBOR and JSON shape-compatible (same field sets, different physical encodings) or debug clients diverge from production ones.

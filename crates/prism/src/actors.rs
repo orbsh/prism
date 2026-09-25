@@ -16,7 +16,9 @@
 use aura_actor::ActorType;
 
 /// One echo entry: type name (the `ev` the gateway invokes; the
-/// handler name equals it), carrier language, and source.
+/// handler name equals it — dispatch's rule, so a type's source may
+/// define ONLY the handler named after the type), carrier language,
+/// and source.
 pub struct Echo {
     pub type_name: &'static str,
     pub language: &'static str,
@@ -31,7 +33,18 @@ pub fn echo_actors() -> Vec<Echo> {
     v.push(Echo {
         type_name: "echo_steel",
         language: "steel",
-        source: "(define (echo_steel args) args)\n".into(),
+        source: "(define (echo_steel args) args)".into(),
+    });
+    // The identity acceptance actor (ADR-0017 §7 amendment): the
+    // gateway delivers every handler an envelope {"sender": {device,
+    // user}, "args": ...}; echo_sender answers with the sender half,
+    // so the wire proves who the plane believes is talking. Its own
+    // type (the handler-name rule above), steel carrier.
+    #[cfg(feature = "steel")]
+    v.push(Echo {
+        type_name: "echo_sender",
+        language: "steel",
+        source: r#"(define (echo_sender args) (hash-ref args "sender"))"#.into(),
     });
     #[cfg(feature = "python")]
     v.push(Echo {

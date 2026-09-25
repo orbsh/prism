@@ -6,6 +6,11 @@ license.workspace = true
 
 [dependencies]
 prism-protocol = { path = "../prism-protocol" }
+# prism's OWN storage: the account registry + device bindings live in a
+# separate okm instance (ADR-0017 §7 amendment) — okm here is PRISM's
+# storage, not aura's (aura sees identity only as payload metadata).
+okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall"] }
+argon2 = "0.5"
 aura-actor = { path = "../../../aura/crates/actor" }
 aura-engine = { path = "../../../aura/crates/engine" }
 serde = { workspace = true }
@@ -16,6 +21,10 @@ tokio-tungstenite = { version = "0.24", features = ["handshake"] }
 futures-util = "0.3"
 base64 = "0.22"
 
+[dev-dependencies]
+tempfile = "3"
+tokio-tungstenite = { version = "0.24", features = ["handshake"] }
+
 [features]
 default = ["steel", "python", "nushell", "wasmtime", "fjall"]
 steel = ["aura-engine/steel"]
@@ -23,9 +32,6 @@ python = ["aura-engine/python"]
 nushell = ["aura-engine/nushell"]
 wasmtime = ["aura-engine/wasmtime"]
 fjall = ["aura-engine/fjall"]
-
-[dev-dependencies]
-tokio-tungstenite = { version = "0.24", features = ["handshake"] }
 
 [[bin]]
 name = "prism"

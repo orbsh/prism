@@ -4,7 +4,7 @@
 //! prism Phase 0+1 landing (ADR-0017 §4 shape, reduced to echo scope).
 
 use aura_engine::Engine;
-use prism::{actors, Gateway};
+use prism::{actors, identity::Registry, Gateway};
 use prism_protocol::{Codec, Frame};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
@@ -17,9 +17,11 @@ type WsClient =
 /// Boot one gateway + `n` echoes (feature-gated languages register via
 /// the same cfgs as `actors::echo_actors`), return (addr, handles).
 async fn boot() -> SocketAddr {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(&dir.into_path()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
-    let gw = Gateway::new(engine);
+    let gw = Gateway::new(engine, registry);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });
@@ -31,9 +33,12 @@ async fn connect(addr: SocketAddr, codec: Codec) -> WsClient {
         Codec::Json => "?protocol=json",
         Codec::Cbor => "",
     };
-    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws{qs}"))
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws{qs}"))
         .await
         .expect("ws handshake");
+    // The §2 connect answer arrives before anything the test asked for.
+    let f = recv_frame(&mut ws, codec).await;
+    assert_eq!(f.ev, "connected");
     ws
 }
 
@@ -65,7 +70,10 @@ async fn echo_round_trip(codec: Codec, ev: &'static str) {
     send_frame(&mut ws, codec, &Frame::new(ev, payload.clone())).await;
     let reply = recv_frame(&mut ws, codec).await;
     assert_eq!(reply.ev, format!("{ev}.result"));
-    assert_eq!(reply.args, payload, "{ev} echo shape");
+    // §7 amendment: the gateway delivers handlers a {sender, args}
+    // envelope; the plain echoes pass it through whole.
+    assert_eq!(reply.args["args"], payload, "{ev} echo shape");
+    assert!(reply.args["sender"]["device"].as_u64().unwrap() > 0);
 }
 
 #[tokio::test]
