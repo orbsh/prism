@@ -46,6 +46,22 @@ pub fn echo_actors() -> Vec<Echo> {
         language: "steel",
         source: r#"(define (echo_sender args) (hash-ref args "sender"))"#.into(),
     });
+    // The per-event auth enforcement actor (ADR-0017 §2): the
+    // persisted interface_schema carries an `auth` block keyed by
+    // handler name — presence means the event requires a bound user.
+    // The gateway enforces it BEFORE the call (the event never
+    // reaches the actor from an anonymous sender); the handler itself
+    // is the sender proof again. Value is reserved (presence is the
+    // rule; a future form axis would ride it).
+    #[cfg(feature = "steel")]
+    v.push(Echo {
+        type_name: "echo_priv",
+        language: "steel",
+        source: r#"(define (interface_schema args)
+  (hash "auth" (hash "echo_priv" "required")))
+(define (echo_priv args) (hash-ref args "sender"))"#
+            .into(),
+    });
     #[cfg(feature = "python")]
     v.push(Echo {
         type_name: "echo_python",

@@ -39,6 +39,16 @@ one connection set with a per-connection auth field). Wire rules
   Job, InstanceId stay identity-free.
 - `broadcast` accepts `"to": "all"|"auth"` (default all) — the
   predicate over the one connection set.
+- Per-event auth ENFORCEMENT (§2): an actor declares `{auth:
+  {"<handler>": ...}}` in its `interface_schema` — presence of the
+  handler name is the rule (the value is reserved). The gateway reads
+  the SAME persisted copy `ctx.interface_schema` reflects (the
+  upload-time introspection is the single declaration surface; no
+  second surface, no per-connection ACL table), checks it BEFORE the
+  call, and answers `{"ev": "error", "args": {"ev", "message":
+  "authentication required"}}` to an anonymous sender — the event
+  never reaches the actor, the socket stays up. `echo_priv` is the
+  live proof.
 
 Echo actors (source: `crates/prism/src/actors.rs`; a language's carrier
 absent from the build skips its echo with a boot note, never silently):
@@ -47,16 +57,16 @@ absent from the build skips its echo with a boot note, never silently):
 |---------------|----------|------|
 | `echo_steel`  | steel    | `(define (echo_steel args) args)` |
 | `echo_sender` | steel    | returns the envelope's sender half — the identity proof |
+| `echo_priv`   | steel    | declares `auth` for its handler — the per-event auth proof |
 | `echo_python` | python   | `def echo_python(args): return args` |
 | `echo_nu`     | nushell  | `export def echo_nu [args] { $args }` |
 | `echo_wasm`   | wasmtime | Rust `#![no_std]` cdylib, `examples/echo-wasm` (the full-power path, ADR-0026 §4 — pure echo needs no bridge: zero okm, zero deps) |
 
 Deliberately NOT here (the rest of ADR-0017, planned as later phases):
-per-event auth REQUIREMENT enforcement (actors declaring which events
-need a bound user — rides the actor-definition `auth:` block), logout /
-server-side revocation, `/admin` actor upload, `/probe/<alias>` mount
+logout / server-side revocation, `/admin` actor upload, `/probe/<alias>` mount
 (the probe gateway currently lives in `aura/crates/engine`), `/assets`,
 the CBOR-vs-JSON DevTools panel. They ride prism PLAN Phase 1+/1.8/1.9.
+
 
 ## Run
 

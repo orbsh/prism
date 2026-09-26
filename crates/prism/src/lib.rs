@@ -232,6 +232,24 @@ impl Gateway {
         }
 
         let (device, user) = self.identities(id);
+        // Per-event auth ENFORCEMENT (ADR-0017 §2): the actor
+        // definition's persisted `auth` block declares which handlers
+        // require a bound user — presence of the handler name is the
+        // rule. The check rides the schema the upload already
+        // persisted (no second declaration surface), runs BEFORE the
+        // call so the event never reaches the actor from an anonymous
+        // sender, and answers with the same `error` VALUE shape as
+        // any other failure (the socket stays up).
+        if user == 0 && self.handler_requires_auth(&ev).await {
+            self.send_to(
+                id,
+                Frame::new(
+                    "error",
+                    serde_json::json!({"ev": ev, "message": "authentication required"}),
+                ),
+            );
+            return;
+        }
         // The envelope: the handler receives the sender + the original
         // args. Existing echo handlers pass args through — their
         // results now carry the envelope (the ADR's shape, not a
@@ -282,6 +300,27 @@ impl Gateway {
                 self.send_to(id, Frame::new("error", serde_json::json!({"ev": ev, "message": e.to_string()})))
             }
         }
+    }
+
+    /// Does the actor type `ev` declare handler `ev` (the dispatch rule:
+    /// type name == handler name on the echo plane) under its
+    /// interface_schema `auth` block? The read rides the SAME persisted
+    /// copy `ctx.interface_schema` reflects (4.5b) — the upload-time
+    /// introspection is the single declaration surface; an absent schema
+    /// (Rust-native type, or a script that declares none) means no auth
+    /// requirement. An unresolvable declaration is fail-OPEN: a missing
+    /// block never silently blocks a public event — the declared-auth
+    /// case requires the block to be present.
+    async fn handler_requires_auth(&self, ev: &str) -> bool {
+        self.engine
+            .realm
+            .lock()
+            .await
+            .schema_of(ev)
+            .cloned()
+            .flatten()
+            .and_then(|schema| schema.get("auth")?.get(ev).map(|v| v.as_bool().unwrap_or(true)))
+            .unwrap_or(false)
     }
 
     fn identities(&self, id: u64) -> (u64, u64) {

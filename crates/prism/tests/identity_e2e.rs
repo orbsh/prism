@@ -188,3 +188,40 @@ async fn plain_echo_wraps_args_in_envelope() {
     assert_eq!(f.args["args"], serde_json::json!({"msg": "hi"}));
     assert_eq!(f.args["sender"]["device"], serde_json::json!(device));
 }
+
+/// Per-event auth ENFORCEMENT (ADR-0017 §2, PLAN Phase 1 remaining):
+/// `echo_priv` declares `{auth: {echo_priv: "required"}}` in its
+/// interface_schema — the persisted copy the gateway reads at dispatch.
+/// An anonymous sender gets the standard error VALUE (socket stays up,
+/// the event never reaches the actor); after signup the same event is
+/// answered by the handler with the sender half. A sibling public event
+/// proves the enforcement is per-event, not per-type or blanket.
+#[cfg(feature = "steel")]
+#[tokio::test]
+async fn declared_auth_event_requires_a_bound_user() {
+    let addr = boot().await;
+    let (mut ws, _, _) = connect(addr, None).await;
+
+    // Anonymous: blocked with the error value, the declared event
+    // never runs.
+    send(&mut ws, &Frame::new("echo_priv", serde_json::json!({"secret": 1}))).await;
+    let f = recv(&mut ws).await;
+    assert_eq!(f.ev, "error");
+    assert_eq!(f.args["ev"], "echo_priv");
+    assert_eq!(f.args["message"], "authentication required");
+
+    // A public event on the same connection still works (per-event,
+    // not a blanket gate).
+    send(&mut ws, &Frame::new("echo_steel", serde_json::json!({"msg": "hi"}))).await;
+    assert_eq!(recv(&mut ws).await.ev, "echo_steel.result");
+
+    // After signup the declared handler answers through the same socket.
+    send(&mut ws, &Frame::new("signup", serde_json::json!(
+        {"username": "frank", "password": "***"}))).await;
+    let uid = recv(&mut ws).await.args["user_id"].as_u64().unwrap();
+    send(&mut ws, &Frame::new("echo_priv", serde_json::json!({"secret": 1}))).await;
+    let f = recv(&mut ws).await;
+    assert_eq!(f.ev, "echo_priv.result");
+    assert_eq!(f.args["user"], serde_json::json!(uid));
+}
+
