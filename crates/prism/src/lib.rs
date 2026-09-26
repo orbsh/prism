@@ -33,6 +33,7 @@
 //! as scope, not as drift.
 
 pub mod actors;
+pub mod code_export;
 pub mod identity;
 
 use aura_actor::{call::Waited, InstanceId};
@@ -112,8 +113,23 @@ impl Gateway {
         }
     }
 
-    /// Serve one accepted connection to completion.
-    async fn handle_conn(self: Arc<Self>, stream: TcpStream) -> anyhow::Result<()> {
+    /// Serve one accepted connection to completion. The accept loop is
+    /// SHARED with the static code export (ADR-0027 §4, PLAN 1.9): the
+    /// request head is read raw first; `/code/...` is answered as a
+    /// plain HTTP download and the socket closes; every other path
+    /// replays the head into the WS handshake (tungstenite 0.24's
+    /// callback cannot emit an early non-upgrade response, so the
+    /// branch lives below the upgrade machinery, not inside it).
+    async fn handle_conn(self: Arc<Self>, mut stream: TcpStream) -> anyhow::Result<()> {
+        let Some(head) = code_export::read_head(&mut stream).await else {
+            return Ok(()); // client died mid-head: nothing to serve
+        };
+        let mq = self.engine.realm.lock().await.mq.clone();
+        if code_export::serve_code_export(&mq, &head, &mut stream).await {
+            return Ok(());
+        }
+        let stream = code_export::Prefixed::new(head.bytes, stream);
+
         let hs_slot: Arc<Mutex<Option<Handshake>>> = Arc::default();
         let slot = Arc::clone(&hs_slot);
         let ws = tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {

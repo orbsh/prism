@@ -65,8 +65,15 @@ absent from the build skips its echo with a boot note, never silently):
 Deliberately NOT here (the rest of ADR-0017, planned as later phases):
 logout / server-side revocation, `/admin` actor upload, `/probe/<alias>` mount
 (the probe gateway currently lives in `aura/crates/engine`), `/assets`,
-the CBOR-vs-JSON DevTools panel. They ride prism PLAN Phase 1+/1.8/1.9.
+the CBOR-vs-JSON DevTools panel. They ride prism PLAN Phase 1+/1.8.
 
+Landed early (PLAN Phase 1.9, ADR-0027 §4): `GET /code/{sha256}` — the
+static code export rides the SAME accept loop as `/ws` (a raw head read
+routes `/code/...` to a plain HTTP download, every other path replays
+its head into the WS handshake). Content is a direct same-process read
+of aura's meta plane; no auth — the hash is the capability, the body
+re-hashes to its own URL. A malformed address is 400, an absent blob
+404; `Cache-Control: public, max-age=31536000, immutable`.
 
 ## Run
 

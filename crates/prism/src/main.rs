@@ -21,7 +21,8 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     println!(
         "prism: ws://{addr}/ws — CBOR default, ?protocol=json for debug; \
-         verbs: echo (steel|python|nushell|wasm), echo_sender, signup, login, broadcast, ping"
+         verbs: echo (steel|python|nushell|wasm), echo_sender, signup, login, broadcast, ping; \
+         static: GET /code/<sha256> (ADR-0027 export)"
     );
     gw.serve(listener).await
 }
