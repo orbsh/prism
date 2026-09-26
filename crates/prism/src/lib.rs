@@ -28,13 +28,17 @@
 //!   the connection table is the gateway's, actors never address
 //!   connections (modeling.md).
 //!
-//! `/admin` upload, `/probe/<alias>` mount, `/assets` are the rest of
+//! `/admin/nodes...` (the ADR-0015 approval surface) and the
+//! `/code/{sha256}` export (ADR-0027) ride the same accept loop;
+//! `/probe/<alias>` mount, `/assets`, actor upload are the rest of
 //! ADR-0017 — deliberately not here; README states the gap so it reads
 //! as scope, not as drift.
 
 pub mod actors;
+pub mod admin;
 pub mod code_export;
 pub mod identity;
+pub mod nodes;
 
 use aura_actor::{call::Waited, InstanceId};
 use aura_engine::Engine;
@@ -43,6 +47,7 @@ use prism_protocol::{Codec, Frame};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::handshake::server::Request;
@@ -58,11 +63,13 @@ struct Conn {
     device: u64,
 }
 
-/// Shared gateway state: the engine, prism's own account registry, and
-/// the live-connection table.
+/// Shared gateway state: the engine, prism's own account registry, the
+/// declared trust posture (ADR-0015 §7 — constructed, never defaulted),
+/// and the live-connection table.
 pub struct Gateway {
     pub engine: Engine,
     registry: identity::Registry,
+    posture: nodes::Posture,
     conns: Arc<Mutex<HashMap<u64, Conn>>>,
     next_id: AtomicU64,
 }
@@ -76,13 +83,24 @@ struct Handshake {
 }
 
 impl Gateway {
-    pub fn new(engine: Engine, registry: identity::Registry) -> Arc<Self> {
+    /// Construct with a declared posture (ADR-0015 §7): the mode is an
+    /// operator decision the type system refuses to invent — there is
+    /// no `Default`, no optional; the binary reads `PRISM_IDENTITY`
+    /// (`required` | `open`) and refuses to boot without it.
+    pub fn new(engine: Engine, registry: identity::Registry, posture: nodes::Posture) -> Arc<Self> {
         Arc::new(Self {
             engine,
             registry,
+            posture,
             conns: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
         })
+    }
+
+    /// The node registry over prism's own instance (the approval
+    /// surface + the handshake's future verdict source).
+    pub fn nodes(&self) -> nodes::NodeStore {
+        self.registry.nodes()
     }
 
     /// Register the four-language echo actors (steel / python / nushell
@@ -102,8 +120,21 @@ impl Gateway {
         Ok(())
     }
 
-    /// Serve forever on `listener`: accept, upgrade, drive.
+    /// Serve forever on `listener`: accept, route, drive. The startup
+    /// line states the trust posture where it is visible (ADR-0015 §7's
+    /// disclosure rule) — an `open` deployment says so in its own log.
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
+        match self.posture {
+            nodes::Posture::Required => {
+                eprintln!("prism: identity posture: `required` (ed25519 handshake gates probes — ADR-0015)")
+            }
+            nodes::Posture::Open => {
+                eprintln!(
+                    "prism: identity posture: `open` — registrations are unauthenticated, \
+                     the network is the boundary (ADR-0015 §7)"
+                )
+            }
+        }
         loop {
             let (stream, _) = listener.accept().await?;
             let gw = Arc::clone(&self);
@@ -124,6 +155,11 @@ impl Gateway {
         let Some(head) = code_export::read_head(&mut stream).await else {
             return Ok(()); // client died mid-head: nothing to serve
         };
+        if let Some(response) = admin::serve_admin(&self.nodes(), &head.method, &head.path, &head.body) {
+            let _ = stream.write_all(&response).await;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
         let mq = self.engine.realm.lock().await.mq.clone();
         if code_export::serve_code_export(&mq, &head, &mut stream).await {
             return Ok(());

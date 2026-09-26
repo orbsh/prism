@@ -29,17 +29,27 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 
 /// The request head read by the accept loop before the route decision:
-/// bytes up to and including the terminating blank line.
+/// header bytes up to and including the terminating blank line, plus
+/// the body when `Content-Length` announced one (admin POSTs). WS
+/// upgrade requests carry neither — the replay for the WS path hands
+/// back only `bytes`, and the body is consumed here so it can never
+/// leak into the handshake stream.
 pub(crate) struct Head {
     pub bytes: Vec<u8>,
-    /// "GET /path" → the path (query stripped; the export ignores query).
+    /// Request target (query stripped; the routes ignore query).
     pub path: String,
-    pub is_get: bool,
+    pub method: String,
+    pub body: Vec<u8>,
 }
 
-/// Read the request head with a bound (a first packet over 32 KiB with
-/// no blank line aborts the connection; a live-WS client never sends a
-/// head that large). Returns None on EOF/timeout-free teardown.
+impl Head {
+    pub fn is_get(&self) -> bool {
+        self.method == "GET"
+    }
+}
+
+/// Read the request head with a bound (header over 32 KiB aborts; a
+/// live-WS client never sends one that large). Returns None on EOF.
 pub(crate) async fn read_head(stream: &mut TcpStream) -> Option<Head> {
     const BOUND: usize = 32 * 1024;
     let mut bytes: Vec<u8> = Vec::with_capacity(1024);
@@ -51,23 +61,47 @@ pub(crate) async fn read_head(stream: &mut TcpStream) -> Option<Head> {
         }
         bytes.extend_from_slice(&chunk[..n]);
         if let Some(pos) = find_head_end(&bytes) {
-            bytes.truncate(pos);
             let text = String::from_utf8_lossy(&bytes).to_string();
             let first = text.lines().next().unwrap_or("");
             let mut parts = first.split_whitespace();
-            let method = parts.next().unwrap_or("");
+            let method = parts.next().unwrap_or("").to_string();
             let target = parts.next().unwrap_or("");
             let path = target.split('?').next().unwrap_or(target).to_string();
-            return Some(Head {
-                bytes,
-                path,
-                is_get: method == "GET",
-            });
+            let head_bytes = bytes[..pos].to_vec();
+            // Body: whatever arrived past the header + the announced
+            // Content-Length, read to completion (bounded by the same
+            // ceiling — admin payloads are small JSON).
+            let mut body = bytes[pos..].to_vec();
+            let declared = content_length(&text);
+            while body.len() < declared {
+                if body.len() > BOUND {
+                    return None;
+                }
+                let n = stream.read(&mut chunk).await.ok()?;
+                if n == 0 {
+                    return None;
+                }
+                body.extend_from_slice(&chunk[..n]);
+            }
+            return Some(Head { bytes: head_bytes, path, method, body });
         }
         if bytes.len() > BOUND {
             return None;
         }
     }
+}
+
+fn content_length(head_text: &str) -> usize {
+    head_text
+        .lines()
+        .skip(1)
+        .find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim().eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0)
 }
 
 fn find_head_end(b: &[u8]) -> Option<usize> {
@@ -89,7 +123,7 @@ pub(crate) async fn serve_code_export(mq: &MqStore, head: &Head, stream: &mut Tc
     };
     let body: Vec<u8> = match parse_sha(hex) {
         None => plain(400, "expected /code/<64-char-hex-sha256>"),
-        Some(_) if !head.is_get => plain(405, "GET only"),
+        Some(_) if !head.is_get() => plain(405, "GET only"),
         Some(sha) => match meta::get_blob(mq, &sha) {
             Some(bytes) => {
                 let mut b = format!(
@@ -110,11 +144,12 @@ pub(crate) async fn serve_code_export(mq: &MqStore, head: &Head, stream: &mut Tc
     true
 }
 
-fn plain(status: u16, msg: &str) -> Vec<u8> {
+pub(crate) fn plain(status: u16, msg: &str) -> Vec<u8> {
     let reason = match status {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         _ => "OK",
     };
     format!(

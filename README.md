@@ -75,11 +75,30 @@ of aura's meta plane; no auth — the hash is the capability, the body
 re-hashes to its own URL. A malformed address is 400, an absent blob
 404; `Cache-Control: public, max-age=31536000, immutable`.
 
+Landed, step 1 (PLAN Phase 1.8, ADR-0015 §4/§5/§7): the node identity
+trust plane's prism-side data surface. The boot REQUIRES a declared
+posture — `PRISM_IDENTITY=required|open`, no default, stated in the
+startup log — and the node registry (`{alias, public_key, status,
+created_at}`) lives in prism's own okm instance with its four
+curl-first approval endpoints on the same accept loop:
+
+```sh
+curl -X POST localhost:8765/admin/nodes -d '{"alias":"home-pc","public_key":"..."}'
+curl localhost:8765/admin/nodes
+curl -X POST localhost:8765/admin/nodes/home-pc/approve   # unique pending; key optional
+curl -X DELETE localhost:8765/admin/nodes/home-pc         # tombstones (status=revoked)
+```
+
+The handshake EXECUTION (challenge frames gating a live probe
+connection) lands with the `/probe/<alias>` mount — until then
+`required` is the declared posture and the verdict table is in place,
+test-locked, with no node yet to gate.
+
 ## Run
 
 ```sh
-cargo run                     # features default on: all four carriers
-PRISM_ADDR=127.0.0.1:9000 cargo run   # PRISM_DATA=<dir> = registry storage (default ./prism-data)
+PRISM_IDENTITY=open cargo run          # the posture is required (ADR-0015 §7 — no default)
+PRISM_IDENTITY=open PRISM_ADDR=127.0.0.1:9000 cargo run   # PRISM_DATA=<dir> = registry storage (default ./prism-data)
 ```
 
 Debug client (JSON codec, stdlib only):

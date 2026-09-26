@@ -96,6 +96,12 @@ impl Registry {
         Ok(Self { store })
     }
 
+    /// The node registry view of the SAME instance (ADR-0015 Phase
+    /// 1.8): one directory, one handle, one process ever opens it.
+    pub fn nodes(&self) -> crate::nodes::NodeStore {
+        crate::nodes::NodeStore::new(self.store.clone())
+    }
+
     /// First connect (or unknown-`?device=` echo): mint a device id
     /// from the watermark, persist the anonymous row.
     pub fn new_device(&self) -> anyhow::Result<u64> {

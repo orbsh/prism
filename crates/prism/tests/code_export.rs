@@ -21,7 +21,7 @@ async fn boot() -> std::net::SocketAddr {
     let registry = Registry::open(&dir.into_path()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
-    let gw = Gateway::new(engine, registry);
+    let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });

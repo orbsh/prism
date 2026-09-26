@@ -2,7 +2,11 @@
 //! register the echoes, serve WS on PRISM_ADDR (default 127.0.0.1:8765).
 
 use aura_engine::Engine;
-use prism::{identity::Registry, Gateway};
+use prism::{
+    identity::Registry,
+    nodes::Posture,
+    Gateway,
+};
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -15,7 +19,12 @@ async fn main() -> anyhow::Result<()> {
     Gateway::with_echoes(&engine).await?;
     let dir = std::env::var("PRISM_DATA").unwrap_or_else(|_| "prism-data".into());
     let registry = Registry::open(std::path::Path::new(&dir))?;
-    let gw = Gateway::new(engine, registry);
+    // The trust posture is DECLARED, never defaulted (ADR-0015 §7):
+    // absent or invalid PRISM_IDENTITY is a boot error, not a guess.
+    let posture_raw = std::env::var("PRISM_IDENTITY")
+        .map_err(|_| anyhow::anyhow!("PRISM_IDENTITY is required: `required` | `open`"))?;
+    let posture = Posture::parse(&posture_raw)?;
+    let gw = Gateway::new(engine, registry, posture);
 
     let addr = std::env::var("PRISM_ADDR").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let listener = TcpListener::bind(&addr).await?;
