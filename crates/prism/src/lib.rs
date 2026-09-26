@@ -1,5 +1,5 @@
 //! prism — the connection plane (ADR-0017 §1/§4), first landing: a WS
-//! gateway hosting the Aura echo actor in every embedded language.
+//! gateway hosting the Aura echo booth in every embedded language.
 //!
 //! Wire shape (the reduced echo scope, documented in README):
 //! - `GET /ws`, `?protocol=json` selects the debug codec (absent = CBOR,
@@ -10,7 +10,7 @@
 //! - Every connect answers `{"ev": "connected", "args": {device_id,
 //!   user_id|null}}` — the device assignment frame (§2) and the
 //!   restored binding, one frame, no separate handshake.
-//! - Inbound `{ev: "<type>", args}` → `engine.call` the actor named by
+//! - Inbound `{ev: "<type>", args}` → `engine.call` the booth named by
 //!   `ev` (instance key `"ws"`, handler = event name — the multi-entry
 //!   model). Identity rides the PAYLOAD (§7 amendment): the handler
 //!   receives `{"sender": {device, user}, "args": <original>}`; Ctx,
@@ -25,22 +25,22 @@
 //! - `{ev: "broadcast", args: {to: "all"|"auth", ...}}` — the frame
 //!   fans out to every live connection (or the auth-filtered subset);
 //!   the selector defaults to "all". Prism is the outbound bridge:
-//!   the connection table is the gateway's, actors never address
+//!   the connection table is the gateway's, booths never address
 //!   connections (modeling.md).
 //!
 //! `/admin/nodes...` (the ADR-0015 approval surface) and the
 //! `/code/{sha256}` export (ADR-0027) ride the same accept loop;
-//! `/probe/<alias>` mount, `/assets`, actor upload are the rest of
+//! `/probe/<alias>` mount, `/assets`, booth upload are the rest of
 //! ADR-0017 — deliberately not here; README states the gap so it reads
 //! as scope, not as drift.
 
-pub mod actors;
+pub mod booths;
 pub mod admin;
 pub mod code_export;
 pub mod identity;
 pub mod nodes;
 
-use aura_actor::{call::Waited, InstanceId};
+use aura_booth::{call::Waited, InstanceId};
 use aura_engine::Engine;
 use futures_util::{SinkExt, StreamExt};
 use prism_protocol::{Codec, Frame};
@@ -103,20 +103,20 @@ impl Gateway {
         self.registry.nodes()
     }
 
-    /// Register the four-language echo actors (steel / python / nushell
+    /// Register the four-language echo booths (steel / python / nushell
     /// embedded sources + the compiled Rust→wasm echo module). A
-    /// language carrier absent from this build skips its actor with a
+    /// language carrier absent from this build skips its booth with a
     /// note — the server still boots with the rest (the demo shape
     /// mirrors aura's feature-forwarded tests).
     pub async fn with_echoes(engine: &Engine) -> anyhow::Result<()> {
         let mut registered: Vec<&str> = Vec::new();
-        for e in actors::echo_actors() {
-            match engine.register(actors::echo_type(&e)).await {
+        for e in booths::echo_booths() {
+            match engine.register(booths::echo_type(&e)).await {
                 Ok(()) => registered.push(e.type_name),
                 Err(err) => eprintln!("prism: echo [{}] not registered: {err}", e.type_name),
             }
         }
-        println!("prism: echo actors live: {registered:?}");
+        println!("prism: echo booths live: {registered:?}");
         Ok(())
     }
 
@@ -260,7 +260,7 @@ impl Gateway {
 
     /// Dispatch rules (the echo scope): business events first
     /// (`signup`/`login` answered by the registry, §2/§4), then
-    /// gateway verbs (`ping`, `broadcast`), then the actor invoke with
+    /// gateway verbs (`ping`, `broadcast`), then the booth invoke with
     /// the sender envelope mounted in args (§7 amendment: identity is
     /// payload, never Ctx).
     async fn dispatch(&self, id: u64, frame: Frame) {
@@ -284,12 +284,12 @@ impl Gateway {
         }
 
         let (device, user) = self.identities(id);
-        // Per-event auth ENFORCEMENT (ADR-0017 §2): the actor
+        // Per-event auth ENFORCEMENT (ADR-0017 §2): the booth
         // definition's persisted `auth` block declares which handlers
         // require a bound user — presence of the handler name is the
         // rule. The check rides the schema the upload already
         // persisted (no second declaration surface), runs BEFORE the
-        // call so the event never reaches the actor from an anonymous
+        // call so the event never reaches the booth from an anonymous
         // sender, and answers with the same `error` VALUE shape as
         // any other failure (the socket stays up).
         if user == 0 && self.handler_requires_auth(&ev).await {
@@ -310,11 +310,11 @@ impl Gateway {
             "sender": {"device": device, "user": (user != 0).then_some(user)},
             "args": args,
         });
-        let target = InstanceId { actor_type: ev.clone(), key: "ws".into() };
+        let target = InstanceId { booth_type: ev.clone(), key: "ws".into() };
         let payload = match self.engine.call(target, &ev, envelope).await {
             Ok(Waited::Done(Ok(v))) => Ok(v),
             Ok(Waited::Done(Err(e))) => Err(e.to_string()),
-            // echo actors are hot by construction; Pending = a cold
+            // echo booths are hot by construction; Pending = a cold
             // target mounted under a live name (contract violation).
             Ok(Waited::Pending(_)) => Err("cold call not supported on the echo plane".into()),
             Err(e) => Err(e.to_string()),
@@ -354,7 +354,7 @@ impl Gateway {
         }
     }
 
-    /// Does the actor type `ev` declare handler `ev` (the dispatch rule:
+    /// Does the booth type `ev` declare handler `ev` (the dispatch rule:
     /// type name == handler name on the echo plane) under its
     /// interface_schema `auth` block? The read rides the SAME persisted
     /// copy `ctx.interface_schema` reflects (4.5b) — the upload-time

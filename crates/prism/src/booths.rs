@@ -1,4 +1,4 @@
-//! The echo actors — one per embedded language, the minimal script in
+//! The echo booths — one per embedded language, the minimal script in
 //! each registered form (the carrier surfaces, mirroring aura's own
 //! test shapes so this repo reads as a consumer, not a fork).
 //!
@@ -13,7 +13,7 @@
 //! shapes + the wasmtime ABI). The wasm source is the compiled Rust
 //! module in examples/echo-wasm, base64-embedded (build.sh regenerates).
 
-use aura_actor::ActorType;
+use aura_booth::BoothType;
 
 /// One echo entry: type name (the `ev` the gateway invokes; the
 /// handler name equals it — dispatch's rule, so a type's source may
@@ -27,7 +27,7 @@ pub struct Echo {
 
 /// The registered set; carriers absent from this build are skipped at
 /// registration with a note (`Gateway::with_echoes`), never silently.
-pub fn echo_actors() -> Vec<Echo> {
+pub fn echo_booths() -> Vec<Echo> {
     let mut v: Vec<Echo> = Vec::new();
     #[cfg(feature = "steel")]
     v.push(Echo {
@@ -35,7 +35,7 @@ pub fn echo_actors() -> Vec<Echo> {
         language: "steel",
         source: "(define (echo_steel args) args)".into(),
     });
-    // The identity acceptance actor (ADR-0017 §7 amendment): the
+    // The identity acceptance booth (ADR-0017 §7 amendment): the
     // gateway delivers every handler an envelope {"sender": {device,
     // user}, "args": ...}; echo_sender answers with the sender half,
     // so the wire proves who the plane believes is talking. Its own
@@ -46,11 +46,11 @@ pub fn echo_actors() -> Vec<Echo> {
         language: "steel",
         source: r#"(define (echo_sender args) (hash-ref args "sender"))"#.into(),
     });
-    // The per-event auth enforcement actor (ADR-0017 §2): the
+    // The per-event auth enforcement booth (ADR-0017 §2): the
     // persisted interface_schema carries an `auth` block keyed by
     // handler name — presence means the event requires a bound user.
     // The gateway enforces it BEFORE the call (the event never
-    // reaches the actor from an anonymous sender); the handler itself
+    // reaches the booth from an anonymous sender); the handler itself
     // is the sender proof again. Value is reserved (presence is the
     // rule; a future form axis would ride it).
     #[cfg(feature = "steel")]
@@ -93,7 +93,7 @@ pub fn echo_actors() -> Vec<Echo> {
 #[cfg(feature = "wasmtime")]
 const WASM_B64: &str = include_str!("../../../examples/echo-wasm/echo_wasm.b64");
 
-/// Convenience for tests that need one ActorType directly.
-pub fn echo_type(e: &Echo) -> ActorType {
-    ActorType::script(e.type_name, e.language, e.source.clone())
+/// Convenience for tests that need one BoothType directly.
+pub fn echo_type(e: &Echo) -> BoothType {
+    BoothType::script(e.type_name, e.language, e.source.clone())
 }

@@ -11,7 +11,7 @@ prism-protocol = { path = "../prism-protocol" }
 # storage, not aura's (aura sees identity only as payload metadata).
 okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = ["fjall"] }
 argon2 = "0.5"
-aura-actor = { path = "../../../aura/crates/actor" }
+aura-booth = { path = "../../../aura/crates/booth" }
 aura-engine = { path = "../../../aura/crates/engine" }
 serde = { workspace = true }
 serde_json = { workspace = true }

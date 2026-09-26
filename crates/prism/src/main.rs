@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Demo config surface: the memory plane for actors (persistence is
+    // Demo config surface: the memory plane for booths (persistence is
     // aura's own fjall switch); the REGISTRY is durable by nature —
     // accounts and device bindings outlive the process (the whole §2
     // restore story depends on it).

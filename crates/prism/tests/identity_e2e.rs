@@ -2,7 +2,7 @@
 //! device assignment, signup/login as ordinary events, the binding
 //! across reconnects via `?device=`, the ONE connection set with its
 //! per-connection auth field driving `broadcast {to: "auth"}`, and the
-//! sender envelope reaching an actor. Registry on a real fjall
+//! sender envelope reaching a booth. Registry on a real fjall
 //! directory (durability is the feature under test, not plumbing).
 
 use aura_engine::Engine;
@@ -61,7 +61,7 @@ async fn recv(ws: &mut WsClient) -> Frame {
 }
 
 /// §2: first connect assigns a device; signup answers with the user
-/// id; the echo_sender actor sees exactly that identity in its payload
+/// id; the echo_sender booth sees exactly that identity in its payload
 /// (§7 amendment: envelope, never Ctx).
 #[tokio::test]
 async fn signup_then_sender_sees_identity() {
@@ -193,7 +193,7 @@ async fn plain_echo_wraps_args_in_envelope() {
 /// `echo_priv` declares `{auth: {echo_priv: "required"}}` in its
 /// interface_schema — the persisted copy the gateway reads at dispatch.
 /// An anonymous sender gets the standard error VALUE (socket stays up,
-/// the event never reaches the actor); after signup the same event is
+/// the event never reaches the booth); after signup the same event is
 /// answered by the handler with the sender half. A sibling public event
 /// proves the enforcement is per-event, not per-type or blanket.
 #[cfg(feature = "steel")]

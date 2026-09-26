@@ -4,7 +4,7 @@
 //! protocol does not encode direction, so dispatch cannot branch on it.
 //! A client's `{"ev": "echo", ...}` and the server's
 //! `{"ev": "echo.result", ...}` are the same struct. `emit`/`on` are
-//! per-end implementation details (actor `@on` + `emit` on the aura
+//! per-end implementation details (booth `@on` + `emit` on the aura
 //! side; `ws.send` / `ws.on` on the client side).
 //!
 //! Two encodings over one model: CBOR (default) and JSON (debug path,

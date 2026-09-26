@@ -4,7 +4,7 @@
 //! prism Phase 0+1 landing (ADR-0017 §4 shape, reduced to echo scope).
 
 use aura_engine::Engine;
-use prism::{actors, identity::Registry, Gateway};
+use prism::{booths, identity::Registry, Gateway};
 use prism_protocol::{Codec, Frame};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
@@ -15,7 +15,7 @@ type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Boot one gateway + `n` echoes (feature-gated languages register via
-/// the same cfgs as `actors::echo_actors`), return (addr, handles).
+/// the same cfgs as `booths::echo_booths`), return (addr, handles).
 async fn boot() -> SocketAddr {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.into_path()).unwrap();
@@ -138,7 +138,7 @@ async fn broadcast_reaches_every_connection() {
     }
 }
 
-/// Unknown actor → error VALUE on the same connection, socket stays
+/// Unknown booth → error VALUE on the same connection, socket stays
 /// alive (the wire never closes for a business failure).
 #[tokio::test]
 async fn unknown_type_is_error_value_not_close() {
@@ -170,7 +170,7 @@ async fn garbage_is_error_value_not_close() {
 /// carrier shapes change, THIS test fails before the server misleads).
 #[test]
 fn echo_sources_match_carrier_shapes() {
-    let list = actors::echo_actors();
+    let list = booths::echo_booths();
     let has = |name: &str, lang: &str, needle: &str| {
         list.iter().any(|e| e.type_name == name && e.language == lang && e.source.contains(needle))
     };
