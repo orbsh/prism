@@ -6,22 +6,22 @@
 
 ## Context
 
-Aura 的集成链路缺少客户端入口。Gravity/krystallizer 摊位 已存在，远程 probe 也已拨入（Phase 3），但测试客户端、浏览器或被投递的应用没有一个统一的连接面。PLAN Phase 8 已将 Prism 定为以 Aura-resident component 形态托管的 WS 网关（"client connections pin here, not on Gravity; turn delivery = realm events"），ADR-0015 的节点审批端点也明确推迟到"Prism 的 auth 存在之后"。
+Aura 的集成链路缺少客户端入口。Gravity/krystallizer 摊位 已存在，远程 effector 也已拨入（Phase 3），但测试客户端、浏览器或被投递的应用没有一个统一的连接面。PLAN Phase 8 已将 Prism 定为以 Aura-resident component 形态托管的 WS 网关（"client connections pin here, not on Gravity; turn delivery = realm events"），ADR-0015 的节点审批端点也明确推迟到"Prism 的 auth 存在之后"。
 
 这个设计服务的对象不止 chat。Fluxen 应用（参见 fluxora 的 Envelope 模型——`receiver: Vec<Session>` 包裹 `sender`/`created`/`content` 消息体）是任意应用的构造模式：chat、CMS、看板、商城，可以自由组合。因此连接面不能内建"每条连接都属于一个用户"之类的 chat 假设。
 
 承接先前裁决的约束：
 
-- ADR-0015：节点身份是每 probe 节点一把 ed25519 key；审批通过四个 curl 端点按公钥进行，这四个端点"将来挂在账户（Prism auth）之下"。
+- ADR-0015：节点身份是每 effector 节点一把 ed25519 key；审批通过四个 curl 端点按公钥进行，这四个端点"将来挂在账户（Prism auth）之下"。
 - okm key 纪律：`Key` 字段拒绝 `String`（仅定宽）；开放名字是运行时数据，通过 registry 表（`#[kv_index(by_name)]`）解析，不手搓字节 key。
-- probe 不持存储、不持数据面凭证（2026-09-20 撤回裁决）——Prism 是引擎所在宿主（Aura 节点本身），可以持有账户注册表。
+- effector 不持存储、不持数据面凭证（2026-09-20 撤回裁决）——Prism 是引擎所在宿主（Aura 节点本身），可以持有账户注册表。
 - long-polling 降级传输已作为架构原则被拒绝；传输契约是 WS-only。
 
 ## Decision
 
 ### 1. Prism 是连接面，以 Aura-resident component 形态托管
 
-aura 侧新增连接面 crate，持有：WS accept/upgrade、路由分发（`/probe/<alias>`、`/admin/...`、应用路由、`/assets/...`）、身份模型与 event 协议编解码。协议定义按 PLAN Phase 8 归 Prism 侧所有，但连接面是 Aura 代码，回合投递走 realm events。Gravity、krystallizer 与被投递的 fluxen 应用都是*经由* Prism 到达的 摊位，不接进 Prism。
+aura 侧新增连接面 crate，持有：WS accept/upgrade、路由分发（`/effector/<alias>`、`/admin/...`、应用路由、`/assets/...`）、身份模型与 event 协议编解码。协议定义按 PLAN Phase 8 归 Prism 侧所有，但连接面是 Aura 代码，回合投递走 realm events。Gravity、krystallizer 与被投递的 fluxen 应用都是*经由* Prism 到达的 摊位，不接进 Prism。
 
 ### 2. 双重身份：device 与 account；认证是业务层决策
 
@@ -54,9 +54,9 @@ WS 常连接；`login` 是其上的普通 event，不是独立的 HTTP 往返。
 
 `/admin` 之下：`POST` 上传/注册 摊位 代码，加上 ADR-0015 的四个节点审批端点（`POST /nodes`、`GET /nodes`、`POST /nodes/{alias}/approve`、`DELETE /nodes/{alias}`），现在挂在账户之下。krystallizer 与 gravity 各自拿到一个薄上传脚本（拼 JSON、POST）——第一个脚本放在本仓 `scripts/` 验证端点，然后复制到各仓库。
 
-### 6. 远程 probe 入口 `/probe/<alias>`
+### 6. 远程 effector 入口 `/effector/<alias>`
 
-现有 probe 拨入网关（register / Call / Result / Host 帧）挂载到 `/probe/<alias>`。语义不变：probe 拨出，realm 按 alias 键控 `probes`，residency 身份以 `session = "<booth_type>/<key>"` 传递。
+现有 effector 拨入网关（register / Call / Result / Host 帧）挂载到 `/effector/<alias>`。语义不变：effector 拨出，realm 按 alias 键控 `probes`，residency 身份以 `session = "<booth_type>/<key>"` 传递。
 
 ### 7. okm 中的账户注册表，id 优先访问
 
@@ -79,4 +79,4 @@ WS 常连接；`login` 是其上的普通 event，不是独立的 HTTP 往返。
 - Phase 8 的"turn delivery = realm events"自此成为对 Prism 的约束性契约，不再是计划注记。
 - ADR-0015 的第 3 步（节点审批并入账户 auth）变得可实现：四个端点存在且挂在用户注册表之下。
 - 后续的 chat/商城应用各自定义自己的按 event 认证声明；框架出厂只带 `login` 这一个 event。
-- 实现顺序：`crates/prism`（WS、身份、连接集合、编解码）→ `/admin` + 上传端点 + 节点审批并入 → `/probe/<alias>` 挂载 → 用户注册表 → `/assets/` + 信封形状的视图 event。
+- 实现顺序：`crates/prism`（WS、身份、连接集合、编解码）→ `/admin` + 上传端点 + 节点审批并入 → `/effector/<alias>` 挂载 → 用户注册表 → `/assets/` + 信封形状的视图 event。

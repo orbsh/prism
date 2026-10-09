@@ -3,7 +3,7 @@
 WS gateway hosting Aura actors, the entry point of the stateless-agent
 stack (design: `docs/adr/0017-prism-connection-plane.md`, en/zh).
 Built on the aura engine as a workspace sibling (`../../aura`,
-`../../probe` by path — same triangle as aura's own cross-repo deps).
+`../../effector` by path — same triangle as aura's own cross-repo deps).
 
 ## Scope of this landing (echo plane + identity, PLAN Phase 0/1 reduced)
 
@@ -63,8 +63,8 @@ absent from the build skips its echo with a boot note, never silently):
 | `echo_wasm`   | wasmtime | Rust `#![no_std]` cdylib, `examples/echo-wasm` (the full-power path, ADR-0026 §4 — pure echo needs no bridge: zero okm, zero deps) |
 
 Deliberately NOT here (the rest of ADR-0017, planned as later phases):
-logout / server-side revocation, `/admin` actor upload, `/probe/<alias>` mount
-(the probe gateway currently lives in `aura/crates/engine`), `/assets`,
+logout / server-side revocation, `/admin` actor upload, `/effector/<alias>` mount
+(the effector gateway currently lives in `aura/crates/engine`), `/assets`,
 the CBOR-vs-JSON DevTools panel. They ride prism PLAN Phase 1+/1.8.
 
 Landed early (PLAN Phase 1.9, ADR-0027 §4): `GET /code/{sha256}` — the
@@ -89,8 +89,8 @@ curl -X POST localhost:8765/admin/nodes/home-pc/approve   # unique pending; key 
 curl -X DELETE localhost:8765/admin/nodes/home-pc         # tombstones (status=revoked)
 ```
 
-The handshake EXECUTION (challenge frames gating a live probe
-connection) lands with the `/probe/<alias>` mount — until then
+The handshake EXECUTION (challenge frames gating a live effector
+connection) lands with the `/effector/<alias>` mount — until then
 `required` is the declared posture and the verdict table is in place,
 test-locked, with no node yet to gate.
 

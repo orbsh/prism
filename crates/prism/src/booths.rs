@@ -29,7 +29,7 @@ pub struct Echo {
 /// PTY carrier retired; nu rides the framed two-fifo adapter, so the
 /// booth's source IS the argv, pointing at the shared fixture.
 fn fixture_bgi_nu() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../probe/crates/actor-guest/examples/bgi_nu.nu").to_string()
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/crates/actor-guest/examples/bgi_nu.nu").to_string()
 }
 
 /// The registered set; carriers absent from this build are skipped at

@@ -2,7 +2,7 @@
 //! the full-power path, okm compiles INTO the module when storage is
 //! needed; a pure echo needs none of it, so this ships zero deps).
 //!
-//! Carrier ABI (probe-runtime `carrier/wasmtime.rs`):
+//! Carrier ABI (effector-runtime `carrier/wasmtime.rs`):
 //! - export `memory` (the cdylib provides it) + `aura_alloc(len)->ptr`
 //!   (the host writes handler args through it — a bump allocator here);
 //! - handler exports named after their events: `echo(ptr,len)->i64`,

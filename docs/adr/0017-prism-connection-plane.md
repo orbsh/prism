@@ -6,22 +6,22 @@
 
 ## Context
 
-Aura's integration story has no client entry point. Gravity/krystallizer booths exist and remote probes already dial in (Phase 3), but there is no unified surface a test client, a browser, or a delivered application can connect to. PLAN Phase 8 names Prism as the WS gateway hosted as an Aura-resident component ("client connections pin here, not on Gravity; turn delivery = realm events"), and ADR-0015's node-approval endpoints were explicitly deferred until "Prism's auth exists".
+Aura's integration story has no client entry point. Gravity/krystallizer booths exist and remote effectors already dial in (Phase 3), but there is no unified surface a test client, a browser, or a delivered application can connect to. PLAN Phase 8 names Prism as the WS gateway hosted as an Aura-resident component ("client connections pin here, not on Gravity; turn delivery = realm events"), and ADR-0015's node-approval endpoints were explicitly deferred until "Prism's auth exists".
 
 The design must serve more than chat. Fluxen applications (see fluxora's Envelope model — `receiver: Vec<Session>` wrapping a `sender`/`created`/`content` message) are a pattern for arbitrary applications: chat, CMS, dashboards, commerce, freely composed. The connection plane therefore cannot bake in chat assumptions such as "every connection belongs to a user".
 
 Constraints carried over from earlier rulings:
 
-- ADR-0015: node identity is an ed25519 key per probe node; approval is by public key through four curl endpoints that "later hang under the account (Prism auth)".
+- ADR-0015: node identity is an ed25519 key per effector node; approval is by public key through four curl endpoints that "later hang under the account (Prism auth)".
 - okm key discipline: `Key` fields reject `String` (fixed-width only); open-ended names are runtime DATA resolved through registry tables (`#[kv_index(by_name)]`), never hand-rolled byte keys.
-- The probe holds no storage and receives no data-plane credentials (2026-09-20 withdrawal) — Prism is an engine-bearing host (the Aura node itself) and may hold the account registry.
+- The effector holds no storage and receives no data-plane credentials (2026-09-20 withdrawal) — Prism is an engine-bearing host (the Aura node itself) and may hold the account registry.
 - Long-polling fallback was rejected as an architecture principle; the transport contract is WS-only.
 
 ## Decision
 
 ### 1. Prism is the connection plane, hosted as an Aura-resident component
 
-A new connection-plane crate in the aura repo owns: WS accept/upgrade, route dispatch (`/probe/<alias>`, `/admin/...`, application routes, `/assets/...`), the identity model, and the event protocol codec. The protocol definition stays owned by the Prism side of the contract (per PLAN Phase 8), but the connection plane is Aura code and rides realm events for turn delivery. Gravity, krystallizer and delivered fluxen applications are booths reached *through* Prism, not wired into it.
+A new connection-plane crate in the aura repo owns: WS accept/upgrade, route dispatch (`/effector/<alias>`, `/admin/...`, application routes, `/assets/...`), the identity model, and the event protocol codec. The protocol definition stays owned by the Prism side of the contract (per PLAN Phase 8), but the connection plane is Aura code and rides realm events for turn delivery. Gravity, krystallizer and delivered fluxen applications are booths reached *through* Prism, not wired into it.
 
 ### 2. Dual identity: device and account; authentication is a business-layer decision
 
@@ -54,9 +54,9 @@ The persistent WS stays connected; `login` is an ordinary event on it, not a sep
 
 Under `/admin`: `POST` to upload/register booth code, plus the four node-approval endpoints from ADR-0015 (`POST /nodes`, `GET /nodes`, `POST /nodes/{alias}/approve`, `DELETE /nodes/{alias}`), now hanging under the account. Krystallizer and gravity each get a thin upload script (assemble JSON, POST) — the first script lives in this repo's `scripts/` to validate the endpoint, then is copied per repo.
 
-### 6. Remote probe entry at `/probe/<alias>`
+### 6. Remote effector entry at `/effector/<alias>`
 
-The existing probe dial-in gateway (register / Call / Result / Host frames) is mounted under `/probe/<alias>`. Semantics unchanged: probe dials out, realm keys `probes` by alias, residency identity travels as `session = "<booth_type>/<key>"`.
+The existing effector dial-in gateway (register / Call / Result / Host frames) is mounted under `/effector/<alias>`. Semantics unchanged: effector dials out, realm keys `probes` by alias, residency identity travels as `session = "<booth_type>/<key>"`.
 
 ### 7. Account registry in okm, id-first access
 
@@ -79,4 +79,4 @@ View-manipulation operations are ordinary events on the same channel; the messag
 - Phase 8's "turn delivery = realm events" is now the binding contract for Prism, not a plan note.
 - ADR-0015's step 3 (fold node approval into account auth) becomes implementable: the four endpoints exist and hang under the user registry.
 - A later chat/commerce application defines its own per-event auth declarations; the framework ships with none beyond the `login` event itself.
-- Implementation sequence: `crates/prism` (WS, identity, sets, codec) → `/admin` + upload endpoint + node-approval folding → `/probe/<alias>` mount → user registry table → `/assets/` + envelope-shaped view events.
+- Implementation sequence: `crates/prism` (WS, identity, sets, codec) → `/admin` + upload endpoint + node-approval folding → `/effector/<alias>` mount → user registry table → `/assets/` + envelope-shaped view events.

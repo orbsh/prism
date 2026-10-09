@@ -8,7 +8,7 @@
 //! consult, the trust-mode posture (`identity: required | open`, no
 //! default), and the approval HTTP surface (`/admin/nodes...`, wired in
 //! `admin.rs`). The handshake EXECUTION (challenge frames on
-//! `/probe/<alias>`) rides the probe-protocol change and the probe
+//! `/effector/<alias>`) rides the effector-protocol change and the effector
 //! mount — coordinated step 2; until then the verdict function is the
 //! seam that stays testable.
 //!

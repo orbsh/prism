@@ -30,7 +30,7 @@
 //!
 //! `/admin/nodes...` (the ADR-0015 approval surface) and the
 //! `/code/{sha256}` export (ADR-0027) ride the same accept loop;
-//! `/probe/<alias>` mount, `/assets`, booth upload are the rest of
+//! `/effector/<alias>` mount, `/assets`, booth upload are the rest of
 //! ADR-0017 — deliberately not here; README states the gap so it reads
 //! as scope, not as drift.
 
@@ -126,7 +126,7 @@ impl Gateway {
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
         match self.posture {
             nodes::Posture::Required => {
-                eprintln!("prism: identity posture: `required` (ed25519 handshake gates probes — ADR-0015)")
+                eprintln!("prism: identity posture: `required` (ed25519 handshake gates effectors — ADR-0015)")
             }
             nodes::Posture::Open => {
                 eprintln!(
