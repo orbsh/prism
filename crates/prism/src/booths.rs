@@ -25,6 +25,13 @@ pub struct Echo {
     pub source: String,
 }
 
+/// The bgi spawn spec source (ADR-0035): `nu <author.nu>` — the nushell
+/// PTY carrier retired; nu rides the framed two-fifo adapter, so the
+/// booth's source IS the argv, pointing at the shared fixture.
+fn fixture_bgi_nu() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../probe/crates/actor-guest/examples/bgi_nu.nu").to_string()
+}
+
 /// The registered set; carriers absent from this build are skipped at
 /// registration with a note (`Gateway::with_echoes`), never silently.
 pub fn echo_booths() -> Vec<Echo> {
@@ -68,11 +75,10 @@ pub fn echo_booths() -> Vec<Echo> {
         language: "python",
         source: "def echo_python(args):\n    return args\n".into(),
     });
-    #[cfg(feature = "nushell")]
     v.push(Echo {
         type_name: "echo_nu",
-        language: "nushell",
-        source: "export def echo_nu [args] {\n    $args\n}\n".into(),
+        language: "bgi",
+        source: format!("nu {}", fixture_bgi_nu()),
     });
     #[cfg(feature = "wasmtime")]
     v.push(Echo {

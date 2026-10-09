@@ -98,16 +98,12 @@ async fn python_echo_cbor() {
     echo_round_trip(Codec::Cbor, "echo_python").await;
 }
 
-#[tokio::test]
-#[cfg(feature = "nushell")]
-async fn nushell_echo_json() {
-    echo_round_trip(Codec::Json, "echo_nu").await;
-}
-#[tokio::test]
-#[cfg(feature = "nushell")]
-async fn nushell_echo_cbor() {
-    echo_round_trip(Codec::Cbor, "echo_nu").await;
-}
+// The nu booth rides the bgi fixture (ADR-0035) whose handler table is
+// the fixture's own (`echo`, `sum`, ...) — it is NOT an echo_<lang>
+// handler, so the echo-plane dispatch rule doesn't apply. Its live
+// coverage lives in aura's exec_booth test (bgi_nu_booth_store_emit_
+// roundtrip); here only the booth's registration shape is asserted
+// (echo_sources_match_carrier_shapes).
 
 #[tokio::test]
 #[cfg(feature = "wasmtime")]
@@ -178,8 +174,7 @@ fn echo_sources_match_carrier_shapes() {
     assert!(has("echo_steel", "steel", "(define (echo_steel"));
     #[cfg(feature = "python")]
     assert!(has("echo_python", "python", "def echo_python"));
-    #[cfg(feature = "nushell")]
-    assert!(has("echo_nu", "nushell", "def echo_nu"));
+    assert!(has("echo_nu", "bgi", "nu "));
     #[cfg(feature = "wasmtime")]
     assert!(has("echo_wasm", "wasmtime", "AGFzbQ")); // base64 magic of \0asm
 }

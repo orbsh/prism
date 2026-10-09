@@ -27,10 +27,9 @@ tempfile = "3"
 tokio-tungstenite = { version = "0.24", features = ["handshake"] }
 
 [features]
-default = ["steel", "python", "nushell", "wasmtime", "fjall"]
+default = ["steel", "python", "wasmtime", "fjall"]
 steel = ["aura-engine/steel"]
 python = ["aura-engine/python"]
-nushell = ["aura-engine/nushell"]
 wasmtime = ["aura-engine/wasmtime"]
 fjall = ["aura-engine/fjall"]
 

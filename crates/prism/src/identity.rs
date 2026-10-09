@@ -33,7 +33,7 @@ use argon2::{
     Argon2,
 };
 use okm_core::document::Collection;
-use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec, ReduceLogic};
+use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec};
 
 /// The account table (prism instance, ns 50). Password hash is an
 /// argon2id PHC string (salt embedded) — never plaintext, never a

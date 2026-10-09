@@ -40,7 +40,7 @@ pub mod code_export;
 pub mod identity;
 pub mod nodes;
 
-use aura_booth::{call::Waited, InstanceId};
+use aura_booth::{call::Waited, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use futures_util::{SinkExt, StreamExt};
 use prism_protocol::{Codec, Frame};
@@ -310,7 +310,7 @@ impl Gateway {
             "sender": {"device": device, "user": (user != 0).then_some(user)},
             "args": args,
         });
-        let target = InstanceId { booth_type: ev.clone(), key: "ws".into() };
+        let target = InstanceId { booth_type: ev.clone(), key: InstanceKey::Named("ws".into()) };
         let payload = match self.engine.call(target, &ev, envelope).await {
             Ok(Waited::Done(Ok(v))) => Ok(v),
             Ok(Waited::Done(Err(e))) => Err(e.to_string()),

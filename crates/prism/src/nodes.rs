@@ -29,7 +29,7 @@
 
 use anyhow::anyhow;
 use okm_core::document::Collection;
-use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec, ReduceLogic};
+use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec};
 
 /// The node table (prism instance, ns 52 — beside Account 50 / Device 51).
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
