@@ -225,3 +225,37 @@ async fn declared_auth_event_requires_a_bound_user() {
     assert_eq!(f.args["user"], serde_json::json!(uid));
 }
 
+
+/// logout (Phase 1 tail): the device binding (§2's table) and the
+/// connection's auth field (§3) clear TOGETHER — the auth-gated event
+/// errors again on the SAME socket, a reconnect with the device echo
+/// comes back anonymous, and the broadcast predicate drops the
+/// connection from the auth fan-out at once. Idempotent: a second
+/// logout still answers ok.
+#[tokio::test]
+async fn logout_clears_binding_and_auth_field() {
+    let addr = boot().await;
+    let (mut ws, device, _) = connect(addr, None).await;
+    send(&mut ws, &Frame::new("signup", serde_json::json!(
+        {"username": "grace", "password": "***"}))).await;
+    let uid = recv(&mut ws).await.args["user_id"].as_u64().unwrap();
+
+    // logout → field cleared: the declared event is blocked again.
+    send(&mut ws, &Frame::new("logout", serde_json::json!({}))).await;
+    assert_eq!(recv(&mut ws).await.ev, "logout.result");
+    send(&mut ws, &Frame::new("echo_priv", serde_json::json!({"secret": 1}))).await;
+    let f = recv(&mut ws).await;
+    assert_eq!(f.ev, "error");
+    assert_eq!(f.args["message"], "authentication required");
+
+    // Idempotent: already anonymous, still ok.
+    send(&mut ws, &Frame::new("logout", serde_json::json!({}))).await;
+    assert_eq!(recv(&mut ws).await.ev, "logout.result");
+
+    // §2's table cleared: reconnect with the device echo restores
+    // NOTHING (contrast with reconnect_restores_binding).
+    drop(ws);
+    let (_, _, user2) = connect(addr, Some(device)).await;
+    assert_eq!(user2, 0, "logged-out device reconnects anonymous");
+    let _ = uid;
+}

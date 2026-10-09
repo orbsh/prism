@@ -184,6 +184,15 @@ impl Registry {
         Ok(account.id)
     }
 
+    /// logout: clear the device's user binding (0 = anonymous again).
+    /// Idempotent by construction — an anonymous device unbinds to the
+    /// same state. The gateway separately clears its per-connection
+    /// auth field; the two facts are independent (§3: the field drives
+    /// fan-out, the table survives reconnects).
+    pub fn logout(&self, device_id: u64) {
+        self.bind_device(device_id, 0);
+    }
+
     fn find_account(&self, username: &str) -> Option<Account> {
         let t = Collection::<_, AccountKey, Account>::new(self.store.clone());
         t.scan::<AccountByName>(username.as_bytes())

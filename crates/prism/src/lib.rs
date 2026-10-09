@@ -22,6 +22,11 @@
 //!   event), answered `signup.result`/`login.result {user_id}` and
 //!   setting the connection's auth field (§3's per-connection field,
 //!   one set — never a second collection).
+//! - `{ev: "logout"}` — clears the device's user binding (§2's table,
+//!   the cross-reconnect fact) AND the connection's auth field (§3,
+//!   immediately — the next auth-gated event errors, the next
+//!   broadcast excludes this connection). Idempotent; answered
+//!   `logout.result {ok: true}` even when already anonymous.
 //! - `{ev: "broadcast", args: {to: "all"|"auth", ...}}` — the frame
 //!   fans out to every live connection (or the auth-filtered subset);
 //!   the selector defaults to "all". Prism is the outbound bridge:
@@ -269,6 +274,19 @@ impl Gateway {
         match ev.as_str() {
             "signup" | "login" => {
                 self.auth_event(id, &ev, args).await;
+                return;
+            }
+            "logout" => {
+                let device = self.identities(id).0;
+                self.registry.logout(device);
+                // §3: the per-connection field drives fan-out — clear
+                // it so the predicate takes effect on THIS connection
+                // immediately; the device-table binding is the
+                // cross-reconnect fact and is cleared with it.
+                if let Some(conn) = self.conns.lock().unwrap().get(&id) {
+                    conn.user.store(0, Ordering::Relaxed);
+                }
+                self.send_to(id, Frame::new("logout.result", serde_json::json!({"ok": true})));
                 return;
             }
             "broadcast" => {
