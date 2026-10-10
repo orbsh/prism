@@ -128,12 +128,14 @@ impl Gateway {
             }
         }
         println!("prism: echo booths live: {registered:?}");
-        // The turn-executor stub (Phase 1's turn verbs ride it until
-        // gravity's real booth binding lands). Its absence (no python
-        // carrier in this build) is a startup note, not a boot failure
-        // — turn.submit then answers turn.error per call.
-        match turns::register_stub(engine).await {
-            Ok(()) => println!("prism: turn executor stub live"),
+        // The turn-executor (gravity's real turn + provider booths).
+        // Its absence (no python carrier in this build) is a startup
+        // note, not a boot failure — turn.submit then answers
+        // turn.error per call. The deployment facts (TurnConfig) are
+        // read per submit, not here: a boot without them still serves
+        // echo/identity; turn verbs report the missing fact.
+        match turns::register_executor(engine).await {
+            Ok(()) => println!("prism: turn executor live (gravity booths)"),
             Err(err) => eprintln!("prism: turn executor not registered: {err}"),
         }
         Ok(())
@@ -473,6 +475,19 @@ impl Gateway {
         // Reserve SYNCHRONOUSLY — the duplicate check above and this
         // insert are one dispatch pass, no spawn can interleave.
         self.turns_arc().lock().unwrap().reserve(id);
+        // The deployment facts: read per submit (env). A missing fact
+        // reports as turn.error — the session plane serves without it.
+        let config = match turns::TurnConfig::from_env() {
+            Ok(c) => c,
+            Err(e) => {
+                self.send_to(
+                    id,
+                    Frame::new("turn.error", serde_json::json!({"message": e.to_string()})),
+                );
+                self.turns_arc().lock().unwrap().take(id);
+                return;
+            }
+        };
         let conns = Arc::clone(&self.conns);
         let realm = Arc::clone(&self.engine.realm);
         let table = self.turns_arc();
@@ -481,7 +496,7 @@ impl Gateway {
                 let _ = c.tx.send(Frame::new(ev, a));
             }
         };
-        tokio::spawn(turns::run_turn(realm, table, id, session_id, content, send));
+        tokio::spawn(turns::run_turn(realm, table, config, id, session_id, content, send));
     }
 
     /// `turn.cancel {}` — dispose this connection's live turn. The

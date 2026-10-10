@@ -10,17 +10,19 @@
 //! face is iterate (hot tier). The gateway drives the stream over
 //! `Realm::iterate` because the WS connection lives here; the executor
 //! booth stays an ordinary realm citizen and the connection plane
-//! adapts, it does not bypass. This file carries: the stub executor
-//! booth (python generator — the shape gravity's real executor will
-//! take, with the real provider riding ctx.iterate inside it), the
-//! per-connection live-stream table, and the stream pump.
+//! adapts, it does not bypass. This file carries: the turn-executor
+//! registration (gravity's REAL turn booth — the python generator
+//! whose `turn` handler fetches the projection from mem-server, pulls
+//! tokens from the provider booth, and appends the exchange; prism's
+//! test stub had the same shape and is retired), the deployment-facts
+//! config, the per-connection live-stream table, and the stream pump.
 //!
 //! Auth: `turn.submit` requires a bound user. The gate reuses the
 //! SAME declaration surface the echo plane enforces — the executor
 //! type's persisted interface_schema `auth` block, read by
 //! `type_handler_requires_auth` (lib.rs) — no second ACL face.
 
-use aura_booth::{call::CallSlot, Body, BoothType, InstanceId, InstanceKey, IterateOp};
+use aura_booth::{call::CallSlot, InstanceId, InstanceKey, IterateOp};
 use aura_engine::Engine;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -28,54 +30,63 @@ use std::sync::{Arc, Mutex};
 
 use aura_realm::Realm;
 
-/// The stub turn executor: a python generator handler yielding text
-/// deltas one by one, then returning the terminal value. Stream
-/// envelope shape is ADR-0034's, which the pump translates to
-/// `turn.delta` / `turn.done` frames. Gravity's real executor replaces
-/// the body, not the shape. The `auth` block declares `turn`
-/// user-gated — the submit gate reads this persisted schema.
-const STUB_SOURCE: &str = r#"
-import time
+/// The turn-executor booth type name (gravity's turn booth; the
+/// provider booth it pulls from is registered alongside).
+pub const EXECUTOR_TYPE: &str = gravity_booth::TURN_TYPE;
 
-def interface_schema(args):
-    return {"auth": {"turn": "required"}}
+/// The turn submission's deployment facts, declared at boot (env — the
+/// same custody discipline as the key itself: names in config, values
+/// in the environment where they belong). `key_env` names the env var
+/// holding the LLM key — the key VALUE never crosses prism.
+#[derive(Clone, Debug)]
+pub struct TurnConfig {
+    /// mem-server base URL (the memory seam the booth posts through).
+    pub store_url: String,
+    /// OpenAI-compatible chat-completions endpoint.
+    pub endpoint: String,
+    /// Model id the endpoint serves.
+    pub model: String,
+    /// The env var NAME holding the LLM API key.
+    pub key_env: String,
+}
 
-def turn(args):
-    text = args.get("content", "")
-    for word in text.split(" "):
-        # Pace the stream so a mid-turn cancel (and any client) can
-        # actually observe deltas as they happen — a real provider is
-        # network-paced; the stub would otherwise drain instantly.
-        time.sleep(0.05)
-        yield {"delta": word + " "}
-"#;
+impl TurnConfig {
+    /// Read from the environment; every field required (a deployment
+    /// fact is declared, never defaulted).
+    pub fn from_env() -> anyhow::Result<Self> {
+        Ok(Self {
+            store_url: env_required("GRAVITY_STORE_URL")?,
+            endpoint: env_required("GRAVITY_ENDPOINT")?,
+            model: env_required("GRAVITY_MODEL")?,
+            key_env: env_required("GRAVITY_KEY_ENV")?,
+        })
+    }
 
-/// The executor booth type name. `turn.submit` targets instance key =
-/// session_id (the Phase 6 contract's partition key, honored here as
-/// the instance key already).
-pub const EXECUTOR_TYPE: &str = "turn_executor";
+    /// The deployment-fact slice of the turn args (the per-turn fields
+    /// — channel/member/message — are added by `run_turn`).
+    fn as_args(&self) -> Value {
+        json!({
+            "store_url": self.store_url,
+            "endpoint": self.endpoint,
+            "model": self.model,
+            "key_env": self.key_env,
+        })
+    }
+}
 
-/// Register the stub executor. A build without the python carrier
-/// leaves the type absent — `turn.submit` then answers `turn.error`
-/// instead of hanging on an unknown type.
-pub async fn register_stub(engine: &Engine) -> anyhow::Result<()> {
+fn env_required(name: &str) -> anyhow::Result<String> {
+    std::env::var(name)
+        .map_err(|_| anyhow::anyhow!("env var {name} not set (turn deployment fact)"))
+}
+
+/// Register gravity's turn + provider booths. A build without the
+/// python carrier leaves the types absent — `turn.submit` then answers
+/// `turn.error` instead of hanging on an unknown type.
+pub async fn register_executor(engine: &Engine) -> anyhow::Result<()> {
     #[cfg(feature = "python")]
     {
-        engine
-            .register(BoothType {
-                name: EXECUTOR_TYPE.into(),
-                body: Body::Script {
-                    language: "python".into(),
-                    source: STUB_SOURCE.into(),
-                    encoding: Default::default(),
-                },
-                idle_ttl: None,
-                max_exec: None,
-                on_sleep: None,
-                on_wake: None,
-                receives: Vec::new(),
-            })
-            .await?;
+        engine.register(gravity_booth::provider_booth()).await?;
+        engine.register(gravity_booth::turn_booth()).await?;
         Ok(())
     }
     #[cfg(not(feature = "python"))]
@@ -179,15 +190,25 @@ macro_rules! fail_turn {
 /// with "not live". On ANY exit the slot is freed. Dispatch spawns
 /// this, so the socket's read loop stays free while deltas flow. The
 /// turn args: `session_id` picks the executor instance (the Phase 6
-/// partition key), `content` is the turn's input.
+/// partition key = the conversation channel), the config supplies the
+/// deployment facts.
 pub async fn run_turn(
     realm: aura_realm::SharedRealm,
     table: Arc<Mutex<TurnTable>>,
+    config: TurnConfig,
     conn: u64,
     session_id: String,
-    content: String,
+    user_message: String,
     mut send: impl FnMut(&str, Value) + Send + 'static,
 ) {
+    // The instance key IS the channel id (one conversation log per
+    // session — the string renders to u64 at the booth, or the session
+    // names a channel); member 1 = the agent's projection (mem-core's
+    // default member).
+    let mut args = config.as_args();
+    args["channel_id"] = json!(session_id.parse::<u64>().unwrap_or(1));
+    args["member_id"] = json!(1);
+    args["user_message"] = json!(user_message);
     let target = InstanceId {
         booth_type: EXECUTOR_TYPE.into(),
         key: InstanceKey::Named(session_id),
@@ -197,7 +218,7 @@ pub async fn run_turn(
         IterateOp::Start {
             target,
             handler: "turn".into(),
-            args: json!({"content": content}),
+            args,
         },
     )
     .await

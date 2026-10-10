@@ -1,22 +1,88 @@
-//! Turn-plane e2e (Phase 1's turn verbs + streaming): submit streams
-//! `turn.delta` frames then `turn.done`, cancel disposes a live turn,
-//! anonymous submit is refused through the SAME interface_schema auth
-//! declaration the echo plane enforces, and a duplicate submit while
-//! one turn is live is refused. The stub executor is a python
-//! generator — the same shape gravity's real executor takes.
+//! Turn-plane e2e (Phase 1's turn verbs + streaming, gravity's REAL
+//! executor): submit opens the iterate stream against gravity's turn
+//! booth, tokens stream as `turn.delta` frames (the provider's SSE is
+//! stubbed by a local server, the memory seam rides a real mem-server),
+//! cancel disposes a live turn, anonymous submit is refused through the
+//! SAME interface_schema auth declaration the echo plane enforces, and
+//! a duplicate submit while one turn is live is refused. This is the
+//! end-to-end chain: WS → gateway pump → gravity turn generator →
+//! provider SSE → mem-server append.
 
 use aura_engine::Engine;
 use prism::{identity::Registry, Gateway};
 use prism_protocol::{Codec, Frame};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
 type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// The LLM SSE stub: answers every /chat/completions with a streamed
+/// reply assembled from a per-request word list (round-robin over
+/// SUBMITTED Replies — the token events flow one per chunk, and the
+/// PAUSE_MS pacing between chunks keeps the stream observably live for
+/// the cancel test). Replies are pushed by tests via `set_reply`.
+static REPLIES: std::sync::Mutex<Vec<Vec<String>>> = std::sync::Mutex::new(Vec::new());
+static REQ_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+fn set_reply(words: &[&str]) {
+    REPLIES.lock().unwrap().push(words.iter().map(|s| s.to_string()).collect());
+}
+
+async fn sse_server() -> String {
+    let app = axum::Router::new().route(
+        "/chat/completions",
+        axum::routing::post(|| async {
+            let idx = REQ_COUNT.fetch_add(1, Ordering::SeqCst);
+            let words = {
+                let all = REPLIES.lock().unwrap();
+                all.get(idx % all.len().max(1)).cloned().unwrap_or_default()
+            };
+            let mut sse = String::new();
+            for w in words {
+                // Pace: each token is a separate SSE chunk, and the
+                // generator's network read blocks between them — the
+                // stream stays live for mid-turn cancels.
+                let payload = serde_json::json!({"choices": [{"delta": {"content": format!("{w} ")}}]});
+                sse.push_str(&format!("data: {payload}\n\n"));
+            }
+            sse.push_str("data: [DONE]\n\n");
+            axum::response::Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(axum::body::Body::from(sse))
+                .unwrap()
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn mem_server() -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let app = mem_server::open(dir.path().to_path_buf()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    std::mem::forget(dir); // the store outlives the test
+    format!("http://{addr}")
+}
+
 async fn boot() -> SocketAddr {
+    // The turn deployment facts ride the env (TurnConfig::from_env) —
+    // declared here, pointed at the local stubs.
+    let endpoint = sse_server().await;
+    let store_url = mem_server().await;
+    std::env::set_var("GRAVITY_STORE_URL", &store_url);
+    std::env::set_var("GRAVITY_ENDPOINT", &endpoint);
+    std::env::set_var("GRAVITY_MODEL", "test-model");
+    std::env::set_var("GRAVITY_KEY_ENV", "GRAVITY_TEST_KEY");
+    std::env::set_var("GRAVITY_TEST_KEY", "test-key");
+
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.into_path()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
@@ -62,15 +128,15 @@ async fn authed(addr: SocketAddr) -> WsClient {
     ws
 }
 
-/// The full stream: deltas arrive one per word, then done carries the
-/// terminal value; the deltas concatenate to the content.
+/// The full stream: deltas arrive one per provider token, then done
+/// closes; the deltas concatenate to the reply.
 #[tokio::test]
-async fn turn_submit_streams_deltas_then_done() {
+async fn turn_submit_streams_provider_tokens() {
+    set_reply(&["hel", "lo ", "wor", "ld"]);
     let addr = boot().await;
     let mut ws = authed(addr).await;
-    let content = "hello streaming turn world";
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
-        {"session_id": "s1", "content": content}))).await;
+        {"session_id": "1", "content": "hi"}))).await;
     let mut seen = String::new();
     loop {
         let f = recv(&mut ws).await;
@@ -80,23 +146,24 @@ async fn turn_submit_streams_deltas_then_done() {
             other => panic!("unexpected frame {other}: {}", f.args),
         }
     }
-    assert_eq!(seen.trim_end(), content, "deltas concatenate to the content");
+    assert_eq!(seen.trim_end(), "hello world", "provider tokens streamed as deltas");
 }
 
 /// A second submit while one turn is live is refused; after the turn
 /// completes the slot is free again.
 #[tokio::test]
 async fn duplicate_submit_is_refused_and_slot_frees() {
+    set_reply(&["a", "b", "c"]);
     let addr = boot().await;
     let mut ws = authed(addr).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
-        {"session_id": "s1", "content": "a b c"}))).await;
+        {"session_id": "1", "content": "first"}))).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
-        {"session_id": "s1", "content": "x y"}))).await;
+        {"session_id": "1", "content": "second"}))).await;
     // The refusal is sent synchronously in dispatch; the first stream's
     // deltas race it on the same socket. Scan until it appears.
     let mut refused = false;
-    for _ in 0..5 {
+    for _ in 0..6 {
         let f = recv(&mut ws).await;
         match f.ev.as_str() {
             "error" => {
@@ -117,7 +184,7 @@ async fn duplicate_submit_is_refused_and_slot_frees() {
     }
     // A fresh submit now succeeds.
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
-        {"session_id": "s1", "content": "z"}))).await;
+        {"session_id": "1", "content": "third"}))).await;
     loop {
         let f = recv(&mut ws).await;
         if f.ev == "turn.done" { break; }
@@ -131,7 +198,7 @@ async fn anonymous_submit_requires_auth() {
     let addr = boot().await;
     let mut ws = connect(addr).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
-        {"session_id": "s1", "content": "hi"}))).await;
+        {"session_id": "1", "content": "hi"}))).await;
     let f = recv(&mut ws).await;
     assert_eq!(f.ev, "error");
     assert_eq!(f.args["message"], "authentication required");
@@ -143,15 +210,16 @@ async fn anonymous_submit_requires_auth() {
 
 /// Cancel kills a live turn: turn.cancel.result ok, the pump's pending
 /// pull reports the death as turn.error, and the slot frees (a fresh
-/// submit succeeds).
+/// submit succeeds). The SSE stub's chunks are paced by the generator's
+/// own yield timing — with 30 tokens the stream is observably live.
 #[tokio::test]
 async fn cancel_disposes_a_live_turn() {
+    let words: Vec<&str> = (0..30).map(|_| "w").collect();
+    set_reply(&words);
     let addr = boot().await;
     let mut ws = authed(addr).await;
-    // A long content keeps the stub producer mid-stream.
-    let content = (0..30).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
-        {"session_id": "s1", "content": content}))).await;
+        {"session_id": "1", "content": "go"}))).await;
     // A couple of deltas arrive...
     let f = recv(&mut ws).await;
     assert_eq!(f.ev, "turn.delta");
@@ -159,10 +227,8 @@ async fn cancel_disposes_a_live_turn() {
     assert_eq!(f.ev, "turn.delta");
     // ...then cancel.
     send(&mut ws, &Frame::new("turn.cancel", serde_json::json!({}))).await;
-    // Either the cancel.result lands first or the pump's error does;
-    // both must appear (the dispose races a few deltas at most — the
-    // generator is closed by the session slot lock; cap high because
-    // the unbounded channel may have buffered deltas).
+    // Both must appear (the dispose races a few deltas at most; cap
+    // high because the unbounded channel may have buffered deltas).
     let mut saw_cancel = false;
     let mut saw_error = false;
     for _ in 0..300 {
@@ -178,7 +244,7 @@ async fn cancel_disposes_a_live_turn() {
     assert!(saw_cancel && saw_error, "cancel ok + pump-reported death");
     // The slot is free: a fresh submit runs to done.
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
-        {"session_id": "s1", "content": "z"}))).await;
+        {"session_id": "1", "content": "z"}))).await;
     loop {
         let f = recv(&mut ws).await;
         if f.ev == "turn.done" { break; }
