@@ -70,6 +70,20 @@ anonymous. Server-side revocation LANDED (2026-10-10): `POST
 live connection is kicked with a `revoked` frame and a real Close, the
 device echo restores nothing until a fresh login re-earns the anchor.
 
+Turn verbs + streaming LANDED (2026-10-10): `turn.submit {session_id,
+content}` opens an ADR-0034 iterate stream against the `turn_executor`
+booth (instance key = session_id) and translates every pulled envelope
+into `turn.delta` frames, closing with `turn.done` (the terminal value)
+or `turn.error`; `turn.cancel` disposes the connection's live stream
+(idempotent). One live turn per connection; the duplicate submit is
+refused. The submit gate reads the executor type's persisted
+interface_schema `auth` block — the SAME declaration face the echo
+plane enforces. The gateway drives the stream because the WS connection
+lives here; the executor booth is an ordinary realm citizen (the
+connection plane adapts, it does not bypass). The stub executor (python
+generator, paced) stands in for gravity's real turn executor — gravity
+replaces the body, not the shape.
+
 Deliberately NOT here (the rest of ADR-0017, planned as later phases):
 `/admin` actor upload, `/effector/<alias>` mount
 (the effector gateway currently lives in `aura/crates/engine`), `/assets`,
