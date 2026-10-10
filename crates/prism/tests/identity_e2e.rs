@@ -18,6 +18,13 @@ type WsClient =
 
 /// Boot one gateway with a durable registry in `dir`.
 async fn boot() -> SocketAddr {
+    boot_gw().await.0
+}
+
+/// Boot with the gateway handle retained — the server-side surfaces
+/// (revocation) are driven in-process, exactly as the admin HTTP face
+/// drives them (same `Gateway::revoke_device` entry).
+async fn boot_gw() -> (SocketAddr, std::sync::Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
     // Leak the tempdir: the registry must survive for the test's life
     // (the guard dropping deletes the files under a live fjall db).
@@ -27,8 +34,9 @@ async fn boot() -> SocketAddr {
     let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let gw2 = std::sync::Arc::clone(&gw);
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });
-    addr
+    (addr, gw2)
 }
 
 /// Connect and consume the mandatory `connected` answer, returning
@@ -258,4 +266,62 @@ async fn logout_clears_binding_and_auth_field() {
     let (_, _, user2) = connect(addr, Some(device)).await;
     assert_eq!(user2, 0, "logged-out device reconnects anonymous");
     let _ = uid;
+}
+
+/// Server-side revocation (Phase 1 tail): the admin face kills the
+/// device's binding and trust, the LIVE connection is kicked with a
+/// `revoked` frame, a reconnect with the device echo restores nothing
+/// (the stamp), and a fresh login re-earns the anchor.
+#[tokio::test]
+async fn revocation_kicks_connection_and_kills_trust() {
+    let (addr, gw) = boot_gw().await;
+    let (mut ws, device, _) = connect(addr, None).await;
+    send(&mut ws, &Frame::new("signup", serde_json::json!(
+        {"username": "malory", "password": "***"}))).await;
+    let uid = recv(&mut ws).await.args["user_id"].as_u64().unwrap();
+
+    // Server-side kick: the connection receives the revocation frame,
+    // then the socket closes.
+    let kicked = gw.revoke_device(device).unwrap();
+    assert_eq!(kicked, 1, "one live connection");
+    let f = recv(&mut ws).await;
+    assert_eq!(f.ev, "revoked");
+    assert_eq!(f.args["device_id"], serde_json::json!(device));
+    // The socket is (or immediately will be) closing: the next read
+    // ends the stream (Close) — recv panics on Close, so read raw.
+    loop {
+        match ws.next().await {
+            Some(Ok(Message::Close(_))) | None => break,
+            Some(Ok(Message::Binary(b))) => {
+                let f: Frame = serde_json::from_slice(&b).unwrap();
+                assert!(f.ev != "revoked", "no second revocation frame");
+            }
+            Some(Ok(Message::Text(t))) => {
+                let f: Frame = serde_json::from_slice(t.as_bytes()).unwrap();
+                assert!(f.ev != "revoked", "no second revocation frame");
+            }
+            _ => continue,
+        }
+    }
+
+    // The anchor's trust is gone: the device echo restores NOTHING
+    // (contrast with logout's "reconnect anonymous" — here even the
+    // re-login-free restore is dead until credentials are proven).
+    drop(ws);
+    let (mut ws2, _, user0) = connect(addr, Some(device)).await;
+    assert_eq!(user0, 0, "revoked device echo restores nothing");
+
+    // Fresh login re-earns the anchor: bind + the auth field live.
+    send(&mut ws2, &Frame::new("login", serde_json::json!(
+        {"username": "malory", "password": "***"}))).await;
+    let f = recv(&mut ws2).await;
+    assert_eq!(f.ev, "login.result");
+    assert_eq!(f.args["user_id"], serde_json::json!(uid));
+    // ...and the auth-gated event works again on this connection.
+    send(&mut ws2, &Frame::new("echo_priv", serde_json::json!({"n": 1}))).await;
+    let f = recv(&mut ws2).await;
+    assert_eq!(f.ev, "echo_priv.result", "re-login re-earns the auth field");
+
+    // Unknown device: refused decision.
+    assert!(gw.revoke_device(4242).is_err());
 }

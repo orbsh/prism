@@ -165,6 +165,14 @@ impl Gateway {
             let _ = stream.shutdown().await;
             return Ok(());
         }
+        // The revocation face needs the WHOLE gateway (registry +
+        // live-connection table), not just the node store — same
+        // curl-first accept loop, routed before the WS handshake.
+        if let Some(response) = admin::serve_revoke(self.as_ref(), &head.method, &head.path, &head.body).await {
+            let _ = stream.write_all(&response).await;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
         let mq = self.engine.realm.lock().await.mq.clone();
         if code_export::serve_code_export(&mq, &head, &mut stream).await {
             return Ok(());
@@ -207,11 +215,17 @@ impl Gateway {
 
         // The connect answer: the device assignment frame AND the
         // (possibly restored) binding — one frame, no separate
-        // handshake protocol.
-        let _ = tx.send(Frame::new(
+        // handshake protocol. Sent through the map's copy BEFORE the
+        // local sender is dropped (below): after this point the map's
+        // clone is the ONLY live sender — "the table owns the sender"
+        // — so removing the entry (revocation kick) actually closes
+        // the channel and the pump sees the shutdown.
+        tx.send(Frame::new(
             "connected",
             serde_json::json!({"device_id": device, "user_id": (user0 != 0).then_some(user0)}),
-        ));
+        ))
+        .ok();
+        drop(tx);
 
         // Outbound pump: the single socket writer — replies and
         // fan-out share it. Removal on ANY exit path lives here (the
@@ -227,6 +241,12 @@ impl Gateway {
                     break;
                 }
             }
+            // Channel closed (the table dropped our sender — revocation
+            // kick or normal removal): close the socket properly so the
+            // client's read side SEES the close instead of hanging on a
+            // dropped write half.
+            let _ = write.send(Message::Close(None)).await;
+            let _ = write.flush().await;
             conns.lock().unwrap().remove(&id);
         });
 
@@ -343,6 +363,43 @@ impl Gateway {
                 self.send_to(id, Frame::new("error", serde_json::json!({"ev": ev, "message": message})))
             }
         }
+    }
+
+    /// Server-side revocation (Phase 1 tail): kill a device's binding
+    /// and kick its live connections. Not a client event — the entry
+    /// is the admin HTTP face (`POST /admin/revoke`), same accept
+    /// loop, same curl-first discipline. Three facts move:
+    /// the registry row (binding + trust stamp, `Registry::revoke_device`),
+    /// each live connection's auth field (cleared so the fan-out
+    /// predicate and per-event auth drop it immediately), and the
+    /// socket itself (closed with a `revoked` frame — the client
+    /// learns WHY it was disconnected). Returns the number of live
+    /// connections kicked.
+    pub fn revoke_device(&self, device_id: u64) -> anyhow::Result<usize> {
+        self.registry.revoke_device(device_id)?;
+        let mut kicked = 0;
+        let mut dead = Vec::new();
+        let mut conns = self.conns.lock().unwrap();
+        for (id, c) in conns.iter() {
+            if c.device == device_id {
+                c.user.store(0, Ordering::Relaxed);
+                let _ = c.tx.send(Frame::new(
+                    "revoked",
+                    serde_json::json!({"device_id": device_id, "reason": "revoked by server"}),
+                ));
+                dead.push(*id);
+                kicked += 1;
+            }
+        }
+        // Drop the senders: the channel closes, the pump exits its
+        // recv loop, the socket write half drops (the client sees the
+        // close after the `revoked` frame), and the pump's own
+        // remove-on-exit has nothing left to remove (we dropped the
+        // entries here — the pump's cleanup is idempotent).
+        for id in dead {
+            conns.remove(&id);
+        }
+        Ok(kicked)
     }
 
     /// signup/login: registry calls, the auth FIELD of this connection

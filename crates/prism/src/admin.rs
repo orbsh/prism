@@ -78,6 +78,39 @@ pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u
     Some(response)
 }
 
+/// Route `POST /admin/revoke {device_id}` — the device revocation face
+/// (Phase 1 tail). Needs the whole gateway: the registry call moves the
+/// durable facts, the connection-table pass kicks live sockets. Same
+/// failure shapes as the node face: malformed body = 400, registry
+/// refusal (unknown device) = 409 with the registry's message.
+pub(crate) async fn serve_revoke(
+    gw: &crate::Gateway,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Option<Vec<u8>> {
+    if method != "POST" || path != "/admin/revoke" {
+        // Not ours (or wrong verb) — fall through; /admin itself is
+        // serve_admin's prefix.
+        return if path.starts_with("/admin/revoke") {
+            Some(plain(404, "unknown admin route"))
+        } else {
+            None
+        };
+    }
+    let v: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => return Some(plain(400, &format!("body must be JSON: {e}"))),
+    };
+    let Some(device_id) = v.get("device_id").and_then(|x| x.as_u64()) else {
+        return Some(plain(400, "`device_id` (u64) is required"));
+    };
+    match gw.revoke_device(device_id) {
+        Ok(n) => Some(json_response(200, &json!({"device_id": device_id, "kicked": n}))),
+        Err(e) => Some(plain(409, &e.to_string())),
+    }
+}
+
 fn row_json(n: &crate::nodes::Node) -> serde_json::Value {
     json!({
         "alias": n.alias,

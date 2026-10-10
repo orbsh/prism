@@ -65,10 +65,13 @@ absent from the build skips its echo with a boot note, never silently):
 Landed (PLAN Phase 1 tail, 2026-10-09): `logout` — the device binding
 (§2's table) and the connection's auth field (§3) clear together, the
 auth-gated events error again on the same socket, reconnects come back
-anonymous. Server-side revocation stays planned.
+anonymous. Server-side revocation LANDED (2026-10-10): `POST
+/admin/revoke {device_id}` — the binding and the trust stamp clear, the
+live connection is kicked with a `revoked` frame and a real Close, the
+device echo restores nothing until a fresh login re-earns the anchor.
 
 Deliberately NOT here (the rest of ADR-0017, planned as later phases):
-server-side revocation, `/admin` actor upload, `/effector/<alias>` mount
+`/admin` actor upload, `/effector/<alias>` mount
 (the effector gateway currently lives in `aura/crates/engine`), `/assets`,
 the CBOR-vs-JSON DevTools panel. They ride prism PLAN Phase 1+/1.8.
 

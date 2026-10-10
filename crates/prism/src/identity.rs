@@ -69,13 +69,22 @@ pub struct DeviceKey {
     pub id: u64,
 }
 
-#[derive(DocumentEncode, Clone, PartialEq, Debug)]
+#[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
 #[ok_ref(DeviceKey)]
 #[ok_reduce(HighWater(id) { group(global) })]
 #[ok_ns(51)]
 pub struct Device {
     pub id: u64,
     pub user_id: u64,
+    /// Server-side revocation stamp (unix ms; 0 = never revoked). A
+    /// revoked device keeps NO auto-restored binding: `device_user`
+    /// reads None until a fresh login re-binds — logout clears the
+    /// binding (client's choice, restore is safe), revocation clears
+    /// it AND the trust (the server's choice; the anchor was
+    /// compromised or the operator said so).
+    pub revoked: u64,
+    /// Single-group discriminator for the registry-wide watermark
+    /// (always 0 — the derive rejects empty group lists).
     pub global: u32,
 }
 
@@ -110,20 +119,24 @@ impl Registry {
             t.store(),
             <Device as Document>::NS_PREFIX,
             &DeviceKey { id: 0 },
-            &Device { id: 0, user_id: 0, global: 0 },
+            &Device { id: 0, user_id: 0, revoked: 0, global: 0 },
         )
         .unwrap_or(0);
         let id = watermark + 1;
-        t.put(&DeviceKey { id }, &Device { id, user_id: 0, global: 0 });
+        t.put(&DeviceKey { id }, &Device { id, user_id: 0, revoked: 0, global: 0 });
         Ok(id)
     }
 
     /// A `?device=<id>` echo is honored only for a real row; anything
     /// else is a fresh connect (an attacker's guessed id mints a new
-    /// row, gaining nothing).
+    /// row, gaining nothing). A REVOKED row also reads None: the echo
+    /// does not restore a binding the server deliberately killed —
+    /// re-login is the only path back.
     pub fn device_user(&self, id: u64) -> Option<u64> {
         let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
-        t.get(&DeviceKey { id }).filter(|d| d.user_id != 0).map(|d| d.user_id)
+        t.get(&DeviceKey { id })
+            .filter(|d| d.user_id != 0 && d.revoked == 0)
+            .map(|d| d.user_id)
     }
 
     /// signup: create the account and bind the device in one pass.
@@ -193,6 +206,27 @@ impl Registry {
         self.bind_device(device_id, 0);
     }
 
+    /// Server-side revocation (Phase 1 tail): the server kills the
+    /// device's binding AND its trust. Logout is the client's choice —
+    /// the binding clears but the anchor stays trustworthy, so a
+    /// re-login-free restore is safe. Revocation is the server's
+    /// judgment (compromised anchor, ban, operator kick): the binding
+    /// clears AND the row is stamped, so `device_user` stays None
+    /// across reconnects until a fresh login proves the credentials
+    /// again. Idempotent like logout. Returns the revoked row's prior
+    /// binding (the caller reports it; 0 = was anonymous).
+    pub fn revoke_device(&self, device_id: u64) -> anyhow::Result<u64> {
+        let mut t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
+        let Some(mut d) = t.get(&DeviceKey { id: device_id }) else {
+            return Err(anyhow!("unknown device {device_id}"));
+        };
+        let was = d.user_id;
+        d.user_id = 0;
+        d.revoked = now_ms();
+        t.put(&DeviceKey { id: device_id }, &d);
+        Ok(was)
+    }
+
     fn find_account(&self, username: &str) -> Option<Account> {
         let t = Collection::<_, AccountKey, Account>::new(self.store.clone());
         t.scan::<AccountByName>(username.as_bytes())
@@ -204,6 +238,13 @@ impl Registry {
         let mut t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
         if let Some(mut d) = t.get(&DeviceKey { id: device_id }) {
             d.user_id = user_id;
+            // A fresh authentication re-earns the anchor's trust: the
+            // revocation stamp clears with the successful bind (the
+            // credentials were just proven — that is the only path
+            // back from revoked).
+            if user_id != 0 {
+                d.revoked = 0;
+            }
             t.put(&DeviceKey { id: device_id }, &d);
         }
     }
@@ -222,6 +263,15 @@ fn verify_password(password: &str, hash: &str) -> anyhow::Result<()> {
     Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .map_err(|_| anyhow!("invalid credentials"))
+}
+
+/// Unix milliseconds — the revocation stamp's clock (prism's own; the
+/// value is diagnostic, not an ordering authority).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before 1970")
+        .as_millis() as u64
 }
 
 
@@ -254,5 +304,38 @@ mod tests {
         let uid = r.login("alice", "pw-a", d).unwrap();
         assert_eq!(uid, alice);
         assert_eq!(r.device_user(d), Some(alice), "binding durable");
+    }
+
+    /// Server-side revocation (Phase 1 tail): the binding clears AND
+    /// the trust dies — reconnect restores nothing until a fresh login
+    /// re-binds, which also clears the stamp. Logout (the contrast) has
+    /// no stamp: its re-login-free semantics stay.
+    #[test]
+    fn revocation_kills_trust_until_relogin() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = Registry::open(&dir.into_path()).unwrap();
+        let alice = r.signup("alice", "Ali", "pw-a", 0).unwrap();
+        let d = r.new_device().unwrap();
+        r.login("alice", "pw-a", d).unwrap();
+        assert_eq!(r.device_user(d), Some(alice));
+
+        // revoke: binding gone, trust gone.
+        assert_eq!(r.revoke_device(d).unwrap(), alice, "reports the prior binding");
+        assert_eq!(r.device_user(d), None, "revoked device restores nothing");
+
+        // re-login re-binds AND clears the stamp (the only way back).
+        assert_eq!(r.login("alice", "pw-a", d).unwrap(), alice);
+        assert_eq!(r.device_user(d), Some(alice), "fresh login re-earns trust");
+
+        // unknown device: a refused decision, not a silent success.
+        assert!(r.revoke_device(999).is_err());
+
+        // logout stays stamp-free: unbind, re-login, no interlock.
+        let d2 = r.new_device().unwrap();
+        r.login("alice", "pw-a", d2).unwrap();
+        r.logout(d2);
+        assert_eq!(r.device_user(d2), None);
+        assert_eq!(r.login("alice", "pw-a", d2).unwrap(), alice);
+        assert_eq!(r.device_user(d2), Some(alice));
     }
 }
