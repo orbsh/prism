@@ -10,8 +10,7 @@
 //! `echo_steel`, handler `echo_steel`.
 //!
 //! Sources mirror aura's test fixtures (echo.rs steel/python/nushell
-//! shapes + the wasmtime ABI). The wasm source is the compiled Rust
-//! module in examples/echo-wasm, base64-embedded (build.sh regenerates).
+//! shapes).
 
 use aura_booth::BoothType;
 
@@ -29,7 +28,7 @@ pub struct Echo {
 /// PTY carrier retired; nu rides the framed two-fifo adapter, so the
 /// booth's source IS the argv, pointing at the shared fixture.
 fn fixture_bgi_nu() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/crates/actor-guest/examples/bgi_nu.nu").to_string()
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/crates/bgi-guest/examples/bgi_nu.nu").to_string()
 }
 
 /// The registered set; carriers absent from this build are skipped at
@@ -80,24 +79,8 @@ pub fn echo_booths() -> Vec<Echo> {
         language: "bgi",
         source: format!("nu {}", fixture_bgi_nu()),
     });
-    #[cfg(feature = "wasmtime")]
-    v.push(Echo {
-        type_name: "echo_wasm",
-        language: "wasmtime",
-        // The wasm module exports the handler as `echo_wasm` (see the
-        // guest source); its base64 form is embedded by build.sh.
-        source: WASM_B64.into(),
-    });
     v
 }
-
-/// The Rust→wasm echo module (examples/echo-wasm), compiled
-/// no_std+cdylib for wasm32-unknown-unknown, carried as base64 (the
-/// carrier's binary-source form; WAT text is the other). The handler
-/// export is `echo_wasm` (build.sh rewrites this file — the .b64 IS a
-/// Rust string expression, `r#"..."#`).
-#[cfg(feature = "wasmtime")]
-const WASM_B64: &str = include_str!("../../../examples/echo-wasm/echo_wasm.b64");
 
 /// Convenience for tests that need one BoothType directly.
 pub fn echo_type(e: &Echo) -> BoothType {

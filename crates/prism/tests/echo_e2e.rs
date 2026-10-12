@@ -105,17 +105,6 @@ async fn python_echo_cbor() {
 // roundtrip); here only the booth's registration shape is asserted
 // (echo_sources_match_carrier_shapes).
 
-#[tokio::test]
-#[cfg(feature = "wasmtime")]
-async fn wasm_echo_json() {
-    echo_round_trip(Codec::Json, "echo_wasm").await;
-}
-#[tokio::test]
-#[cfg(feature = "wasmtime")]
-async fn wasm_echo_cbor() {
-    echo_round_trip(Codec::Cbor, "echo_wasm").await;
-}
-
 /// Fan-out: two connections, one broadcasts, BOTH receive the frame
 /// (the connection-table traversal shape of ADR-0017 §3 minus auth).
 #[tokio::test]
@@ -175,6 +164,4 @@ fn echo_sources_match_carrier_shapes() {
     #[cfg(feature = "python")]
     assert!(has("echo_python", "python", "def echo_python"));
     assert!(has("echo_nu", "bgi", "nu "));
-    #[cfg(feature = "wasmtime")]
-    assert!(has("echo_wasm", "wasmtime", "AGFzbQ")); // base64 magic of \0asm
 }

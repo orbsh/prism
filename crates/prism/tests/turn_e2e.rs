@@ -29,7 +29,12 @@ static REPLIES: std::sync::Mutex<Vec<Vec<String>>> = std::sync::Mutex::new(Vec::
 static REQ_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 fn set_reply(words: &[&str]) {
-    REPLIES.lock().unwrap().push(words.iter().map(|s| s.to_string()).collect());
+    // The stub serves the LAST pushed reply to every request until a
+    // new one lands: set_reply REPLACES rather than appends (tests run
+    // sequentially in this file, and REQ_COUNT accumulates across
+    // them — a round-robin over an append-only list would serve an
+    // earlier test's reply once the counter wrapped).
+    *REPLIES.lock().unwrap() = vec![words.iter().map(|s| s.to_string()).collect()];
 }
 
 async fn sse_server() -> String {
@@ -41,18 +46,25 @@ async fn sse_server() -> String {
                 let all = REPLIES.lock().unwrap();
                 all.get(idx % all.len().max(1)).cloned().unwrap_or_default()
             };
-            let mut sse = String::new();
-            for w in words {
-                // Pace: each token is a separate SSE chunk, and the
-                // generator's network read blocks between them — the
-                // stream stays live for mid-turn cancels.
+            // Real SSE pacing: one chunk per token, a few ms between
+            // them — the generator's network read blocks on the socket,
+            // so the stream is observably live and a mid-turn cancel
+            // lands BEFORE the tokens run out.
+            let chunks = futures_util::stream::iter(words.into_iter().map(|w| {
                 let payload = serde_json::json!({"choices": [{"delta": {"content": format!("{w} ")}}]});
-                sse.push_str(&format!("data: {payload}\n\n"));
-            }
-            sse.push_str("data: [DONE]\n\n");
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(format!("data: {payload}\n\n")))
+            }))
+            .chain(futures_util::stream::once(async {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                Ok(axum::body::Bytes::from("data: [DONE]\n\n"))
+            }))
+            .then(|b| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                b
+            });
             axum::response::Response::builder()
                 .header("content-type", "text/event-stream")
-                .body(axum::body::Body::from(sse))
+                .body(axum::body::Body::from_stream(chunks))
                 .unwrap()
         }),
     );
@@ -132,7 +144,7 @@ async fn authed(addr: SocketAddr) -> WsClient {
 /// closes; the deltas concatenate to the reply.
 #[tokio::test]
 async fn turn_submit_streams_provider_tokens() {
-    set_reply(&["hel", "lo ", "wor", "ld"]);
+    set_reply(&["hel", "lo", "wor", "ld"]);
     let addr = boot().await;
     let mut ws = authed(addr).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
@@ -146,7 +158,9 @@ async fn turn_submit_streams_provider_tokens() {
             other => panic!("unexpected frame {other}: {}", f.args),
         }
     }
-    assert_eq!(seen.trim_end(), "hello world", "provider tokens streamed as deltas");
+    // The SSE stub appends one space per token (each chunk is a word +
+    // its separator); the deltas concatenate to the spaced reply.
+    assert_eq!(seen.trim_end(), "hel lo wor ld", "provider tokens streamed as deltas");
 }
 
 /// A second submit while one turn is live is refused; after the turn

@@ -60,7 +60,6 @@ absent from the build skips its echo with a boot note, never silently):
 | `echo_priv`   | steel    | declares `auth` for its handler — the per-event auth proof |
 | `echo_python` | python   | `def echo_python(args): return args` |
 | `echo_nu`     | nushell  | `export def echo_nu [args] { $args }` |
-| `echo_wasm`   | wasmtime | Rust `#![no_std]` cdylib, `examples/echo-wasm` (the full-power path, ADR-0026 §4 — pure echo needs no bridge: zero okm, zero deps) |
 
 Landed (PLAN Phase 1 tail, 2026-10-09): `logout` — the device binding
 (§2's table) and the connection's auth field (§3) clear together, the
@@ -136,12 +135,6 @@ asyncio.run(main())
 EOF
 ```
 
-Rebuild the wasm echo after editing `examples/echo-wasm`:
-
-```sh
-./examples/echo-wasm/build.sh   # writes echo_wasm.b64, embedded by include_str!
-```
-
 ## Test
 
 ```sh
@@ -163,4 +156,3 @@ round-trip over every shape) is locked in `crates/prism-protocol`.
     crates/prism-protocol/   the wire Frame + JSON/CBOR codecs
     crates/prism/            gateway lib + binary (actors.rs = the
                              echoes; identity.rs = accounts/devices)
-    examples/echo-wasm/      the Rust-authored wasm echo (no_std, standalone)

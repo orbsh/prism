@@ -4,9 +4,6 @@ members = [
     "crates/prism-protocol",
     "crates/prism",
 ]
-# echo-wasm is wasm32-only (panic handler + no_std without host std);
-# build.sh compiles it standalone against --target wasm32-unknown-unknown.
-exclude = ["examples/echo-wasm"]
 
 [workspace.package]
 edition = "2021"

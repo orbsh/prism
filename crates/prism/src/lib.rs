@@ -114,9 +114,9 @@ impl Gateway {
         self.registry.nodes()
     }
 
-    /// Register the four-language echo booths (steel / python / nushell
-    /// embedded sources + the compiled Rust→wasm echo module). A
-    /// language carrier absent from this build skips its booth with a
+    /// Register the language echo booths (steel / python / nushell
+    /// embedded sources). A language carrier absent from this build
+    /// skips its booth with a
     /// note — the server still boots with the rest (the demo shape
     /// mirrors aura's feature-forwarded tests).
     pub async fn with_echoes(engine: &Engine) -> anyhow::Result<()> {
