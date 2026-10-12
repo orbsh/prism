@@ -179,7 +179,7 @@ fn parse_sha(hex: &str) -> Option<[u8; 32]> {
 /// through this, so the head peek costs the WS path nothing.
 pub(crate) struct Prefixed {
     prefix: std::io::Cursor<Vec<u8>>,
-    inner: TcpStream,
+    pub(crate) inner: TcpStream,
 }
 
 impl Prefixed {

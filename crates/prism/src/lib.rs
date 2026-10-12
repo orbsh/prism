@@ -42,6 +42,7 @@
 pub mod booths;
 pub mod admin;
 pub mod code_export;
+pub mod effectors;
 pub mod identity;
 pub mod nodes;
 pub mod turns;
@@ -192,6 +193,16 @@ impl Gateway {
         let mq = self.engine.realm.lock().await.mq.clone();
         if code_export::serve_code_export(&mq, &head, &mut stream).await {
             return Ok(());
+        }
+        // Effector dial-in (ADR-0017 §6): `/effector/<alias>` mounts the
+        // realm's remote-booth gateway on THIS accept loop. The head is
+        // still raw here — the effector's WS carries no `?protocol=`
+        // query, so it takes a bare accept over the prefixed stream
+        // (the upgrade replaying its head), not the client handshake.
+        if let Some(alias) = head.path.strip_prefix("/effector/").filter(|a| !a.is_empty() && !a.contains('/')) {
+            let stream = code_export::Prefixed::new(head.bytes, stream);
+            let ws = tokio_tungstenite::accept_async(stream).await?;
+            return effectors::serve_mounted(self.as_ref(), alias.to_string(), ws).await;
         }
         let stream = code_export::Prefixed::new(head.bytes, stream);
 

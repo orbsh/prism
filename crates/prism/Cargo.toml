@@ -22,12 +22,16 @@ futures-util = "0.3"
 base64 = "0.22"
 aura-realm = { path = "../../../aura/crates/realm" }
 gravity-booth = { path = "../../../gravity/crates/booth" }
+effector-protocol = { path = "../../../effector/crates/protocol" }
 
 [dev-dependencies]
 tempfile = "3"
 mem-server = { path = "../../../krystallizer/crates/mem-server" }
 axum = "0.8"
 tokio-tungstenite = { version = "0.24", features = ["handshake"] }
+aura-config = { path = "../../../aura/crates/config" }
+effector-runtime = { path = "../../../effector/crates/runtime" }
+effector-config = { path = "../../../effector/crates/config" }
 
 [features]
 default = ["steel", "python", "fjall"]
