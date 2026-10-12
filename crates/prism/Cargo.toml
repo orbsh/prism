@@ -30,10 +30,9 @@ axum = "0.8"
 tokio-tungstenite = { version = "0.24", features = ["handshake"] }
 
 [features]
-default = ["steel", "python", "wasmtime", "fjall"]
+default = ["steel", "python", "fjall"]
 steel = ["aura-engine/steel"]
 python = ["aura-engine/python"]
-wasmtime = ["aura-engine/wasmtime"]
 fjall = ["aura-engine/fjall"]
 
 [[bin]]
