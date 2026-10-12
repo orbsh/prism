@@ -24,11 +24,11 @@ pub struct Echo {
     pub source: String,
 }
 
-/// The bgi spawn spec source (ADR-0035): `nu <author.nu>` — the nushell
+/// The induction spawn spec source (ADR-0035): `nu <author.nu>` — the nushell
 /// PTY carrier retired; nu rides the framed two-fifo adapter, so the
 /// booth's source IS the argv, pointing at the shared fixture.
-fn fixture_bgi_nu() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/crates/runtime/examples/bgi_nu.nu").to_string()
+fn fixture_induction_nu() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/crates/runtime/examples/induction_nu.nu").to_string()
 }
 
 /// The registered set; carriers absent from this build are skipped at
@@ -76,8 +76,8 @@ pub fn echo_booths() -> Vec<Echo> {
     });
     v.push(Echo {
         type_name: "echo_nu",
-        language: "bgi",
-        source: format!("nu {}", fixture_bgi_nu()),
+        language: "induction",
+        source: format!("nu {}", fixture_induction_nu()),
     });
     v
 }

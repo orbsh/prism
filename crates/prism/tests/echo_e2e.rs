@@ -163,5 +163,5 @@ fn echo_sources_match_carrier_shapes() {
     assert!(has("echo_steel", "steel", "(define (echo_steel"));
     #[cfg(feature = "python")]
     assert!(has("echo_python", "python", "def echo_python"));
-    assert!(has("echo_nu", "bgi", "nu "));
+    assert!(has("echo_nu", "induction", "nu "));
 }
