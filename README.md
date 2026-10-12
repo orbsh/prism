@@ -79,9 +79,11 @@ refused. The submit gate reads the executor type's persisted
 interface_schema `auth` block — the SAME declaration face the echo
 plane enforces. The gateway drives the stream because the WS connection
 lives here; the executor booth is an ordinary realm citizen (the
-connection plane adapts, it does not bypass). The stub executor (python
-generator, paced) stands in for gravity's real turn executor — gravity
-replaces the body, not the shape.
+connection plane adapts, it does not bypass). The executor is gravity's
+REAL turn booth (LANDED 2026-10-12): a python generator fetching the
+projection from mem-server, pulling tokens through the provider booth,
+appending the exchange on success — deployment facts via env
+(TurnConfig), the key VALUE never crossing prism.
 
 Deliberately NOT here (the rest of ADR-0017, planned as later phases):
 `/admin` actor upload, `/effector/<alias>` mount
