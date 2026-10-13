@@ -79,21 +79,12 @@ fn env_required(name: &str) -> anyhow::Result<String> {
         .map_err(|_| anyhow::anyhow!("env var {name} not set (turn deployment fact)"))
 }
 
-/// Register gravity's turn + provider booths. A build without the
-/// python carrier leaves the types absent — `turn.submit` then answers
-/// `turn.error` instead of hanging on an unknown type.
+/// Register gravity's turn + provider booths (the two Rust induction
+/// guests — the spawn specs resolve the binaries on deployment; no
+/// carrier feature gates this build). Their absence (spec binaries not
+/// installed) surfaces at spawn as turn.error per call.
 pub async fn register_executor(engine: &Engine) -> anyhow::Result<()> {
-    #[cfg(feature = "python")]
-    {
-        engine.register(gravity_booth::provider_booth()).await?;
-        engine.register(gravity_booth::turn_booth()).await?;
-        Ok(())
-    }
-    #[cfg(not(feature = "python"))]
-    {
-        let _ = engine;
-        anyhow::bail!("turn executor needs the python carrier")
-    }
+    gravity_booth::register(engine).await
 }
 
 /// Live streams keyed by gateway connection id — one submit at a time

@@ -86,7 +86,18 @@ async fn mem_server() -> String {
 
 async fn boot() -> SocketAddr {
     // The turn deployment facts ride the env (TurnConfig::from_env) —
-    // declared here, pointed at the local stubs.
+    // declared here, pointed at the local stubs. The guest binaries are
+    // gravity's workspace build (path-adjacent repo, same conventions
+    // as the effector fixture: build gravity before running this test).
+    let gravity_bins = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../gravity/target/debug"
+    );
+    std::env::set_var(
+        "GRAVITY_PROVIDER_BIN",
+        format!("{gravity_bins}/gravity-provider"),
+    );
+    std::env::set_var("GRAVITY_TURN_BIN", format!("{gravity_bins}/gravity-turn"));
     let endpoint = sse_server().await;
     let store_url = mem_server().await;
     std::env::set_var("GRAVITY_STORE_URL", &store_url);
