@@ -77,11 +77,10 @@ const SRC: &str = r#"
 #[tokio::test]
 async fn effector_mount_roundtrip_and_presence() {
     let (addr, engine) = boot().await;
-    let http_port = serve_code_source(SRC);
 
-    // The remote booth type points at the node the effector will claim;
-    // code_base_url rides the engine config — but the engine booted
-    // without it, so this test boots its own (see boot_engine below).
+    // This test locks registration + the presence flip; the remote-booth
+    // round trip (which needs `code_base_url`) is its own test below, and it
+    // is the one that serves code.
 
     // Local target for the effector's ctx.invoke.
     engine
