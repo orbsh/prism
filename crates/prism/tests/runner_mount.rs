@@ -272,12 +272,29 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         "guest-scope state survives between calls (residency, not a fresh process)"
     );
 
-    // (The ctx bridge from a remote induction guest is NOT asserted here: a
-    // ctx_invoke out of the resident guest took the 30 s call deadline with no
-    // reply, so the chain — carrier `route_frame` → HostBridge → Frame::Host →
-    // prism's `host_wire::resolve_host_call` — has a break that is not yet
-    // located. Residency below is the part this test proves; the bridge is
-    // recorded as open in ADR-0001.)
+    // The ctx bridge out of the resident guest (ADR-0001 §8): the delivered
+    // script calls the sibling nu mount through the host realm and gets its
+    // VALUE back. It runs on a session that has ALREADY served two calls —
+    // the bridge is per-call state (it carries the enclosing remote call's
+    // id), so a session that kept only its cold-start bridge would answer
+    // "unknown call_id" here instead of reaching the sibling.
+    let bridged = engine
+        .invoke(
+            resident_target.clone(),
+            "execute",
+            serde_json::json!({
+                "code": "import json\nr = ctx_invoke('runner_nu', 'session-1', 'execute', \
+                         {'code': '{sum: (($env.TOOLRUNNER_ARGS | from json | get n) + 3)} | to json', \
+                         'args': {'n': 4}})\nprint(json.dumps({'bridged': r}))"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        bridged,
+        serde_json::json!({ "bridged": { "sum": 7 } }),
+        "the resident guest's ctx_invoke reached the sibling mount through the host realm"
+    );
 
     // A mount whose language this node was not built with: the carrier names
     // it, per call, as an error — the manifest↔carriers note at dial-in exists

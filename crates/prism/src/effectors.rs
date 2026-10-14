@@ -112,23 +112,40 @@ pub(crate) async fn serve_mounted(
                 // result (pending_calls' scan owns timeouts).
             }
             Frame::Host(HostFrame::Call(call)) => {
-                // Ctx bridge over the wire: resolve against the instance
-                // the enclosing remote call was routed to.
-                let instance = {
-                    let r = realm.lock().await;
-                    r.pending_remote.get(&call.call_id).map(|p| p.instance.clone())
-                };
-                let outcome = match instance {
-                    Some(inst) => {
-                        aura_engine::host_wire::resolve_host_call(&realm, &inst, &call.op).await
-                    }
-                    None => Err("unknown call_id: the enclosing remote call is not in flight".into()),
-                };
-                tx.send(Frame::Host(HostFrame::Result(effector_protocol::HostResult {
-                    host_call_id: call.host_call_id,
-                    outcome,
-                })))
-                .ok();
+                // Ctx bridge over the wire: resolve against the instance the
+                // enclosing remote call was routed to, then reply on this
+                // connection's writer. The resolution is SPAWNED, never
+                // awaited inline: it parks on a hot realm call whose
+                // `Frame::Result` can only be delivered by THIS reader loop,
+                // and a ctx target on this same node (the ordinary case —
+                // one node, several mounts) would wait for a message only
+                // this loop can read: a self-deadlock up to the call
+                // deadline. The loop's job is correlation, not resolution.
+                let realm = realm.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let instance = {
+                        let r = realm.lock().await;
+                        r.pending_remote
+                            .get(&call.call_id)
+                            .map(|p| p.instance.clone())
+                    };
+                    let outcome = match instance {
+                        Some(inst) => {
+                            aura_engine::host_wire::resolve_host_call(&realm, &inst, &call.op).await
+                        }
+                        None => Err(
+                            "unknown call_id: the enclosing remote call is not in flight".into(),
+                        ),
+                    };
+                    tx.send(Frame::Host(HostFrame::Result(
+                        effector_protocol::HostResult {
+                            host_call_id: call.host_call_id,
+                            outcome,
+                        },
+                    )))
+                    .ok();
+                });
             }
             other => anyhow::bail!("unexpected frame from effector: {other:?}"),
         }
