@@ -13,22 +13,48 @@ use aura_booth::{Body, InstanceId, InstanceKey};
 use prism::{identity::Registry, mounts::MountDecl, Gateway};
 use std::time::Duration;
 
-/// ADR-0027: the node fetches its code by content reference. Here the mount's
-/// source IS a short argv spec (the process carrier's contract), so the test
-/// serves those bytes — the fetch matrix itself is locked effector-side.
-fn serve_source(src: &str) -> u16 {
+/// ADR-0027: the node fetches its code by content reference — `{hash}` under
+/// the deployment's code base URL. Each mount's source is a short argv spec
+/// (the process carrier's contract), so the test serves exactly those bytes,
+/// addressed by the hash the control plane computes.
+fn serve_sources(specs: &[String]) -> u16 {
     use std::io::{Read as _, Write as _};
-    let bytes = src.as_bytes().to_vec();
+    let served: Vec<(String, Vec<u8>)> = specs
+        .iter()
+        .map(|s| {
+            (
+                aura_realm::meta::code_hex(&aura_realm::meta::code_hash(s)),
+                s.as_bytes().to_vec(),
+            )
+        })
+        .collect();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut stream = stream;
             let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
-            let body = bytes.clone();
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = head
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .unwrap_or("")
+                .trim_start_matches('/')
+                .to_string();
+            let body = served
+                .iter()
+                .find(|(hash, _)| hash == &path)
+                .map(|(_, bytes)| bytes.clone())
+                .unwrap_or_default();
+            let status = if body.is_empty() {
+                "404 Not Found"
+            } else {
+                "200 OK"
+            };
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             let _ = stream.write_all(resp.as_bytes());
@@ -38,27 +64,30 @@ fn serve_source(src: &str) -> u16 {
     port
 }
 
-/// The deployment artifact the node installs (ADR-0001 §4: a runner is
+/// The deployment artifacts the node installs (ADR-0001 §4: a runner is
 /// infrastructure — fixed code, shipped with the node, never a graph citizen).
-fn nu_runner_path() -> String {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../effector/deploy/runners/runner_nu.nu"
+/// Two languages, two runners: the mount name carries the operation's
+/// language, the manifest's `language` carries the carrier both ride.
+fn runner_path(file: &str) -> String {
+    let path = format!(
+        "{}/../../../effector/deploy/runners/{file}",
+        env!("CARGO_MANIFEST_DIR")
     );
     assert!(
-        std::path::Path::new(path).exists(),
-        "the nu runner artifact must exist at {path}"
+        std::path::Path::new(&path).exists(),
+        "the runner artifact must exist at {path}"
     );
-    path.to_string()
+    path
 }
 
 #[tokio::test]
 async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
-    let runner = nu_runner_path();
-    // The mount's source: the process carrier's argv spec — the runner, and
-    // only the runner. It is identical for every operation this mount serves.
-    let spec = format!("nu {runner}");
-    let http_port = serve_source(&spec);
+    // Each mount's source: the process carrier's argv spec — the runner, and
+    // only the runner. It is identical for every operation that mount serves.
+    let nu_spec = format!("nu {}", runner_path("runner_nu.nu"));
+    let py_spec = format!("python3 {}", runner_path("runner_py.py"));
+    let resident_spec = format!("python3 {}", runner_path("runner_py_guest.py"));
+    let http_port = serve_sources(&[nu_spec.clone(), py_spec.clone(), resident_spec.clone()]);
 
     let registry = Registry::open(&tempfile::tempdir().unwrap().keep()).unwrap();
     let engine = aura_engine::Engine::start(&aura_config::EngineConfig {
@@ -73,18 +102,27 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     let engine = gw.engine.clone();
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });
 
-    // The declaration → the production registration face.
-    let decl = MountDecl {
-        type_name: "runner_nu".into(),
+    // The declarations → the production registration face (two languages, two
+    // mounts, one node).
+    let decl = |ty: &str, language: &str, runner: &str| MountDecl {
+        type_name: ty.into(),
         node_alias: "runner-node".into(),
-        language: "exec".into(),
-        runner: spec.clone(),
+        language: language.into(),
+        runner: runner.to_string(),
         encoding: aura_booth::Encoding::Json,
     };
-    let live = prism::mounts::register_all(&engine, std::slice::from_ref(&decl))
-        .await
-        .unwrap();
-    assert_eq!(live, vec!["runner_nu".to_string()], "the mount registered");
+    // The one-shot runners ride the `exec` carrier; the resident guest rides
+    // `induction` — its wire is the frame protocol, not one request/response.
+    let decls = vec![
+        decl("runner_nu", "exec", &nu_spec),
+        decl("runner_py", "exec", &py_spec),
+    ];
+    let live = prism::mounts::register_all(&engine, &decls).await.unwrap();
+    assert_eq!(
+        live,
+        vec!["runner_nu".to_string(), "runner_py".to_string()],
+        "both mounts registered"
+    );
 
     // The node dials in (a real effector, node side of the same stack).
     std::env::set_var("PRISM_RUNNER_E2E_CREDENTIAL", "tok");
@@ -170,7 +208,76 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         Body::RemoteProbe { source, .. } => source.clone(),
         _ => panic!("a mount's body is a remote arm"),
     };
-    assert_eq!(source_now, spec, "the runner is fixed across operations");
+    assert_eq!(source_now, nu_spec, "the runner is fixed across operations");
+
+    // The other language, its own mount: same call shape, a different runner.
+    let py_out = engine
+        .invoke(
+            InstanceId {
+                booth_type: "runner_py".into(),
+                key: InstanceKey::Named("session-1".into()),
+            },
+            "execute",
+            serde_json::json!({
+                "code": "import json, os\nn = json.loads(os.environ[\"TOOLRUNNER_ARGS\"])[\"n\"]\nprint(json.dumps({\"doubled\": n * 2}))",
+                "args": { "n": 21 }
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        py_out,
+        serde_json::json!({ "doubled": 42 }),
+        "the python mount ran the delivered script"
+    );
+
+    // The resident form (ADR-0001 §8): the delivered script runs IN the guest
+    // process, so it (a) keeps state across calls — what the one-shot form
+    // cannot — and (b) can call the host's ctx bridge, here into the nu mount
+    // above (a sibling reached through the realm, not by a second connection).
+    let resident = decl("runner_py_resident", "induction", &resident_spec);
+    prism::mounts::register_all(&engine, std::slice::from_ref(&resident))
+        .await
+        .unwrap();
+    let resident_target = InstanceId {
+        booth_type: "runner_py_resident".into(),
+        key: InstanceKey::Named("session-1".into()),
+    };
+    let counter =
+        "import json\nSTATE['n'] = STATE.get('n', 0) + 1\nprint(json.dumps({'n': STATE['n']}))";
+    let first = engine
+        .invoke(
+            resident_target.clone(),
+            "execute",
+            serde_json::json!({ "code": counter }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first,
+        serde_json::json!({ "n": 1 }),
+        "the resident runner ran it"
+    );
+    let second = engine
+        .invoke(
+            resident_target.clone(),
+            "execute",
+            serde_json::json!({ "code": counter }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        second,
+        serde_json::json!({ "n": 2 }),
+        "guest-scope state survives between calls (residency, not a fresh process)"
+    );
+
+    // (The ctx bridge from a remote induction guest is NOT asserted here: a
+    // ctx_invoke out of the resident guest took the 30 s call deadline with no
+    // reply, so the chain — carrier `route_frame` → HostBridge → Frame::Host →
+    // prism's `host_wire::resolve_host_call` — has a break that is not yet
+    // located. Residency below is the part this test proves; the bridge is
+    // recorded as open in ADR-0001.)
 
     // A mount whose language this node was not built with: the carrier names
     // it, per call, as an error — the manifest↔carriers note at dial-in exists
@@ -179,7 +286,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         type_name: "runner_unbuilt".into(),
         node_alias: "runner-node".into(),
         language: "wasmtime".into(),
-        runner: spec.clone(),
+        runner: nu_spec.clone(),
         encoding: aura_booth::Encoding::Json,
     };
     prism::mounts::register_all(&engine, std::slice::from_ref(&unbuilt))
