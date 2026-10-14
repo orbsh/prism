@@ -44,6 +44,7 @@ pub mod admin;
 pub mod code_export;
 pub mod effectors;
 pub mod identity;
+pub mod mounts;
 pub mod nodes;
 pub mod turns;
 
@@ -139,6 +140,20 @@ impl Gateway {
             Ok(()) => println!("prism: turn executor live (gravity booths)"),
             Err(err) => eprintln!("prism: turn executor not registered: {err}"),
         }
+        Ok(())
+    }
+
+    /// Register the declared node mounts (ADR-0001): the deployment manifest
+    /// is read from `PRISM_MOUNTS` and replayed at every boot (mount
+    /// definitions are not persisted — the manifest is the durable form). An
+    /// install with no nodes is legal: this is a no-op then.
+    pub async fn with_mounts(engine: &Engine) -> anyhow::Result<()> {
+        let mounts = mounts::from_env()?;
+        if mounts.is_empty() {
+            return Ok(());
+        }
+        let live = mounts::register_all(engine, &mounts).await?;
+        println!("prism: node mounts live: {live:?}");
         Ok(())
     }
 

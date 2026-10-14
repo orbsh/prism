@@ -17,6 +17,8 @@ async fn main() -> anyhow::Result<()> {
     // restore story depends on it).
     let engine = Engine::start(&Default::default()).await?;
     Gateway::with_echoes(&engine).await?;
+    // The declared node mounts (ADR-0001): absent PRISM_MOUNTS = no nodes.
+    Gateway::with_mounts(&engine).await?;
     let dir = std::env::var("PRISM_DATA").unwrap_or_else(|_| "prism-data".into());
     let registry = Registry::open(std::path::Path::new(&dir))?;
     // The trust posture is DECLARED, never defaulted (ADR-0015 §7):
