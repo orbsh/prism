@@ -102,11 +102,14 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     let engine = gw.engine.clone();
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });
 
-    // The declarations → the production registration face (two languages, two
-    // mounts, one node).
-    let decl = |ty: &str, language: &str, runner: &str| MountDecl {
+    // The declarations → the production registration face (two mounts, one
+    // node). Each mount names BOTH axes: the carrier its runner rides, and the
+    // operation language it serves (the axis a skill's declared language is
+    // matched against).
+    let decl = |ty: &str, carrier: &str, language: &str, runner: &str| MountDecl {
         type_name: ty.into(),
         node_alias: "runner-node".into(),
+        carrier: carrier.into(),
         language: language.into(),
         runner: runner.to_string(),
         encoding: aura_booth::Encoding::Json,
@@ -114,8 +117,8 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     // The one-shot runners ride the `exec` carrier; the resident guest rides
     // `induction` — its wire is the frame protocol, not one request/response.
     let decls = vec![
-        decl("runner_nu", "exec", &nu_spec),
-        decl("runner_py", "exec", &py_spec),
+        decl("runner_nu", "exec", "nu", &nu_spec),
+        decl("runner_py", "exec", "python", &py_spec),
     ];
     let live = prism::mounts::register_all(&engine, &decls).await.unwrap();
     assert_eq!(
@@ -235,7 +238,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     // process, so it (a) keeps state across calls — what the one-shot form
     // cannot — and (b) can call the host's ctx bridge, here into the nu mount
     // above (a sibling reached through the realm, not by a second connection).
-    let resident = decl("runner_py_resident", "induction", &resident_spec);
+    let resident = decl("runner_py_resident", "induction", "python", &resident_spec);
     prism::mounts::register_all(&engine, std::slice::from_ref(&resident))
         .await
         .unwrap();
@@ -296,13 +299,14 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         "the resident guest's ctx_invoke reached the sibling mount through the host realm"
     );
 
-    // A mount whose language this node was not built with: the carrier names
+    // A mount whose CARRIER this node was not built with: the carrier names
     // it, per call, as an error — the manifest↔carriers note at dial-in exists
     // to catch this drift early, and it is not a refusal mechanism.
     let unbuilt = MountDecl {
         type_name: "runner_unbuilt".into(),
         node_alias: "runner-node".into(),
-        language: "wasmtime".into(),
+        carrier: "wasmtime".into(),
+        language: "nu".into(),
         runner: nu_spec.clone(),
         encoding: aura_booth::Encoding::Json,
     };
@@ -415,10 +419,11 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
 /// and a mismatch is a stated line rather than a silent one.
 #[test]
 fn the_manifest_and_the_announced_carriers_are_compared() {
-    let mount = |ty: &str, lang: &str| MountDecl {
+    let mount = |ty: &str, carrier: &str| MountDecl {
         type_name: ty.into(),
         node_alias: "n1".into(),
-        language: lang.into(),
+        carrier: carrier.into(),
+        language: "nu".into(),
         runner: "nu /opt/runner/runner_nu.nu".into(),
         encoding: aura_booth::Encoding::Json,
     };
@@ -432,6 +437,14 @@ fn the_manifest_and_the_announced_carriers_are_compared() {
     assert!(
         line.contains("induction") && line.contains("not carried"),
         "the line names what is missing: {line}"
+    );
+    // The carrier comparison is the CARRIER's: the operation language is not a
+    // node capability (a node is never asked to "carry" nu — and the line must
+    // not imply one, or the two axes blur into the name-carrying convention
+    // this field retired).
+    assert!(
+        !line.contains("nu"),
+        "the drift statement stays on the carrier axis: {line}"
     );
 
     assert!(

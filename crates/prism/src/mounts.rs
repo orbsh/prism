@@ -10,9 +10,14 @@
 //!
 //! Registration is idempotent per boot: `RemoteProbe` definitions are not
 //! persisted (aura 4.5b's scope is script booths), so the manifest is the
-//! durable form and boot replays it. The manifest also declares WHICH
-//! language each mount serves — the language↔node fact the dial-in frame
-//! announces (`Frame::Register.carriers`) but that nothing consumed yet.
+//! durable form and boot replays it. A declaration names BOTH axes, so
+//! neither has to be inferred from the other: `carrier` is the node facility
+//! the call runs in — the axis `Frame::Register.carriers` announces, and the
+//! only one a node can lack — while `language` is the OPERATION language the
+//! mount serves, i.e. the axis a skill's declared language is matched
+//! against. A mount's name carries nothing: it is just the callable type name
+//! (ADR-0001 §7 — making the operation language a first-class manifest field
+//! is no longer open).
 //!
 //! Everything here is a declared deployment fact, never guessed: a mount
 //! whose entry is missing a field is a boot error, not a default.
@@ -22,7 +27,8 @@ use aura_engine::Engine;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// One mount declaration: (node alias × language) → the runner serving it.
+/// One mount declaration: (node alias × operation language) → the runner
+/// serving it.
 #[derive(Clone, Debug)]
 pub struct MountDecl {
     /// The callable type name — what `ctx.invoke` addresses.
@@ -31,6 +37,11 @@ pub struct MountDecl {
     pub node_alias: String,
     /// The carrier the call runs in (`exec`, `induction`, …) — the node must
     /// carry it or the call is an error value.
+    pub carrier: String,
+    /// The OPERATION language this mount serves (`nu`, `python`, …): the axis
+    /// a skill's declared language is matched against when routing. A
+    /// declaration, not a dispatch mechanism — the runner spec is what runs,
+    /// and per ADR-0001 §7 the LLM never picks a carrier.
     pub language: String,
     /// The runner: the process carrier's argv spec, or a carrier's source.
     pub runner: String,
@@ -40,8 +51,8 @@ pub struct MountDecl {
 }
 
 impl MountDecl {
-    /// Parse one manifest entry: `{"type", "alias", "language", "runner",
-    /// "encoding"?}`.
+    /// Parse one manifest entry: `{"type", "alias", "carrier", "language",
+    /// "runner", "encoding"?}`.
     pub fn from_json(v: &Value) -> anyhow::Result<Self> {
         let s = |k: &str| -> anyhow::Result<String> {
             v.get(k)
@@ -57,6 +68,7 @@ impl MountDecl {
         Ok(Self {
             type_name: s("type")?,
             node_alias: s("alias")?,
+            carrier: s("carrier")?,
             language: s("language")?,
             runner: s("runner")?,
             encoding,
@@ -69,7 +81,10 @@ impl MountDecl {
             name: self.type_name.clone(),
             body: Body::RemoteProbe {
                 node_alias: self.node_alias.clone(),
-                language: self.language.clone(),
+                // The body's `language` IS the carrier here: it is what the
+                // node's dispatch selects a session runtime with (aura's
+                // spawn_session key), not the operation's language.
+                language: self.carrier.clone(),
                 source: self.runner.clone(),
                 encoding: self.encoding,
             },
@@ -101,14 +116,18 @@ pub fn from_env() -> anyhow::Result<Vec<MountDecl>> {
     entries.iter().map(MountDecl::from_json).collect()
 }
 
-/// The languages the manifest declares for a node alias — the other half of
-/// the language↔node fact (the dial-in frame announces what the node was
-/// BUILT with; the manifest says what its mounts EXPECT).
-pub fn declared_languages(mounts: &[MountDecl], alias: &str) -> Vec<String> {
+/// The CARRIERS the manifest expects for a node alias — the other half of the
+/// carrier↔node fact (the dial-in frame announces what the node was BUILT
+/// with; the manifest says what its mounts' calls run in). The operation
+/// language is deliberately NOT part of this comparison: a node cannot lack a
+/// language it was never asked to carry — an operation the node's mounts
+/// cannot serve is named per call by the runner, and the manifest's
+/// `language` field is the axis a skill is matched on, not a node capability.
+pub fn declared_carriers(mounts: &[MountDecl], alias: &str) -> Vec<String> {
     mounts
         .iter()
         .filter(|m| m.node_alias == alias)
-        .map(|m| m.language.clone())
+        .map(|m| m.carrier.clone())
         .collect()
 }
 
@@ -116,7 +135,7 @@ pub fn declared_languages(mounts: &[MountDecl], alias: &str) -> Vec<String> {
 /// announced, or `None` when they agree (or when nothing is declared for this
 /// alias). Pure — the manifest is an argument.
 pub fn drift_line(mounts: &[MountDecl], alias: &str, announced: &[String]) -> Option<String> {
-    let want = declared_languages(mounts, alias);
+    let want = declared_carriers(mounts, alias);
     if want.is_empty() {
         return None;
     }
