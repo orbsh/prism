@@ -337,6 +337,77 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         err.starts_with("runner_nu: delivered code failed"),
         "the runner reports its own failure text, got: {out}"
     );
+
+    // ADR-0001 §3: entry `execute` is a CONVENTION, never a lookup — nothing
+    // validates the name (effector keeps no table), so a caller that invents
+    // one still lands on the delivered code, and the name it sent is DATA the
+    // script can read rather than a key that decides dispatch. The one-shot
+    // runner hands it over as TOOLRUNNER_ENTRY; the resident runner serves its
+    // one job under any name at all.
+    let out = engine
+        .invoke(
+            InstanceId {
+                booth_type: "runner_nu".into(),
+                key: InstanceKey::Named("session-1".into()),
+            },
+            "the_caller_made_this_name_up",
+            serde_json::json!({
+                "code": "{entry: $env.TOOLRUNNER_ENTRY, ran: true} | to json",
+                "args": {}
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({ "entry": "the_caller_made_this_name_up", "ran": true }),
+        "an unrecognised entry name still runs the delivered code"
+    );
+
+    let out = engine
+        .invoke(
+            resident_target.clone(),
+            "the_caller_made_this_name_up",
+            serde_json::json!({ "code": "import json\nprint(json.dumps({'ran': True}))" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({ "ran": true }),
+        "the resident runner serves its one job under any entry name too"
+    );
+
+    // ctx.emit out of the resident guest (ADR-0043 §5 — fire-and-forget by
+    // contract): the arm IS answered over the wire (reply pairing is protocol),
+    // but the delivered script reads nothing and keeps running. A mount
+    // declares no routes, so an emit from one reaches no consumer — and the
+    // fact is not dropped silently: it lands in the dead ring with its reason
+    // (ADR-0038 §4), which is what makes the leg assertable here.
+    let out = engine
+        .invoke(
+            resident_target.clone(),
+            "execute",
+            serde_json::json!({
+                "code": "import json\nctx_emit('mount.something_happened', {'n': 1})\n\
+                         print(json.dumps({'emitted': True}))"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        serde_json::json!({ "emitted": true }),
+        "an emit does not park the delivered script (no reply is read)"
+    );
+    let dead = engine.realm.lock().await.dead_events.detailed();
+    assert!(
+        dead.iter()
+            .any(|(event, data, reason)| event == "mount.something_happened"
+                && data == &serde_json::json!({ "n": 1 })
+                && *reason == aura_realm::event::DeadReason::NoRoute),
+        "the emit is observable with its reason (never silently dropped), got: {dead:?}"
+    );
 }
 
 /// The language↔node fact (ADR-0001): the manifest declares what a node's
