@@ -172,6 +172,36 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     };
     assert_eq!(source_now, spec, "the runner is fixed across operations");
 
+    // A mount whose language this node was not built with: the carrier names
+    // it, per call, as an error — the manifest↔carriers note at dial-in exists
+    // to catch this drift early, and it is not a refusal mechanism.
+    let unbuilt = MountDecl {
+        type_name: "runner_unbuilt".into(),
+        node_alias: "runner-node".into(),
+        language: "wasmtime".into(),
+        runner: spec.clone(),
+        encoding: aura_booth::Encoding::Json,
+    };
+    prism::mounts::register_all(&engine, std::slice::from_ref(&unbuilt))
+        .await
+        .unwrap();
+    let err = engine
+        .invoke(
+            InstanceId {
+                booth_type: "runner_unbuilt".into(),
+                key: InstanceKey::Named("session-1".into()),
+            },
+            "execute",
+            serde_json::json!({ "code": "{ok: true} | to json" }),
+        )
+        .await
+        .expect_err("a language the node does not carry is an error, not a silent miss");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("wasmtime"),
+        "the carrier names the un-carried language, got: {msg}"
+    );
+
     // A failing script is a VALUE going into the next inference round, never
     // a masked carrier failure (ADR-0012 at the runner boundary).
     let out = invoke("error make {msg: \"boom\"}").await.unwrap();
@@ -182,5 +212,44 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     assert!(
         err.starts_with("runner_nu: delivered code failed"),
         "the runner reports its own failure text, got: {out}"
+    );
+}
+
+/// The language↔node fact (ADR-0001): the manifest declares what a node's
+/// mounts expect, the dial-in frame announces what the node was BUILT with,
+/// and a mismatch is a stated line rather than a silent one.
+#[test]
+fn the_manifest_and_the_announced_carriers_are_compared() {
+    let mount = |ty: &str, lang: &str| MountDecl {
+        type_name: ty.into(),
+        node_alias: "n1".into(),
+        language: lang.into(),
+        runner: "nu /opt/runner/runner_nu.nu".into(),
+        encoding: aura_booth::Encoding::Json,
+    };
+    let mounts = vec![
+        mount("runner_nu", "exec"),
+        mount("runner_nu_ind", "induction"),
+    ];
+
+    let line = prism::mounts::drift_line(&mounts, "n1", &["exec".to_string()])
+        .expect("a node missing a declared carrier is reported");
+    assert!(
+        line.contains("induction") && line.contains("not carried"),
+        "the line names what is missing: {line}"
+    );
+
+    assert!(
+        prism::mounts::drift_line(
+            &mounts,
+            "n1",
+            &["exec".to_string(), "induction".to_string()]
+        )
+        .is_none(),
+        "agreement is silent"
+    );
+    assert!(
+        prism::mounts::drift_line(&mounts, "other-node", &["exec".to_string()]).is_none(),
+        "an alias nothing is declared for is silent"
     );
 }

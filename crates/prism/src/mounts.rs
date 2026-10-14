@@ -101,6 +101,52 @@ pub fn from_env() -> anyhow::Result<Vec<MountDecl>> {
     entries.iter().map(MountDecl::from_json).collect()
 }
 
+/// The languages the manifest declares for a node alias — the other half of
+/// the language↔node fact (the dial-in frame announces what the node was
+/// BUILT with; the manifest says what its mounts EXPECT).
+pub fn declared_languages(mounts: &[MountDecl], alias: &str) -> Vec<String> {
+    mounts
+        .iter()
+        .filter(|m| m.node_alias == alias)
+        .map(|m| m.language.clone())
+        .collect()
+}
+
+/// One line stating a carrier mismatch between the manifest and what a node
+/// announced, or `None` when they agree (or when nothing is declared for this
+/// alias). Pure — the manifest is an argument.
+pub fn drift_line(mounts: &[MountDecl], alias: &str, announced: &[String]) -> Option<String> {
+    let want = declared_languages(mounts, alias);
+    if want.is_empty() {
+        return None;
+    }
+    let missing: Vec<&str> = want
+        .iter()
+        .map(String::as_str)
+        .filter(|l| !announced.iter().any(|a| a == l))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "prism: node '{alias}' announced carriers {announced:?} but its mounts declare {want:?} \
+         — not carried: {missing:?}"
+    ))
+}
+
+/// The dial-in path's form of [`drift_line`]: reads the manifest from the
+/// environment (a boot fact; cheap to re-read) and reports an unreadable
+/// manifest here rather than swallowing it — the connection path has nowhere
+/// to return it.
+pub fn dial_in_note(alias: &str, announced: &[String]) -> Option<String> {
+    match from_env() {
+        Ok(mounts) => drift_line(&mounts, alias, announced),
+        Err(e) => Some(format!(
+            "prism: mount manifest unreadable at '{alias}' registration: {e}"
+        )),
+    }
+}
+
 /// Register every declared mount, returning the type names that went live.
 /// One bad entry is reported and skipped rather than taking the gateway down
 /// (the same tolerance `with_echoes` shows for a carrier a build lacks).

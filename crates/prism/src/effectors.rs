@@ -44,7 +44,7 @@ pub(crate) async fn serve_mounted(
 
     // Registration: alias + carriers. The frame's alias must equal the
     // path's (the URL segment is the claim this socket arrived under).
-    let (node_alias, _carriers) = match stream.next().await {
+    let (node_alias, carriers) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
             Frame::Register { node_alias, carriers, .. } if node_alias == path_alias => {
                 (node_alias, carriers)
@@ -58,6 +58,15 @@ pub(crate) async fn serve_mounted(
     };
     sink.send(Message::Text(serde_json::to_string(&Frame::Registered)?))
         .await?;
+
+    // The language↔node fact (ADR-0001): the frame announces the carriers this
+    // node was built with, the manifest declares what its mounts expect. Drift
+    // is stated, never silent (the same disclosure rule the alias-replacement
+    // line above follows); it is NOT a refusal — a call into an un-carried
+    // language answers with the carrier's own error value per call.
+    if let Some(line) = crate::mounts::dial_in_note(&node_alias, &carriers) {
+        eprintln!("{line}");
+    }
 
     // Writer channel: realm calls push frames; this task owns the sink.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
