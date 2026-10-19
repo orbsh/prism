@@ -48,6 +48,12 @@ pub struct TurnConfig {
     pub model: String,
     /// The env var NAME holding the LLM API key.
     pub key_env: String,
+    /// How k10r should render the memory it hands back
+    /// (`plaintext` / `markdown` / `mermaid`; `GRAVITY_MEMORY_FORMAT`,
+    /// default `plaintext`). The executor refuses `struct` — it returns the
+    /// fact data for a caller that assembles the graph itself — so prism
+    /// passes the value through and gravity raises the error.
+    pub memory_format: String,
 }
 
 impl TurnConfig {
@@ -59,6 +65,8 @@ impl TurnConfig {
             endpoint: env_required("GRAVITY_ENDPOINT")?,
             model: env_required("GRAVITY_MODEL")?,
             key_env: env_required("GRAVITY_KEY_ENV")?,
+            memory_format: std::env::var("GRAVITY_MEMORY_FORMAT")
+                .unwrap_or_else(|_| "plaintext".to_string()),
         })
     }
 
@@ -70,6 +78,7 @@ impl TurnConfig {
             "endpoint": self.endpoint,
             "model": self.model,
             "key_env": self.key_env,
+            "memory_format": self.memory_format,
         })
     }
 }
