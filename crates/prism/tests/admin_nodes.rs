@@ -6,6 +6,7 @@
 //! the WS regression (the admin branch must not swallow upgrades) and
 //! the posture wiring (the boot declares `open` in its log; the type
 //! has no default to inherit).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_engine::Engine;
 use prism::{

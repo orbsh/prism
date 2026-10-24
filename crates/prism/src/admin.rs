@@ -160,6 +160,10 @@ pub(crate) fn json_response(status: u16, value: &serde_json::Value) -> Vec<u8> {
         409 => "Conflict",
         _ => "OK",
     };
+    // `value` is a `serde_json::Value` built by `json!`: every shape serde can
+    // reject (non-string map keys, NaN floats) is unrepresentable in it, so the
+    // encode is infallible by construction.
+    #[allow(clippy::expect_used)]
     let body = serde_json::to_vec(value).expect("json! output always serializes");
     let mut out = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\

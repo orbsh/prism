@@ -8,6 +8,7 @@
 //! reference for the operation itself (the mount's source is the runner, and
 //! only the runner). The delivered script prints one JSON document; a failed
 //! script returns an error VALUE rather than a masked carrier failure.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_booth::{Body, InstanceId, InstanceKey};
 use prism::{identity::Registry, mounts::MountDecl, Gateway};

@@ -175,7 +175,7 @@ fn classify(v: &Value, done: bool) -> Pulled {
 /// `take` is idempotent — a cancel that freed the slot already is fine).
 macro_rules! fail_turn {
     ($table:expr, $conn:expr, $send:expr, $($arg:tt)+) => {{
-        $table.lock().unwrap().take($conn);
+        $table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take($conn);
         $send("turn.error", json!({ "message": $($arg)+ }));
         return;
     }};
@@ -250,7 +250,7 @@ pub async fn run_turn(
             let Some(id) = v.get("stream_id").and_then(|s| s.as_str()).map(String::from) else {
                 fail_turn!(table, conn, send, "protocol: no stream id on first reply");
             };
-            if !table.lock().unwrap().put(conn, id.clone()) {
+            if !table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).put(conn, id.clone()) {
                 // The slot was freed underneath (cancel raced the
                 // start): abandon the stream — dispose and stop.
                 let _ = Realm::iterate(&realm, IterateOp::Dispose { stream_id: id }).await;
@@ -262,7 +262,7 @@ pub async fn run_turn(
             Pulled::Delta(d) => send("turn.delta", json!({"delta": d})),
             Pulled::Done(value) => {
                 send("turn.done", json!({"value": value}));
-                table.lock().unwrap().take(conn);
+                table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(conn);
                 return;
             }
             Pulled::Malformed(m) => {

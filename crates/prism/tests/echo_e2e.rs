@@ -2,6 +2,7 @@
 //! echoes, drive every verb over a REAL WebSocket — JSON debug codec
 //! and CBOR default both exercised. This is the acceptance map for the
 //! prism Phase 0+1 landing (ADR-0017 §4 shape, reduced to echo scope).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_engine::Engine;
 use prism::{booths, identity::Registry, Gateway};

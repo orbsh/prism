@@ -42,3 +42,6 @@ fjall = ["aura-engine/fjall"]
 [[bin]]
 name = "prism"
 path = "src/main.rs"
+
+[lints]
+workspace = true

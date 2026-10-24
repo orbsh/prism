@@ -6,6 +6,7 @@
 //! address — self-verifying by construction. Also locks: 404 on an
 //! unknown hash, 400 on a malformed address, and the WS path alive on
 //! the same port (the head-replay regression).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_engine::Engine;
 use aura_realm::meta;

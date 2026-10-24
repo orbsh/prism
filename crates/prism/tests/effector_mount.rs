@@ -7,6 +7,7 @@
 //! the path and the frame state the alias twice (one fact), and the
 //! registration dies with the connection (replacement discipline,
 //! ADR-0015 §7).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
 use prism::{identity::Registry, Gateway};

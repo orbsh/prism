@@ -39,6 +39,11 @@
 //! ADR-0017 — deliberately not here; README states the gap so it reads
 //! as scope, not as drift.
 
+
+// Unit tests may use the unwrap/panic vocabulary the production targets are
+// denied (a panicking test is a failing test). `cfg(test)` is on only for this
+// crate's own test build; `tests/` crates set the same line at their own root.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
 pub mod booths;
 pub mod admin;
 pub mod code_export;
@@ -225,7 +230,7 @@ impl Gateway {
         let slot = Arc::clone(&hs_slot);
         let ws = tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {
             let query = req.uri().query().unwrap_or("");
-            *slot.lock().unwrap() = Some(Handshake {
+            *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Handshake {
                 codec: Codec::from_query(query_param(query, "protocol")),
                 device: query_param(query, "device").and_then(|v| v.parse().ok()),
             });
@@ -236,7 +241,7 @@ impl Gateway {
         // The callback ran during the handshake; `unwrap_or` only
         // guards a handshake that never reached `accept`.
         let Handshake { codec, device } =
-            hs_slot.lock().unwrap().clone().unwrap_or(Handshake { codec: Codec::Cbor, device: None });
+            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Cbor, device: None });
         let (mut write, mut read) = ws.split();
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -245,12 +250,17 @@ impl Gateway {
         // §2 identity mount: a real echoed device restores its binding;
         // anything else (absent, unknown, unparseable) is a fresh
         // connect — a guessed id mints a NEW row, gaining nothing.
-        let (device, user0) = match device.filter(|d| self.registry.device_user(*d).is_some()) {
-            Some(d) => (d, self.registry.device_user(d).unwrap()),
+        // One lookup feeds the decision and the value: filtering on
+        // `is_some()` and then unwrapping re-asks a question whose answer
+        // was already in hand.
+        let (device, user0) = match device
+            .and_then(|d| self.registry.device_user(d).map(|u| (d, u)))
+        {
+            Some((d, u)) => (d, u),
             None => (self.registry.new_device()?, 0),
         };
         let user = Arc::new(AtomicU64::new(user0));
-        self.conns.lock().unwrap().insert(
+        self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id,
             Conn { tx: tx.clone(), user: Arc::clone(&user), device },
         );
@@ -289,13 +299,13 @@ impl Gateway {
             // dropped write half.
             let _ = write.send(Message::Close(None)).await;
             let _ = write.flush().await;
-            conns.lock().unwrap().remove(&id);
+            conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
         });
 
         let result = self.inbound(id, &mut read, codec).await;
         pump.abort();
         let _ = pump.await;
-        self.conns.lock().unwrap().remove(&id);
+        self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
         result
     }
 
@@ -345,7 +355,7 @@ impl Gateway {
                 // it so the predicate takes effect on THIS connection
                 // immediately; the device-table binding is the
                 // cross-reconnect fact and is cleared with it.
-                if let Some(conn) = self.conns.lock().unwrap().get(&id) {
+                if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
                     conn.user.store(0, Ordering::Relaxed);
                 }
                 self.send_to(id, Frame::new("logout.result", serde_json::json!({"ok": true})));
@@ -429,7 +439,7 @@ impl Gateway {
         self.registry.revoke_device(device_id)?;
         let mut kicked = 0;
         let mut dead = Vec::new();
-        let mut conns = self.conns.lock().unwrap();
+        let mut conns = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for (id, c) in conns.iter() {
             if c.device == device_id {
                 c.user.store(0, Ordering::Relaxed);
@@ -463,7 +473,7 @@ impl Gateway {
     /// free, deltas flow as `turn.delta` frames, `turn.done` (terminal
     /// value) or `turn.error` closes.
     async fn turn_submit(&self, id: u64, args: serde_json::Value) {
-        if self.turns_arc().lock().unwrap().is_live(id) {
+        if self.turns_arc().lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_live(id) {
             self.send_to(
                 id,
                 Frame::new(
@@ -500,7 +510,7 @@ impl Gateway {
         let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
         // Reserve SYNCHRONOUSLY — the duplicate check above and this
         // insert are one dispatch pass, no spawn can interleave.
-        self.turns_arc().lock().unwrap().reserve(id);
+        self.turns_arc().lock().unwrap_or_else(std::sync::PoisonError::into_inner).reserve(id);
         // The deployment facts: read per submit (env). A missing fact
         // reports as turn.error — the session plane serves without it.
         let config = match turns::TurnConfig::from_env() {
@@ -510,7 +520,7 @@ impl Gateway {
                     id,
                     Frame::new("turn.error", serde_json::json!({"message": e.to_string()})),
                 );
-                self.turns_arc().lock().unwrap().take(id);
+                self.turns_arc().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(id);
                 return;
             }
         };
@@ -518,7 +528,7 @@ impl Gateway {
         let realm = Arc::clone(&self.engine.realm);
         let table = self.turns_arc();
         let send = move |ev: &str, a: serde_json::Value| {
-            if let Some(c) = conns.lock().unwrap().get(&id) {
+            if let Some(c) = conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
                 let _ = c.tx.send(Frame::new(ev, a));
             }
         };
@@ -535,7 +545,7 @@ impl Gateway {
     fn turn_cancel(&self, id: u64) {
         let taken = {
             let t = self.turns_arc();
-            let mut guard = t.lock().unwrap();
+            let mut guard = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // A minted id disposes directly; a still-unminted one
             // would have its put rejected by the freed slot — so
             // poll briefly before freeing.
@@ -543,7 +553,7 @@ impl Gateway {
                 for _ in 0..50 {
                     drop(guard);
                     std::thread::sleep(std::time::Duration::from_millis(10));
-                    guard = t.lock().unwrap();
+                    guard = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if guard.live_of(id).is_some() {
                         break;
                     }
@@ -582,7 +592,7 @@ impl Gateway {
         };
         match outcome {
             Ok(user_id) => {
-                if let Some(conn) = self.conns.lock().unwrap().get(&id) {
+                if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
                     conn.user.store(user_id, Ordering::Relaxed);
                 }
                 self.send_to(id, Frame::new(format!("{ev}.result"), serde_json::json!({"user_id": user_id})));
@@ -632,7 +642,7 @@ impl Gateway {
     }
 
     fn identities(&self, id: u64) -> (u64, u64) {
-        let guard = self.conns.lock().unwrap();
+        let guard = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.get(&id) {
             Some(c) => (c.device, c.user.load(Ordering::Relaxed)),
             None => (0, 0),
@@ -658,7 +668,7 @@ impl Gateway {
     }
 
     fn send_to(&self, id: u64, frame: Frame) {
-        if let Some(c) = self.conns.lock().unwrap().get(&id) {
+        if let Some(c) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
             let _ = c.tx.send(frame);
         }
     }

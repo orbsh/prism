@@ -7,6 +7,7 @@
 //! a duplicate submit while one turn is live is refused. This is the
 //! end-to-end chain: WS → gateway pump → gravity turn generator →
 //! provider SSE → mem-server append.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_engine::Engine;
 use prism::{identity::Registry, Gateway};

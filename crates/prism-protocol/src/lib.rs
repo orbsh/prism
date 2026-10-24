@@ -13,6 +13,11 @@
 //! must stay shape-compatible across both (maintenance rule: one model,
 //! two codec impls, a conformance round-trip over every variant).
 
+
+// Unit tests may use the unwrap/panic vocabulary the production targets are
+// denied (a panicking test is a failing test). `cfg(test)` is on only for this
+// crate's own test build; `tests/` crates set the same line at their own root.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
 use serde::{Deserialize, Serialize};
 
 /// The one wire frame. `args` is the event payload — the same object a
@@ -50,6 +55,11 @@ impl Codec {
         }
     }
 
+    /// `Frame` is a plain tagged struct of strings and `serde_json::Value` —
+    /// every shape serde can fail on (non-string map keys, NaN floats) is
+    /// unrepresentable in it, so the codec is infallible by construction. A
+    /// `Result` here would only push an unreachable error onto every caller.
+    #[allow(clippy::expect_used)]
     pub fn encode(&self, frame: &Frame) -> Vec<u8> {
         match self {
             Codec::Json => serde_json::to_vec(frame).expect("Frame always serializes"),

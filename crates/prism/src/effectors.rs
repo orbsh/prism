@@ -37,9 +37,11 @@ pub(crate) async fn serve_mounted(
     let realm = gw.engine.realm.clone();
     // The peer before the split: SplitStream wraps a BiLock (no
     // get_ref) — the registry entry's peer must be captured here.
-    let peer = ws.get_ref().inner.peer_addr().unwrap_or_else(|_| {
-        "0.0.0.0:0".parse().expect("fallback peer parses")
-    });
+    let peer = ws
+        .get_ref()
+        .inner
+        .peer_addr()
+        .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
     let (mut sink, mut stream) = ws.split();
 
     // Registration: alias + carriers. The frame's alias must equal the

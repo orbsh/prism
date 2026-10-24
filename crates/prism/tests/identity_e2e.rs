@@ -4,6 +4,7 @@
 //! per-connection auth field driving `broadcast {to: "auth"}`, and the
 //! sender envelope reaching a booth. Registry on a real fjall
 //! directory (durability is the feature under test, not plumbing).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_engine::Engine;
 use prism::{identity::Registry, Gateway};
