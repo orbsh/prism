@@ -115,15 +115,17 @@ impl Registry {
     /// from the watermark, persist the anonymous row.
     pub fn new_device(&self) -> anyhow::Result<u64> {
         let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
+        // A missing accumulator is the empty registry (id 0); a failed read
+        // is not — it propagates.
         let watermark = okm_core::reduce_get::<_, __OkmReduce_Device_0>(
             t.store(),
             <Device as Document>::NS_PREFIX,
             &DeviceKey { id: 0 },
             &Device { id: 0, user_id: 0, revoked: 0, global: 0 },
-        )
+        )?
         .unwrap_or(0);
         let id = watermark + 1;
-        t.put(&DeviceKey { id }, &Device { id, user_id: 0, revoked: 0, global: 0 });
+        t.put(&DeviceKey { id }, &Device { id, user_id: 0, revoked: 0, global: 0 })?;
         Ok(id)
     }
 
@@ -132,11 +134,11 @@ impl Registry {
     /// row, gaining nothing). A REVOKED row also reads None: the echo
     /// does not restore a binding the server deliberately killed —
     /// re-login is the only path back.
-    pub fn device_user(&self, id: u64) -> Option<u64> {
+    pub fn device_user(&self, id: u64) -> anyhow::Result<Option<u64>> {
         let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
-        t.get(&DeviceKey { id })
+        Ok(t.get(&DeviceKey { id })?
             .filter(|d| d.user_id != 0 && d.revoked == 0)
-            .map(|d| d.user_id)
+            .map(|d| d.user_id))
     }
 
     /// signup: create the account and bind the device in one pass.
@@ -155,7 +157,7 @@ impl Registry {
         }
         let hash = hash_password(password)?;
         let t = Collection::<_, AccountKey, Account>::new(self.store.clone());
-        if self.find_account(username).is_some() {
+        if self.find_account(username)?.is_some() {
             return Err(anyhow!("username taken"));
         }
         let watermark = okm_core::reduce_get::<_, __OkmReduce_Account_0>(
@@ -169,7 +171,7 @@ impl Registry {
                 password_hash: String::new(),
                 global: 0,
             },
-        )
+        )?
         .unwrap_or(0);
         let id = watermark + 1;
         t.put(
@@ -181,8 +183,8 @@ impl Registry {
                 password_hash: hash,
                 global: 0,
             },
-        );
-        self.bind_device(device_id, id);
+        )?;
+        self.bind_device(device_id, id)?;
         Ok(id)
     }
 
@@ -191,9 +193,9 @@ impl Registry {
     /// share one error string — the gateway does not distinguish (user
     /// enumeration is deployment's problem, not this table's).
     pub fn login(&self, username: &str, password: &str, device_id: u64) -> anyhow::Result<u64> {
-        let account = self.find_account(username).ok_or_else(|| anyhow!("invalid credentials"))?;
+        let account = self.find_account(username)?.ok_or_else(|| anyhow!("invalid credentials"))?;
         verify_password(password, &account.password_hash)?;
-        self.bind_device(device_id, account.id);
+        self.bind_device(device_id, account.id)?;
         Ok(account.id)
     }
 
@@ -201,9 +203,10 @@ impl Registry {
     /// Idempotent by construction — an anonymous device unbinds to the
     /// same state. The gateway separately clears its per-connection
     /// auth field; the two facts are independent (§3: the field drives
-    /// fan-out, the table survives reconnects).
-    pub fn logout(&self, device_id: u64) {
-        self.bind_device(device_id, 0);
+    /// fan-out, the table survives reconnects). The unbind is a write,
+    /// so it reports.
+    pub fn logout(&self, device_id: u64) -> anyhow::Result<()> {
+        self.bind_device(device_id, 0)
     }
 
     /// Server-side revocation (Phase 1 tail): the server kills the
@@ -217,26 +220,26 @@ impl Registry {
     /// binding (the caller reports it; 0 = was anonymous).
     pub fn revoke_device(&self, device_id: u64) -> anyhow::Result<u64> {
         let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
-        let Some(mut d) = t.get(&DeviceKey { id: device_id }) else {
+        let Some(mut d) = t.get(&DeviceKey { id: device_id })? else {
             return Err(anyhow!("unknown device {device_id}"));
         };
         let was = d.user_id;
         d.user_id = 0;
         d.revoked = now_ms();
-        t.put(&DeviceKey { id: device_id }, &d);
+        t.put(&DeviceKey { id: device_id }, &d)?;
         Ok(was)
     }
 
-    fn find_account(&self, username: &str) -> Option<Account> {
+    fn find_account(&self, username: &str) -> anyhow::Result<Option<Account>> {
         let t = Collection::<_, AccountKey, Account>::new(self.store.clone());
-        t.scan::<AccountByName>(username.as_bytes())
+        Ok(t.scan::<AccountByName>(username.as_bytes())?
             .into_iter()
-            .find_map(|h| h.1.filter(|a| a.username == username))
+            .find_map(|h| h.1.filter(|a| a.username == username)))
     }
 
-    fn bind_device(&self, device_id: u64, user_id: u64) {
+    fn bind_device(&self, device_id: u64, user_id: u64) -> anyhow::Result<()> {
         let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
-        if let Some(mut d) = t.get(&DeviceKey { id: device_id }) {
+        if let Some(mut d) = t.get(&DeviceKey { id: device_id })? {
             d.user_id = user_id;
             // A fresh authentication re-earns the anchor's trust: the
             // revocation stamp clears with the successful bind (the
@@ -245,8 +248,9 @@ impl Registry {
             if user_id != 0 {
                 d.revoked = 0;
             }
-            t.put(&DeviceKey { id: device_id }, &d);
+            t.put(&DeviceKey { id: device_id }, &d)?;
         }
+        Ok(())
     }
 }
 
@@ -300,11 +304,11 @@ mod tests {
 
         // device binding: unknown device -> None; after login the row
         // carries the user (the reconnect restore source).
-        assert_eq!(r.device_user(9), None, "unknown device");
+        assert_eq!(r.device_user(9).unwrap(), None, "unknown device");
         let d = r.new_device().unwrap();
         let uid = r.login("alice", "pw-a", d).unwrap();
         assert_eq!(uid, alice);
-        assert_eq!(r.device_user(d), Some(alice), "binding durable");
+        assert_eq!(r.device_user(d).unwrap(), Some(alice), "binding durable");
     }
 
     /// Server-side revocation (Phase 1 tail): the binding clears AND
@@ -318,15 +322,15 @@ mod tests {
         let alice = r.signup("alice", "Ali", "pw-a", 0).unwrap();
         let d = r.new_device().unwrap();
         r.login("alice", "pw-a", d).unwrap();
-        assert_eq!(r.device_user(d), Some(alice));
+        assert_eq!(r.device_user(d).unwrap(), Some(alice));
 
         // revoke: binding gone, trust gone.
         assert_eq!(r.revoke_device(d).unwrap(), alice, "reports the prior binding");
-        assert_eq!(r.device_user(d), None, "revoked device restores nothing");
+        assert_eq!(r.device_user(d).unwrap(), None, "revoked device restores nothing");
 
         // re-login re-binds AND clears the stamp (the only way back).
         assert_eq!(r.login("alice", "pw-a", d).unwrap(), alice);
-        assert_eq!(r.device_user(d), Some(alice), "fresh login re-earns trust");
+        assert_eq!(r.device_user(d).unwrap(), Some(alice), "fresh login re-earns trust");
 
         // unknown device: a refused decision, not a silent success.
         assert!(r.revoke_device(999).is_err());
@@ -334,9 +338,9 @@ mod tests {
         // logout stays stamp-free: unbind, re-login, no interlock.
         let d2 = r.new_device().unwrap();
         r.login("alice", "pw-a", d2).unwrap();
-        r.logout(d2);
-        assert_eq!(r.device_user(d2), None);
+        r.logout(d2).unwrap();
+        assert_eq!(r.device_user(d2).unwrap(), None);
         assert_eq!(r.login("alice", "pw-a", d2).unwrap(), alice);
-        assert_eq!(r.device_user(d2), Some(alice));
+        assert_eq!(r.device_user(d2).unwrap(), Some(alice));
     }
 }

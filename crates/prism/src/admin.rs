@@ -41,10 +41,15 @@ pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u
             },
             Err(e) => plain(400, &e.to_string()),
         },
-        ("GET", "/nodes") => {
-            let rows: Vec<_> = nodes.list().iter().map(row_json).collect();
-            json_response(200, &json!(rows))
-        }
+        ("GET", "/nodes") => match nodes.list() {
+            Ok(rows) => {
+                let rows: Vec<_> = rows.iter().map(row_json).collect();
+                json_response(200, &json!(rows))
+            }
+            // The engine could not answer the read: that is the server's
+            // own fault, not the operator's request — 500, with its text.
+            Err(e) => plain(500, &e.to_string()),
+        },
         ("POST", other) => match other.strip_prefix("/nodes/").and_then(|a| a.strip_suffix("/approve")) {
             Some(alias) => {
                 // The key is optional (unique-pending approval); empty
@@ -158,6 +163,7 @@ pub(crate) fn json_response(status: u16, value: &serde_json::Value) -> Vec<u8> {
         400 => "Bad Request",
         404 => "Not Found",
         409 => "Conflict",
+        500 => "Internal Server Error",
         _ => "OK",
     };
     // `value` is a `serde_json::Value` built by `json!`: every shape serde can

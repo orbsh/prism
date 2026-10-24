@@ -109,8 +109,8 @@ async fn approval_lifecycle_over_http() {
     assert_eq!(approved["status"], "approved");
     // The handshake seam sees it: registered for the key, conflict for
     // another (the record is the SAME table the approval wrote).
-    assert_eq!(nodes.verdict("home-pc", "AAA="), Verdict::Registered);
-    assert_eq!(nodes.verdict("home-pc", "BBB="), Verdict::Conflict);
+    assert_eq!(nodes.verdict("home-pc", "AAA=").unwrap(), Verdict::Registered);
+    assert_eq!(nodes.verdict("home-pc", "BBB=").unwrap(), Verdict::Conflict);
 
     // Rotation: enroll + approve a second key → the first demotes (§6).
     request(addr, "POST", "/admin/nodes", Some(json!({"alias": "home-pc", "public_key": "BBB="})))
@@ -123,8 +123,8 @@ async fn approval_lifecycle_over_http() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(nodes.verdict("home-pc", "BBB="), Verdict::Registered);
-    assert_eq!(nodes.verdict("home-pc", "AAA="), Verdict::Conflict);
+    assert_eq!(nodes.verdict("home-pc", "BBB=").unwrap(), Verdict::Registered);
+    assert_eq!(nodes.verdict("home-pc", "AAA=").unwrap(), Verdict::Conflict);
 
     // Revoke the alias → live keys fall to pending-verdict (revoked),
     // a fresh claim queues again — never self-service.

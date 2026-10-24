@@ -120,12 +120,12 @@ impl NodeStore {
     /// attempt — approving the queued row is §6's rotation); a revoked
     /// row of the claimant revives to pending when nothing else holds
     /// the alias — a re-decision, never self-service.
-    pub fn verdict(&self, alias: &str, public_key: &str) -> Verdict {
+    pub fn verdict(&self, alias: &str, public_key: &str) -> anyhow::Result<Verdict> {
         let t = self.table();
-        let rows = self.rows_of(alias);
+        let rows = self.rows_of(alias)?;
         let mine = rows.iter().find(|n| n.public_key == public_key);
         if mine.map(|n| n.status.as_str()) == Some("approved") {
-            return Verdict::Registered;
+            return Ok(Verdict::Registered);
         }
         let alias_taken = rows
             .iter()
@@ -133,25 +133,25 @@ impl NodeStore {
         if alias_taken {
             // Surface the attempt: queue it if it is not already a row.
             if mine.is_none() {
-                let _ = self.create(alias, public_key);
+                self.create(alias, public_key)?;
             }
-            return Verdict::Conflict;
+            return Ok(Verdict::Conflict);
         }
         match mine {
-            Some(n) if n.status == "pending" => Verdict::Pending,
+            Some(n) if n.status == "pending" => Ok(Verdict::Pending),
             Some(n) => {
                 // revoked: revive to the queue (the operator re-decides).
                 let mut revived = n.clone();
                 revived.status = "pending".into();
-                t.put(&NodeKey { id: revived.id }, &revived);
-                Verdict::Pending
+                t.put(&NodeKey { id: revived.id }, &revived)?;
+                Ok(Verdict::Pending)
             }
-            None => match self.create(alias, public_key) {
-                Ok(_) => Verdict::Pending,
-                // A creation race (same key won by another connection)
-                // still means "awaiting approval".
-                Err(_) => Verdict::Pending,
-            },
+            // A fresh claim queues itself; a write the engine refuses is
+            // reported, never read as "awaiting approval".
+            None => {
+                self.create(alias, public_key)?;
+                Ok(Verdict::Pending)
+            }
         }
     }
 
@@ -164,7 +164,7 @@ impl NodeStore {
         let t = self.table();
         // Same (alias, key) already live → idempotent (return the row).
         if let Some(existing) = self
-            .rows_of(alias)
+            .rows_of(alias)?
             .into_iter()
             .find(|n| n.public_key == public_key && n.status != "revoked")
         {
@@ -175,7 +175,7 @@ impl NodeStore {
             <Node as Document>::NS_PREFIX,
             &NodeKey { id: 0 },
             &Node::default(),
-        )
+        )?
         .unwrap_or(0);
         let row = Node {
             id: watermark + 1,
@@ -185,7 +185,7 @@ impl NodeStore {
             created_at: now_ms(),
             global: 0,
         };
-        t.put(&NodeKey { id: row.id }, &row);
+        t.put(&NodeKey { id: row.id }, &row)?;
         Ok(row)
     }
 
@@ -195,7 +195,7 @@ impl NodeStore {
     /// a previously approved key for the alias falls to `revoked` (§6).
     pub fn approve(&self, alias: &str, public_key: Option<&str>) -> anyhow::Result<Node> {
         let t = self.table();
-        let rows = self.rows_of(alias);
+        let rows = self.rows_of(alias)?;
         let target = match public_key {
             Some(k) => rows.iter().find(|n| n.public_key == k && n.status != "revoked"),
             None => {
@@ -214,11 +214,11 @@ impl NodeStore {
         for old in rows.iter().filter(|n| n.status == "approved" && n.id != target.id) {
             let mut demoted = old.clone();
             demoted.status = "revoked".into();
-            t.put(&NodeKey { id: demoted.id }, &demoted);
+            t.put(&NodeKey { id: demoted.id }, &demoted)?;
         }
         let mut approved = target;
         approved.status = "approved".into();
-        t.put(&NodeKey { id: approved.id }, &approved);
+        t.put(&NodeKey { id: approved.id }, &approved)?;
         Ok(approved)
     }
 
@@ -229,12 +229,12 @@ impl NodeStore {
     pub fn revoke(&self, alias: &str, public_key: Option<&str>) -> anyhow::Result<usize> {
         let t = self.table();
         let mut n = 0usize;
-        for row in self.rows_of(alias) {
+        for row in self.rows_of(alias)? {
             let hit = public_key.map_or(true, |k| k == row.public_key);
             if hit && row.status != "revoked" {
                 let mut dead = row;
                 dead.status = "revoked".into();
-                t.put(&NodeKey { id: dead.id }, &dead);
+                t.put(&NodeKey { id: dead.id }, &dead)?;
                 n += 1;
             }
         }
@@ -246,20 +246,26 @@ impl NodeStore {
 
     /// Every record, newest id last (the `GET /admin/nodes` listing;
     /// connection-scale table, a full key scan is the cheap shape).
-    pub fn list(&self) -> Vec<Node> {
+    pub fn list(&self) -> anyhow::Result<Vec<Node>> {
         let t = self.table();
-        let mut ids: Vec<u64> = t.scan_keys().into_iter().map(|k| k.id).collect();
+        let mut ids: Vec<u64> = t.scan_keys()?.into_iter().map(|k| k.id).collect();
         ids.sort();
-        ids.into_iter().filter_map(|id| t.get(&NodeKey { id })).collect()
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(row) = t.get(&NodeKey { id })? {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
     }
 
-    fn rows_of(&self, alias: &str) -> Vec<Node> {
+    fn rows_of(&self, alias: &str) -> anyhow::Result<Vec<Node>> {
         let t = self.table();
-        t.scan::<NodeByAlias>(alias.as_bytes())
+        Ok(t.scan::<NodeByAlias>(alias.as_bytes())?
             .into_iter()
             .filter_map(|h| h.1)
             .filter(|n| n.alias == alias)
-            .collect()
+            .collect())
     }
 }
 
@@ -285,39 +291,39 @@ mod tests {
     fn verdict_lifecycle() {
         let s = store();
         // Fresh claim → pending + a visible row.
-        assert_eq!(s.verdict("home-pc", "KEY-A"), Verdict::Pending);
-        assert_eq!(s.list().len(), 1);
+        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Pending);
+        assert_eq!(s.list().unwrap().len(), 1);
         // Retry is idempotent pending (same row, no duplicate).
-        assert_eq!(s.verdict("home-pc", "KEY-A"), Verdict::Pending);
-        assert_eq!(s.list().len(), 1);
+        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Pending);
+        assert_eq!(s.list().unwrap().len(), 1);
         // Approve by alias (unique pending) → registered.
         let approved = s.approve("home-pc", None).unwrap();
         assert_eq!(approved.public_key, "KEY-A");
-        assert_eq!(s.verdict("home-pc", "KEY-A"), Verdict::Registered);
+        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Registered);
         // A different key under the alias → conflict, never takeover.
-        assert_eq!(s.verdict("home-pc", "KEY-B"), Verdict::Conflict);
+        assert_eq!(s.verdict("home-pc", "KEY-B").unwrap(), Verdict::Conflict);
         assert_eq!(
-            s.list().iter().find(|n| n.public_key == "KEY-B").unwrap().status,
+            s.list().unwrap().iter().find(|n| n.public_key == "KEY-B").unwrap().status,
             "pending",
             "the conflicting claim is still queued for the operator"
         );
         // Rotation: approve KEY-B → A demotes to revoked (§6).
         s.approve("home-pc", Some("KEY-B")).unwrap();
-        assert_eq!(s.verdict("home-pc", "KEY-B"), Verdict::Registered);
-        assert_eq!(s.verdict("home-pc", "KEY-A"), Verdict::Conflict);
+        assert_eq!(s.verdict("home-pc", "KEY-B").unwrap(), Verdict::Registered);
+        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Conflict);
         // Revocation: B falls to revoked; a revoked key re-claiming is
         // back to pending, never self-service (the revive rewrote B).
         s.revoke("home-pc", None).unwrap();
-        assert_eq!(s.verdict("home-pc", "KEY-B"), Verdict::Pending);
-        assert_eq!(s.list().iter().filter(|n| n.status == "pending").count(), 1, "only B revived");
-        assert_eq!(s.list().iter().filter(|n| n.status == "revoked").count(), 1, "A stays a tombstone");
+        assert_eq!(s.verdict("home-pc", "KEY-B").unwrap(), Verdict::Pending);
+        assert_eq!(s.list().unwrap().iter().filter(|n| n.status == "pending").count(), 1, "only B revived");
+        assert_eq!(s.list().unwrap().iter().filter(|n| n.status == "revoked").count(), 1, "A stays a tombstone");
     }
 
     #[test]
     fn approve_is_never_a_guess() {
         let s = store();
-        s.verdict("two-pending", "K1");
-        s.verdict("two-pending", "K2");
+        s.verdict("two-pending", "K1").unwrap();
+        s.verdict("two-pending", "K2").unwrap();
         // Two pending, keyless approve → refused (the honest-cost
         // comparison is the operator's job).
         assert!(s.approve("two-pending", None).is_err());

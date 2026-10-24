@@ -253,10 +253,11 @@ impl Gateway {
         // One lookup feeds the decision and the value: filtering on
         // `is_some()` and then unwrapping re-asks a question whose answer
         // was already in hand.
-        let (device, user0) = match device
-            .and_then(|d| self.registry.device_user(d).map(|u| (d, u)))
-        {
-            Some((d, u)) => (d, u),
+        let (device, user0) = match device {
+            Some(d) => match self.registry.device_user(d)? {
+                Some(u) => (d, u),
+                None => (self.registry.new_device()?, 0),
+            },
             None => (self.registry.new_device()?, 0),
         };
         let user = Arc::new(AtomicU64::new(user0));
@@ -350,15 +351,25 @@ impl Gateway {
             }
             "logout" => {
                 let device = self.identities(id).0;
-                self.registry.logout(device);
-                // §3: the per-connection field drives fan-out — clear
-                // it so the predicate takes effect on THIS connection
+                // §3: the per-connection field drives fan-out — clear it
+                // so the predicate takes effect on THIS connection
                 // immediately; the device-table binding is the
-                // cross-reconnect fact and is cleared with it.
-                if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
-                    conn.user.store(0, Ordering::Relaxed);
+                // cross-reconnect fact and is cleared with it. A refused
+                // unbind leaves BOTH facts alone (the row still binds,
+                // so the live field must not claim otherwise) and reports
+                // itself as an error value — the socket stays up.
+                match self.registry.logout(device) {
+                    Ok(()) => {
+                        if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
+                            conn.user.store(0, Ordering::Relaxed);
+                        }
+                        self.send_to(id, Frame::new("logout.result", serde_json::json!({"ok": true})));
+                    }
+                    Err(e) => self.send_to(
+                        id,
+                        Frame::new("error", serde_json::json!({"ev": "logout", "message": e.to_string()})),
+                    ),
                 }
-                self.send_to(id, Frame::new("logout.result", serde_json::json!({"ok": true})));
                 return;
             }
             "broadcast" => {
