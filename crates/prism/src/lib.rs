@@ -534,7 +534,7 @@ impl Gateway {
     /// (logout's shape).
     fn turn_cancel(&self, id: u64) {
         let taken = {
-            let mut t = self.turns_arc();
+            let t = self.turns_arc();
             let mut guard = t.lock().unwrap();
             // A minted id disposes directly; a still-unminted one
             // would have its put rejected by the freed slot — so

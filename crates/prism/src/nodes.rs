@@ -121,7 +121,7 @@ impl NodeStore {
     /// row of the claimant revives to pending when nothing else holds
     /// the alias — a re-decision, never self-service.
     pub fn verdict(&self, alias: &str, public_key: &str) -> Verdict {
-        let mut t = self.table();
+        let t = self.table();
         let rows = self.rows_of(alias);
         let mine = rows.iter().find(|n| n.public_key == public_key);
         if mine.map(|n| n.status.as_str()) == Some("approved") {
@@ -161,7 +161,7 @@ impl NodeStore {
         if alias.is_empty() || public_key.is_empty() {
             return Err(anyhow!("alias and public_key are required"));
         }
-        let mut t = self.table();
+        let t = self.table();
         // Same (alias, key) already live → idempotent (return the row).
         if let Some(existing) = self
             .rows_of(alias)
@@ -194,7 +194,7 @@ impl NodeStore {
     /// (an ambiguous queue is refused, never guessed). Approval rotates:
     /// a previously approved key for the alias falls to `revoked` (§6).
     pub fn approve(&self, alias: &str, public_key: Option<&str>) -> anyhow::Result<Node> {
-        let mut t = self.table();
+        let t = self.table();
         let rows = self.rows_of(alias);
         let target = match public_key {
             Some(k) => rows.iter().find(|n| n.public_key == k && n.status != "revoked"),
@@ -227,7 +227,7 @@ impl NodeStore {
     /// approved) record of the alias. Rows survive as `revoked` —
     /// tombstones, not erasure.
     pub fn revoke(&self, alias: &str, public_key: Option<&str>) -> anyhow::Result<usize> {
-        let mut t = self.table();
+        let t = self.table();
         let mut n = 0usize;
         for row in self.rows_of(alias) {
             let hit = public_key.map_or(true, |k| k == row.public_key);

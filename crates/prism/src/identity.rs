@@ -114,7 +114,7 @@ impl Registry {
     /// First connect (or unknown-`?device=` echo): mint a device id
     /// from the watermark, persist the anonymous row.
     pub fn new_device(&self) -> anyhow::Result<u64> {
-        let mut t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
         let watermark = okm_core::reduce_get::<_, __OkmReduce_Device_0>(
             t.store(),
             <Device as Document>::NS_PREFIX,
@@ -154,7 +154,7 @@ impl Registry {
             return Err(anyhow!("username and password are required"));
         }
         let hash = hash_password(password)?;
-        let mut t = Collection::<_, AccountKey, Account>::new(self.store.clone());
+        let t = Collection::<_, AccountKey, Account>::new(self.store.clone());
         if self.find_account(username).is_some() {
             return Err(anyhow!("username taken"));
         }
@@ -216,7 +216,7 @@ impl Registry {
     /// again. Idempotent like logout. Returns the revoked row's prior
     /// binding (the caller reports it; 0 = was anonymous).
     pub fn revoke_device(&self, device_id: u64) -> anyhow::Result<u64> {
-        let mut t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
         let Some(mut d) = t.get(&DeviceKey { id: device_id }) else {
             return Err(anyhow!("unknown device {device_id}"));
         };
@@ -235,7 +235,7 @@ impl Registry {
     }
 
     fn bind_device(&self, device_id: u64, user_id: u64) {
-        let mut t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceKey, Device>::new(self.store.clone());
         if let Some(mut d) = t.get(&DeviceKey { id: device_id }) {
             d.user_id = user_id;
             // A fresh authentication re-earns the anchor's trust: the
