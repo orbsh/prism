@@ -125,7 +125,7 @@ pub(crate) async fn serve_code_export(mq: &MqStore, head: &Head, stream: &mut Tc
         None => plain(400, "expected /code/<64-char-hex-sha256>"),
         Some(_) if !head.is_get() => plain(405, "GET only"),
         Some(sha) => match meta::get_blob(mq, &sha) {
-            Some(bytes) => {
+            Ok(Some(bytes)) => {
                 let mut b = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
                      Content-Length: {}\r\nCache-Control: public, max-age=31536000, immutable\r\n\
@@ -136,7 +136,9 @@ pub(crate) async fn serve_code_export(mq: &MqStore, head: &Head, stream: &mut Tc
                 b.extend_from_slice(&bytes);
                 b
             }
-            None => plain(404, "no blob under this address"),
+            // Absence is a 404; a store that cannot answer is not absence.
+            Ok(None) => plain(404, "no blob under this address"),
+            Err(e) => plain(500, &format!("blob store: {e}")),
         },
     };
     let _ = stream.write_all(&body).await;
@@ -150,6 +152,7 @@ pub(crate) fn plain(status: u16, msg: &str) -> Vec<u8> {
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
+        500 => "Internal Server Error",
         _ => "OK",
     };
     format!(
