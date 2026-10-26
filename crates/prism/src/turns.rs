@@ -54,6 +54,12 @@ pub struct TurnConfig {
     /// fact data for a caller that assembles the graph itself — so prism
     /// passes the value through and gravity raises the error.
     pub memory_format: String,
+    /// The k10r namespace the memory TOOLS reach (`GRAVITY_MEMORY_SCOPE`).
+    /// Optional by the ruling (gravity ADR-0004 §5): a namespace is k10r's
+    /// declaration, so it rides the args as a deployment fact — and an
+    /// ABSENT one makes the affected tool fail with the fact named, never
+    /// fall back to a default namespace that may belong to someone else.
+    pub memory_scope: Option<u64>,
 }
 
 impl TurnConfig {
@@ -67,19 +73,31 @@ impl TurnConfig {
             key_env: env_required("GRAVITY_KEY_ENV")?,
             memory_format: std::env::var("GRAVITY_MEMORY_FORMAT")
                 .unwrap_or_else(|_| "plaintext".to_string()),
+            memory_scope: match std::env::var("GRAVITY_MEMORY_SCOPE") {
+                Ok(raw) => Some(raw.parse().map_err(|_| {
+                    anyhow::anyhow!("GRAVITY_MEMORY_SCOPE `{raw}` is not a namespace id")
+                })?),
+                Err(_) => None,
+            },
         })
     }
 
     /// The deployment-fact slice of the turn args (the per-turn fields
     /// — channel/member/message — are added by `run_turn`).
     fn as_args(&self) -> Value {
-        json!({
+        let mut args = json!({
             "store_url": self.store_url,
             "endpoint": self.endpoint,
             "model": self.model,
             "key_env": self.key_env,
             "memory_format": self.memory_format,
-        })
+        });
+        // Absent stays absent: the tool names the missing fact rather than
+        // reading a namespace nobody declared (gravity ADR-0004 §5).
+        if let Some(scope) = self.memory_scope {
+            args["memory_scope"] = json!(scope);
+        }
+        args
     }
 }
 
