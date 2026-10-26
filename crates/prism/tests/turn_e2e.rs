@@ -14,65 +14,72 @@ use prism::{identity::Registry, Gateway};
 use prism_protocol::{Codec, Frame};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
 type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// The LLM SSE stub: answers every /chat/completions with a streamed
-/// reply assembled from a per-request word list (round-robin over
-/// SUBMITTED Replies — the token events flow one per chunk, and the
-/// PAUSE_MS pacing between chunks keeps the stream observably live for
-/// the cancel test). Replies are pushed by tests via `set_reply`.
-static REPLIES: std::sync::Mutex<Vec<Vec<String>>> = std::sync::Mutex::new(Vec::new());
-static REQ_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// The fixture's ONE process-wide deployment. `TurnConfig` is read from
+/// the environment per submit (prism's custody rule: names in config,
+/// values in the environment), so two tests in one process cannot each
+/// own a store URL and an endpoint — whichever `boot()` ran last would
+/// retarget the other's turn. Hold this guard for a test's whole body;
+/// everything else (the SSE stub, the store, the gateway) is per test.
+/// The mutex is tokio's, not std's: the guard is held across awaits for
+/// the length of a test.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn set_reply(words: &[&str]) {
-    // The stub serves the LAST pushed reply to every request until a
-    // new one lands: set_reply REPLACES rather than appends (tests run
-    // sequentially in this file, and REQ_COUNT accumulates across
-    // them — a round-robin over an append-only list would serve an
-    // earlier test's reply once the counter wrapped).
-    *REPLIES.lock().unwrap() = vec![words.iter().map(|s| s.to_string()).collect()];
+async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().await
 }
 
-async fn sse_server() -> String {
+/// The SSE stub's reply, owned by the server instance that serves it.
+/// Process-wide reply state would let one test answer another's request
+/// (cargo runs a binary's tests in parallel threads) — the reply
+/// travels with the endpoint, not with the binary.
+type Replies = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// The LLM SSE stub: answers every /chat/completions from THIS server's
+/// word list, one chunk per token. An empty list answers `[DONE]` alone
+/// (a test that never reaches the provider still gets a valid stream).
+async fn sse_server(words: &[&str]) -> (String, Replies) {
+    let replies: Replies = std::sync::Arc::new(std::sync::Mutex::new(
+        words.iter().map(|word| word.to_string()).collect(),
+    ));
+    let served = replies.clone();
     let app = axum::Router::new().route(
         "/chat/completions",
-        axum::routing::post(|| async {
-            let idx = REQ_COUNT.fetch_add(1, Ordering::SeqCst);
-            let words = {
-                let all = REPLIES.lock().unwrap();
-                all.get(idx % all.len().max(1)).cloned().unwrap_or_default()
-            };
-            // Real SSE pacing: one chunk per token, a few ms between
-            // them — the generator's network read blocks on the socket,
-            // so the stream is observably live and a mid-turn cancel
-            // lands BEFORE the tokens run out.
-            let chunks = futures_util::stream::iter(words.into_iter().map(|w| {
-                let payload = serde_json::json!({"choices": [{"delta": {"content": format!("{w} ")}}]});
-                Ok::<_, std::io::Error>(axum::body::Bytes::from(format!("data: {payload}\n\n")))
-            }))
-            .chain(futures_util::stream::once(async {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                Ok(axum::body::Bytes::from("data: [DONE]\n\n"))
-            }))
-            .then(|b| async move {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                b
-            });
-            axum::response::Response::builder()
-                .header("content-type", "text/event-stream")
-                .body(axum::body::Body::from_stream(chunks))
-                .unwrap()
+        axum::routing::post(move || {
+            let words = served.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            async move {
+                // Real SSE pacing: one chunk per token, a few ms between
+                // them — the generator's network read blocks on the
+                // socket, so the stream is observably live and a mid-turn
+                // cancel lands BEFORE the tokens run out.
+                let chunks = futures_util::stream::iter(words.into_iter().map(|w| {
+                    let payload = serde_json::json!({"choices": [{"delta": {"content": format!("{w} ")}}]});
+                    Ok::<_, std::io::Error>(axum::body::Bytes::from(format!("data: {payload}\n\n")))
+                }))
+                .chain(futures_util::stream::once(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    Ok(axum::body::Bytes::from("data: [DONE]\n\n"))
+                }))
+                .then(|b| async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    b
+                });
+                axum::response::Response::builder()
+                    .header("content-type", "text/event-stream")
+                    .body(axum::body::Body::from_stream(chunks))
+                    .unwrap()
+            }
         }),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    format!("http://{addr}")
+    (format!("http://{addr}"), replies)
 }
 
 async fn mem_server() -> String {
@@ -85,7 +92,7 @@ async fn mem_server() -> String {
     format!("http://{addr}")
 }
 
-async fn boot() -> SocketAddr {
+async fn boot(words: &[&str]) -> SocketAddr {
     // The turn deployment facts ride the env (TurnConfig::from_env) —
     // declared here, pointed at the local stubs. The guest binaries are
     // gravity's workspace build (path-adjacent repo, same conventions
@@ -99,7 +106,7 @@ async fn boot() -> SocketAddr {
         format!("{gravity_bins}/gravity-provider"),
     );
     std::env::set_var("GRAVITY_TURN_BIN", format!("{gravity_bins}/gravity-turn"));
-    let endpoint = sse_server().await;
+    let (endpoint, _replies) = sse_server(words).await;
     let store_url = mem_server().await;
     std::env::set_var("GRAVITY_STORE_URL", &store_url);
     std::env::set_var("GRAVITY_ENDPOINT", &endpoint);
@@ -156,8 +163,8 @@ async fn authed(addr: SocketAddr) -> WsClient {
 /// closes; the deltas concatenate to the reply.
 #[tokio::test]
 async fn turn_submit_streams_provider_tokens() {
-    set_reply(&["hel", "lo", "wor", "ld"]);
-    let addr = boot().await;
+    let _serial = serial().await;
+    let addr = boot(&["hel", "lo", "wor", "ld"]).await;
     let mut ws = authed(addr).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
         {"session_id": "1", "content": "hi"}))).await;
@@ -179,8 +186,8 @@ async fn turn_submit_streams_provider_tokens() {
 /// completes the slot is free again.
 #[tokio::test]
 async fn duplicate_submit_is_refused_and_slot_frees() {
-    set_reply(&["a", "b", "c"]);
-    let addr = boot().await;
+    let _serial = serial().await;
+    let addr = boot(&["a", "b", "c"]).await;
     let mut ws = authed(addr).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
         {"session_id": "1", "content": "first"}))).await;
@@ -221,7 +228,8 @@ async fn duplicate_submit_is_refused_and_slot_frees() {
 /// `auth` block — the SAME declaration face the echo plane enforces.
 #[tokio::test]
 async fn anonymous_submit_requires_auth() {
-    let addr = boot().await;
+    let _serial = serial().await;
+    let addr = boot(&[]).await;
     let mut ws = connect(addr).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
         {"session_id": "1", "content": "hi"}))).await;
@@ -240,9 +248,9 @@ async fn anonymous_submit_requires_auth() {
 /// own yield timing — with 30 tokens the stream is observably live.
 #[tokio::test]
 async fn cancel_disposes_a_live_turn() {
+    let _serial = serial().await;
     let words: Vec<&str> = (0..30).map(|_| "w").collect();
-    set_reply(&words);
-    let addr = boot().await;
+    let addr = boot(&words).await;
     let mut ws = authed(addr).await;
     send(&mut ws, &Frame::new("turn.submit", serde_json::json!(
         {"session_id": "1", "content": "go"}))).await;
@@ -280,7 +288,8 @@ async fn cancel_disposes_a_live_turn() {
 /// Cancel with no live turn is idempotent-ok (logout's shape).
 #[tokio::test]
 async fn cancel_with_no_live_turn_is_idempotent() {
-    let addr = boot().await;
+    let _serial = serial().await;
+    let addr = boot(&[]).await;
     let mut ws = authed(addr).await;
     send(&mut ws, &Frame::new("turn.cancel", serde_json::json!({}))).await;
     let f = recv(&mut ws).await;
