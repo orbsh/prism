@@ -438,6 +438,38 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
         "and the descriptions a reviewer reads come from the code rows: {steps}"
     );
 
+    // Both steps were counted ON THE NODE (k10r ADR-0018): an attempt before
+    // each call and a success after it. Two steps of one skill = two calls, two
+    // successes — and the counters are the node's own props, not the weight
+    // system's edge counters.
+    let skill_row: Value = ureq::get(&format!("{store_url}/skills/37/{skill_id}"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let raw: Value = ureq::get(&format!("{store_url}/graph/37"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let skill_node = raw["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["id"].as_u64() == Some(skill_id))
+        .expect("the skill node is in the graph");
+    assert_eq!(skill_node["name"], skill_row["name"]);
+    assert_eq!(
+        skill_node["props"]["invoke_calls"].as_u64(),
+        Some(2),
+        "two steps walked, two attempts counted: {skill_node}"
+    );
+    assert_eq!(
+        skill_node["props"]["invoke_ok"].as_u64(),
+        Some(2),
+        "and both came back"
+    );
+
     // Nothing promoted itself: the resolver still answers only the real skill.
     let resolved: Value = ureq::post(&format!("{store_url}/skills/37/resolve"))
         .send_json(json!({ "query": "add three" }))
