@@ -271,11 +271,15 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
         },
     });
     let node = tokio::spawn(node);
+    // `.lock().await`, not `try_lock().unwrap()`: the polling loop runs while the
+    // node task is starting up and holding the realm, so a try-lock here fails on
+    // scheduling rather than on the thing being tested. Waiting is what the loop
+    // means.
     for _ in 0..80 {
         if engine
             .realm
-            .try_lock()
-            .unwrap()
+            .lock()
+            .await
             .effectors
             .contains_key("skill-node")
         {
@@ -286,8 +290,8 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
     assert!(
         engine
             .realm
-            .try_lock()
-            .unwrap()
+            .lock()
+            .await
             .effectors
             .contains_key("skill-node"),
         "the node registered through /effector/<alias>"
