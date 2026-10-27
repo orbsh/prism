@@ -60,6 +60,14 @@ pub struct TurnConfig {
     /// ABSENT one makes the affected tool fail with the fact named, never
     /// fall back to a default namespace that may belong to someone else.
     pub memory_scope: Option<u64>,
+    /// OPERATION language → the mount type that serves it, from the mount
+    /// manifest (`PRISM_MOUNTS`). This is what lets `invoke_skill` route a
+    /// skill's declared language to a mount without gravity ever reading
+    /// prism's configuration: the deployment says which mounts exist, and an
+    /// operation whose language no mount serves is named as such rather than
+    /// routed somewhere plausible (gravity ADR-0001 §7: a language with no
+    /// mount cannot be called).
+    pub mounts: Vec<(String, String)>,
 }
 
 impl TurnConfig {
@@ -79,6 +87,13 @@ impl TurnConfig {
                 })?),
                 Err(_) => None,
             },
+            // The manifest is parsed at boot anyway (it is what gets
+            // registered); an unreadable one is a boot error here too, not a
+            // gateway that turns with no mounts and no reason given.
+            mounts: crate::mounts::from_env()?
+                .into_iter()
+                .map(|mount| (mount.language, mount.type_name))
+                .collect(),
         })
     }
 
@@ -97,6 +112,15 @@ impl TurnConfig {
         if let Some(scope) = self.memory_scope {
             args["memory_scope"] = json!(scope);
         }
+        // Always present, empty included: "this deployment declares no nodes"
+        // is a fact the tools can report, unlike an absent field which they
+        // would have to guess about.
+        args["mounts"] = Value::Array(
+            self.mounts
+                .iter()
+                .map(|(language, type_name)| json!({ "language": language, "type": type_name }))
+                .collect(),
+        );
         args
     }
 }

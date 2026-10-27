@@ -32,6 +32,8 @@ tokio-tungstenite = { version = "0.24", features = ["handshake"] }
 aura-config = { path = "../../../aura/crates/config" }
 effector-runtime = { path = "../../../effector/crates/runtime" }
 effector-config = { path = "../../../effector/crates/config" }
+# The e2e fixtures declare their k10r rows over the real HTTP doors.
+ureq = { version = "2", features = ["json"] }
 
 [features]
 default = ["steel", "python", "fjall"]
