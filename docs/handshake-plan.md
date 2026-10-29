@@ -9,6 +9,20 @@ Shelved 2026-10-12, unblocked 2026-10-29. The shelving reason is gone on both ha
 
 Nothing else blocks it. The work is the approved plan below, unchanged.
 
+## Where it stands (2026-10-29)
+
+- **effector half LANDED** (effector ADR-0002, tests green): `Challenge`/signed `Register`/
+  `Refused`, `keygen` + `register` CLI, `private_key_path`.
+- **aura's local gateway LANDED**: sends the challenge, verifies the signature, no registry
+  (`alias_takeover` + `remote_effector` green — the latter drives the REAL effector runtime, so
+  the whole sign/verify path is proven against a host).
+- **prism's mount WRITTEN, NOT VERIFIED**: `effectors.rs` sends the nonce, verifies in both
+  postures (`open` = no registry, never no proof, and it logs that), and gates `required` on
+  `NodeStore::verdict` with a stated `Refused` for `pending`/`conflict`. It does not compile
+  right now — and not because of this change: fluxen's in-progress envelope removal deleted
+  `content::Message`, which `/channel` still uses. Verify the mount once that settles, then add
+  the three e2e (`required` accept, wrong signature, `open` regression).
+
 ## Done already (prism f5837d2)
 
 `/effector/<alias>` mount LANDED: `crates/prism/src/effectors.rs` serves the mounted gateway (Register handshake, Result correlation, ctx-bridge via `aura_engine::host_wire`, presence guard). Path segment = alias claim, Register frame must repeat it, mismatch closes. Trust posture NOT consulted yet — that is this work. Aura keeps `serve_effectors` (independent port) for local mode; aura remote_effector/alias_takeover tests green.

@@ -26,6 +26,19 @@ use effector_protocol::{Frame, HostFrame};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
+/// Answer a refused claim with the reason, then let the caller close. Best-effort by
+/// construction: the operator's evidence is worth one frame, never a hang.
+async fn refuse<S>(sink: &mut S, reason: String)
+where
+    S: futures_util::Sink<Message> + Unpin,
+    S::Error: std::fmt::Debug,
+{
+    let frame = Frame::Refused { reason };
+    if let Ok(text) = serde_json::to_string(&frame) {
+        let _ = sink.send(Message::Text(text)).await;
+    }
+}
+
 /// Serve one effector connection whose upgrade requested
 /// `/effector/{alias}`. Runs the register handshake, then the
 /// reader/writer pair, to connection end.
@@ -44,12 +57,31 @@ pub(crate) async fn serve_mounted(
         .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
     let (mut sink, mut stream) = ws.split();
 
-    // Registration: alias + carriers. The frame's alias must equal the
-    // path's (the URL segment is the claim this socket arrived under).
-    let (node_alias, carriers) = match stream.next().await {
+    // THE HOST SPEAKS FIRST: a fresh nonce, in either posture. One wire shape means a node
+    // never has to know how it is being trusted, and a replayed Register cannot answer a
+    // later connection.
+    let nonce = effector_protocol::nonce();
+    sink.send(Message::Text(
+        serde_json::to_string(&Frame::Challenge { nonce: nonce.clone() })?,
+    ))
+    .await?;
+
+    // Registration: alias + carriers + proof. The frame's alias must equal the path's (the
+    // URL segment is the claim this socket arrived under) and the signature must verify
+    // against the public key the frame states — that is possession, and it is checked in
+    // BOTH postures: `open` means "no registry", never "no proof".
+    let (node_alias, carriers, public_key) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
-            Frame::Register { node_alias, carriers, .. } if node_alias == path_alias => {
-                (node_alias, carriers)
+            Frame::Register { node_alias, carriers, public_key, signature }
+                if node_alias == path_alias =>
+            {
+                if let Err(why) =
+                    effector_protocol::verify_register(&public_key, &nonce, &node_alias, &signature)
+                {
+                    refuse(&mut sink, format!("signature: {why}")).await;
+                    anyhow::bail!("register refused for '{node_alias}': {why}");
+                }
+                (node_alias, carriers, public_key)
             }
             Frame::Register { node_alias, .. } => {
                 anyhow::bail!("register alias '{node_alias}' does not match the mount path '{path_alias}'")
@@ -58,6 +90,41 @@ pub(crate) async fn serve_mounted(
         },
         other => anyhow::bail!("bad register frame: {other:?}"),
     };
+
+    // THE REGISTRY, when the deployment asks for trust. `open` records nothing and says so;
+    // `required` maps the verdict onto the connection, and a refusal is STATED before the
+    // socket closes (an operator on the node machine has no other way to learn the reason).
+    match gw.posture() {
+        crate::nodes::Posture::Open => {
+            eprintln!(
+                "effector mount: '{node_alias}' key {} verified; posture `open` — registry not consulted",
+                &public_key[..public_key.len().min(16)]
+            );
+        }
+        crate::nodes::Posture::Required => {
+            let verdict = gw.nodes().verdict(&node_alias, &public_key)?;
+            match verdict {
+                crate::nodes::Verdict::Registered => {}
+                crate::nodes::Verdict::Pending => {
+                    let reason = format!(
+                        "no approved key for '{node_alias}' yet — this claim is queued; \
+                         approve it with POST /admin/nodes/{{alias}}/approve"
+                    );
+                    refuse(&mut sink, reason.clone()).await;
+                    anyhow::bail!("register refused: {reason}");
+                }
+                crate::nodes::Verdict::Conflict => {
+                    let reason = format!(
+                        "another key holds the approved slot for '{node_alias}' — an enrolled \
+                         key is never silently replaced; revoke it first"
+                    );
+                    refuse(&mut sink, reason.clone()).await;
+                    anyhow::bail!("register refused: {reason}");
+                }
+            }
+        }
+    }
+
     sink.send(Message::Text(serde_json::to_string(&Frame::Registered)?))
         .await?;
 

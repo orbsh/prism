@@ -44,7 +44,15 @@ Do not guess the post-refactor shape in advance; the contract is fluxen's to sta
   an application booth projects k10r's session into view frames). Needs the session concept first.
 - N4 — THE NODE HANDSHAKE (Phase 1.8 step 2, unblocked 2026-10-29): `docs/handshake-plan.md`.
   NOT gated by fluxen — a separate landing with effector; do it whenever, it is what makes
-  `required` honest.
+  `required` honest. STARTED 2026-10-29: the effector half and aura's local gateway are landed
+  and green (effector ADR-0002); the mount here is written — challenge first in both postures,
+  signature verified in both ("`open` means no registry, never no proof"), `required` gated on
+  `NodeStore::verdict` with a stated `Refused{reason}` for `pending`/`conflict` — but it has
+  NOT been compiled or tested: fluxen's envelope removal (in progress) deleted
+  `content::Message`, which `/channel` still imports, so this crate does not build for an
+  unrelated reason. Order that follows: when fluxen settles, port `/channel` (see the gate
+  above), then verify the mount and add the three e2e (`required` accept, wrong signature,
+  `open` regression). Do not report the handshake as done until those pass.
 
 CORRECTION (2026-10-29): the "STILL OWED: prism's front-end page/boot crate (the `init` ask)"
 line below is VOID — the user's ruling replaced client-asked `init` with a push on connect, so no

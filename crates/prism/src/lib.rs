@@ -173,6 +173,12 @@ impl Gateway {
 
     /// The node registry over prism's own instance (the approval
     /// surface + the handshake's future verdict source).
+    /// The declared trust posture (ADR-0015 §7). Read by the effector mount: the handshake
+    /// VERIFIES a signature in both modes, and only `required` consults the registry.
+    pub(crate) fn posture(&self) -> nodes::Posture {
+        self.posture
+    }
+
     pub fn nodes(&self) -> nodes::NodeStore {
         self.registry.nodes()
     }
