@@ -80,3 +80,24 @@ View-manipulation operations are ordinary events on the same channel; the messag
 - ADR-0015's step 3 (fold node approval into account auth) becomes implementable: the four endpoints exist and hang under the user registry.
 - A later chat/commerce application defines its own per-event auth declarations; the framework ships with none beyond the `login` event itself.
 - Implementation sequence: `crates/prism` (WS, identity, sets, codec) → `/admin` + upload endpoint + node-approval folding → `/effector/<alias>` mount → user registry table → `/assets/` + envelope-shaped view events.
+
+## Update — 2026-10-29: the `init` answer's source, and the bundle's mount shape
+
+Phase 1.10's open question is closed as a deployment fact, not as a new mechanism.
+
+**Two legal sources, one path.** Both deliver the layout to the asking connection as ordinary `create` frames, so the client's render path never branches on where they came from.
+
+- `file:<path>` — read at boot (YAML or JSON; YAML is a superset, so one parser serves both). The walkthrough's two-column shell (left graph, right stream) is the shipped default document.
+- `event:<type>/<handler>` — submitted to the realm on the booth type's SINGLETON instance: a GLOBAL booth, one instance for the whole venue, because a layout is not per-client state.
+
+**`webhook:<url>` is refused.** Fetching JSON over HTTP and relaying it is the previous generation's (Fluxora) shape: a network fetch on the client's first event, a second deployment dependency, and an operator-visible config surface — traded for a generality the two forms above already cover (static document, computed document). A handler that needs the URL makes the call inside its own body, where the capability belongs.
+
+**Absence is declared, never defaulted.** With no `PRISM_INIT`, `init` answers the standard error VALUE naming the config, every other face of the plane serves normally, and the boot line states which source is live.
+
+**Bundle mount.** `/assets/<rel>` → `<root>/<rel>`; `/assets` and `/assets/` → the entry document. The artifact declares the mount (trunk `--public-url /assets/`) and ships its own `index.html`: the gateway does not rewrite an artifact's links, which would make it a second build system for the renderer it serves. Resolution canonicalizes root and request, so a `..` in any spelling cannot escape; an escape, a directory and a miss are all 404 — there is no directory listing. Hashed names (`*.js`, `*.wasm`) are immutable for a year; everything else revalidates, so a rebuilt entry document is never served from a year-old cache.
+
+**The layout is the first view operation, not an envelope.** `init` answers with the layout as ordinary `create` frames (the file source's frame list goes out verbatim; the event source forwards what its booth returns) and closes with a one-frame ack `init.result {frames: N}`. There is no `layout` payload and no client-side layout path: the renderer's ordinary draw path draws it. Prism's own verbs ride the same channel as `ev != "draw"` frames, which the renderer ignores by design — so the socket carries ONE frame shape, the renderer's.
+
+**The UI leg speaks the renderer's wire, and prism adapts.** Downstream `content::Message {ev, sender, created?, content}`; upstream `content::Outflow {event, id?, data}`. This is where the adaptation lives — prism's side, not the renderer's: fluxen is pure UI and cannot carry an adapter per consumer (its own WS transport is documented as one implementation of a seam, not as the protocol). The consequence for this repo: `{ev, args}` stays the shape of the CLI/effector legs and of the peer protocol, while `/ws` — the browser leg — speaks Accrete. One shape per leg, never two shapes on one leg.
+
+**Streaming output format is a call argument.** The turn producer decides what its stream carries: gravity's turn call takes `protocol` (`data` — raw deltas, the default — or `fluxen` — view frames via `append`/`set` against the slot the layout declares). Application knowledge (which slot, what accumulates) stays with the booth; the renderer stays generic and no slot name is compiled into a bundle. Recorded on the fluxen side as `docs/decisions/0021-external-integration.md` and `docs/external-integration.md`.

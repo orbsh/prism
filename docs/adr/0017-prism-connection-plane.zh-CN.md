@@ -80,3 +80,24 @@ WS 常连接；`login` 是其上的普通 event，不是独立的 HTTP 往返。
 - ADR-0015 的第 3 步（节点审批并入账户 auth）变得可实现：四个端点存在且挂在用户注册表之下。
 - 后续的 chat/商城应用各自定义自己的按 event 认证声明；框架出厂只带 `login` 这一个 event。
 - 实现顺序：`crates/prism`（WS、身份、连接集合、编解码）→ `/admin` + 上传端点 + 节点审批并入 → `/effector/<alias>` 挂载 → 用户注册表 → `/assets/` + 信封形状的视图 event。
+
+## Update — 2026-10-29：`init` 答案的来源，与 bundle 的挂载形状
+
+Phase 1.10 悬着的问题作为一个部署事实收口，不引入新机制。
+
+**两种合法来源，一条路径。** 两者都把布局以普通 `create` 帧投给发问的那条连接，客户端的渲染路径不因来源而分叉。
+
+- `file:<path>`——启动时读取（YAML 或 JSON；YAML 是超集，一套解析器覆盖两者）。walkthrough 的两栏壳（左图、右流）就是随仓库发布的默认文档。
+- `event:<type>/<handler>`——向 realm 提交，落在该摊位类型的 SINGLETON 实例上：GLOBAL 摊位，全场一个实例，因为布局不是逐连接的状态。
+
+**`webhook:<url>` 明确拒绝。** 取 HTTP JSON 再转发是上一代（Fluxora）的形状：把一次网络取数放在客户端的第一个 event 上，多一个部署依赖和一个运维可见的配置面，换来的通用性上面两种形态已经覆盖（静态文档、计算出来的文档）。需要该 URL 的 handler 在自己的函数体里发请求——能力归它，不归网关。
+
+**缺失是声明出来的，不给默认值。** 没有 `PRISM_INIT` 时，`init` 回标准错误值并点名该配置，其它面照常服务，启动行说明当前生效的是哪种来源。
+
+**Bundle 挂载。** `/assets/<rel>` → `<root>/<rel>`；`/assets` 与 `/assets/` → 入口文档。产物自己声明挂载点（trunk `--public-url /assets/`）并自带 `index.html`：网关不改写产物的链接，否则它就成了它所服务的渲染器的第二个构建系统。解析时对 root 与请求双双取规范路径，任何写法的 `..` 都逃不出；越界、目录、缺失一律 404——没有目录列表。带哈希的文件名（`*.js`、`*.wasm`）一年不可变，其余每次校验，重建的入口文档不会被一年前的缓存顶掉。
+
+**布局是第一个视图操作，不是一种信封。** `init` 用普通 `create` 帧答布局（`file:` 来源把帧列表原样送出，`event:` 来源转发摊位返回的内容），末尾一帧 ack `init.result {frames: N}`。没有 `layout` 载荷，客户端也没有第二条布局路径：渲染器用普通的绘制路径把它画出来。Prism 自己的动词以 `ev != "draw"` 的帧走同一条通道，渲染器按设计忽略它们——于是这个 socket 上只有一种帧形状，即渲染器的那种。
+
+**UI 腿说渲染器的线上格式，适配在 prism 这边。** 下行 `content::Message {ev, sender, created?, content}`；上行 `content::Outflow {event, id?, data}`。适配就住在这里——prism 侧，不是渲染器侧：fluxen 是纯 UI，不可能为每个使用方各带一层适配（它自己的 WS 传输在文档里就是一个接缝的实现，不是协议本身）。对本仓的后果：`{ev, args}` 仍是 CLI/effector 腿与对端协议的形状，而 `/ws`——浏览器腿——说 Accrete。一条腿一种形状，同一条腿上绝不两种。
+
+**流式输出格式是调用参数。** 由生产端决定流里装什么：gravity 的 turn 调用带 `protocol`（`data`——裸 delta，默认——或 `fluxen`——对布局声明的槽做 `append`/`set` 的视图帧）。应用知识（哪个槽、累积什么）留在摊位；渲染器保持通用，槽名不编进 bundle。fluxen 侧记在 `docs/decisions/0021-external-integration.md` 与 `docs/external-integration.md`。

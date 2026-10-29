@@ -1,12 +1,17 @@
-# Prism handshake plan (Phase 1.8 step 2, second half) — shelved 2026-10-12
+# Prism handshake plan (Phase 1.8 step 2, second half) — unblocked 2026-10-29
 
-## Why shelved
+## Status
 
-Effector is mid-refactor (bgi-guest → induction migration, main tree dirty). The frame home (effector-protocol vs induction-protocol) is UNDECIDED — no frame changes in effector until that ruling exists.
+Shelved 2026-10-12, unblocked 2026-10-29. The shelving reason is gone on both halves:
+
+- **The effector refactor landed.** The bgi-guest → induction migration is complete and the tree is clean; the mount this handshake runs on already exists (`crates/prism/src/effectors.rs`).
+- **The frame home is ruled.** `~/world/induction/docs/ADR-0001` Consequences, "Resolved 2026-10-13 (batch 3 as landed)": `HostOp` (WS, serde-tagged, id-paired) and the pipe `HostFrame` (in-band, serially paired) are **two transport encodings of one `Arm` vocabulary**, not two protocols to collapse; `induction-host::route_frame` is the codec- and transport-independent core both hosts drive. So a `Challenge`/`Register` reshape is effector-protocol's own transport vocabulary — it collides with nothing in induction.
+
+Nothing else blocks it. The work is the approved plan below, unchanged.
 
 ## Done already (prism f5837d2)
 
-`/effector/<alias>` mount LANDED: `crates/prism/src/effectors.rs` serves the mounted gateway (Register handshake, Result correlation, ctx-bridge via `aura_engine::host_wire`, presence guard). Path segment = alias claim, Register frame must repeat it, mismatch closes. Trust posture NOT consulted yet — that is the shelved work. Aura keeps `serve_effectors` (independent port) for local mode; aura remote_effector/alias_takeover tests green.
+`/effector/<alias>` mount LANDED: `crates/prism/src/effectors.rs` serves the mounted gateway (Register handshake, Result correlation, ctx-bridge via `aura_engine::host_wire`, presence guard). Path segment = alias claim, Register frame must repeat it, mismatch closes. Trust posture NOT consulted yet — that is this work. Aura keeps `serve_effectors` (independent port) for local mode; aura remote_effector/alias_takeover tests green.
 
 ## Approved plan
 
@@ -24,11 +29,11 @@ Sequence: connect → host `Challenge{nonce}` → effector signs nonce+alias (ed
 
 ## Working arrangement
 
-New git worktree off effector `f94ad9c` (`git worktree add ../effector-handshake -b feat/handshake`); prism path-deps the worktree. Merge after refactor lands; `crates/protocol` should be near-zero conflict (refactor touches runtime/carrier + workspace files) — recheck if induction moves the frame vocabulary.
+The original worktree arrangement (off effector `f94ad9c`) is stale — effector has moved through the induction migration since. Branch off current `main` in each repo and land the two ends together: the frame shape changes on both sides of one connection, so a one-sided merge leaves the mount unable to register anything (the posture's `required` mode would answer every node as keyless).
 
 ## Environmental facts (costly to rediscover)
 
-- prism tests need BOTH `RUSTFLAGS="-L native=/nix/store/lb41b0anx1f98y9y5s9mdv97gjgsq740-python3-3.14.7/lib"` AND `PYTHONHOME=/nix/store/lb41b0anx1f98y9y5s9mdv97gjgsq740-python3-3.14.7` — missing PYTHONHOME = embedded python carrier fails silently, observed as a HANG in turn_e2e, not an error.
+- The `PYTHONHOME` note below is HISTORICAL: the embedded python carrier is retired (both booths are Rust induction guests), and the PLAN records "no carrier feature gate, no PYTHONHOME/RUSTFLAGS for this plane". Builds that still enable the `python` feature of aura's engine need the `RUSTFLAGS="-L native=…/python3-3.14.7-env/lib"` search path; the handshake work itself touches no carrier.
 - prism workspace 44/44 green at shelving time (`cargo test --workspace -- --test-threads=1`).
 - `futures_util::stream::SplitStream` wraps a BiLock — no get_ref; capture peer addresses BEFORE splitting the WS.
 - prism `Gateway.engine` is `pub` — tests reach the realm directly for registrations.
