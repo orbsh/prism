@@ -106,10 +106,33 @@ Phase 1.10 悬着的问题作为一个部署事实收口，不引入新机制。
 
 **渲染器腿是 `/channel`**，即渲染器页面本来就连接的路径（`mount()` 的默认值、stage 的端点）：宿主适配渲染器，所以产物零配置，prism 也不必为了一个路径名自带页面。
 
-**布局是第一个视图操作，不是一种信封。** `init` 用普通 `create` 帧答布局（`file:` 来源把帧列表原样送出，`event:` 来源转发摊位返回的内容），末尾一帧 ack `init.result {frames: N}`。没有 `layout` 载荷，客户端也没有第二条布局路径：渲染器用普通的绘制路径把它画出来。Prism 自己的动词以 `ev != "draw"` 的帧走同一条通道，渲染器按设计忽略它们——于是这个 socket 上只有一种帧形状，即渲染器的那种。
 
-**UI 腿说渲染器的线上格式，适配在 prism 这边。** 下行 `content::Message {ev, sender, created?, content}`；上行 `content::Outflow {event, id?, data}`。适配就住在这里——prism 侧，不是渲染器侧：fluxen 是纯 UI，不可能为每个使用方各带一层适配（它自己的 WS 传输在文档里就是一个接缝的实现，不是协议本身）。
 
 **是两条腿，不是一个共享 socket。** `/ui` 是渲染器腿，说上述格式；`/ws` 保持程序腿（CLI、对端、测试）的 `{ev, args}`。先例是 stage：UI 走 `/channel`，对端走 `/cli`——两个客户端类别、两套词汇、一条腿一种形状。同一条腿上放两种形状，等于把分裂塞进每一帧的解析器；而对端腿的测试、CLI 与 effector 拨入读的都是 `args`。
 
 **流式输出格式是调用参数。** 由生产端决定流里装什么：gravity 的 turn 调用带 `protocol`（`data`——裸 delta，默认——或 `fluxen`——对布局声明的槽做 `append`/`set` 的视图帧）。应用知识（哪个槽、累积什么）留在摊位；渲染器保持通用，槽名不编进 bundle。fluxen 侧记在 `docs/decisions/0021-external-integration.md` 与 `docs/external-integration.md`。
+
+## Update — 2026-10-29（同日稍晚）：信封归宿主，所以场馆用操作说话
+
+fluxen 去掉了线上信封（fluxen `460d867`，ADR 0021 决策 6）。现在跨过渲染器 socket 的是**动作
+列表本身**——`Vec<Content<Accrete>>`，JSON/CBOR 数组，永远是数组（一个动作就是一元素数组）——
+而 map 会在渲染器边界被点名拒绝（`frame is an envelope, not an action list`）。因此本记录里
+有三件事不再成立，上面写着它们的那几段是被**取代**，不只是被补充：
+
+- **下行不再是 `content::Message{ev, sender, created, content}`。** 信封移到宿主那侧，而 prism
+  不需要它：场馆自己要说的内容，用与应用视图**同一套词汇**表达——`inject` 操作（fluxen
+  ADR 0011：往页面 vals 平面远程写入，页面上看不出与自发 emit 的区别）。两个槽承载它：
+  `identity`（我是谁：`{device, user}`，连接时 / `signup.result` / `login.result` /
+  `logout.result`）与 `notice`（拒绝、失败、`turn.done`）。布局用 `kind: local` 绑它们，跟绑
+  任何别的事件一样，场馆永远不教页面学动词。
+- **没有 `ev != "draw"` 的帧了。** 只剩一种形状：操作数组。想说"已连接"的场馆，要么把它说成
+  一个操作，要么不说。
+- **没有 `init.result` 收尾帧。** 一条消息就是一份动作列表，列表到齐就是结束。那个空 ack 只
+  因为信封可以空着才存在。
+- 不变的部分：布局在连接时即推、`PRISM_INIT` 仍有两种合法来源、场馆仍是订阅者
+  （`renderer`/`view`）、bundle 仍是原点、turn 仍走这条腿（`protocol=fluxen`，槽位由本仓声明）。
+  gravity 的视图帧成批到达，prism **原样成批转发**，因为一轮之内的顺序是语义：文本区的 `set`
+  必须先于填它的 patch。
+
+对测试的后果：这条腿的断言读数组（`frame[0]["action"]`），绝不读 `frame["ev"]`。
+`crates/prism/tests/ui_leg.rs` 锁住新形状，包括"摊位的答案必须本身是操作才会被画出来"。

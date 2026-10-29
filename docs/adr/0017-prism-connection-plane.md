@@ -102,14 +102,35 @@ Phase 1.10's open question is closed as a deployment fact, not as a new mechanis
 
 **The venue is also a subscriber.** It registers one booth type for itself (`renderer`) with one handler (`view`); an application that emits `view` with `{device?: n, frames: <frame or list>}` has those frames pushed to the named renderer (or to all, when it names nobody). This is the whole forwarding path — the venue does not interpret frames, which is why a layout, an append and a patch travel identically. The boot log names the subscription, because a venue that forwards nothing looks exactly like a venue with nothing to say.
 
-**Bundle mount.** The bundle IS the origin: `/` answers its `index.html`, every other unreserved path is that file inside it, and the reserved prefixes (`/ws`, `/channel`, `/code/…`, `/admin/…`, `/effector/<alias>`) are routed first so a bundle can never shadow a verb. This is stage's shape, and it is what lets the artifact work exactly as trunk emitted it — no `--public-url`, no link rewriting, one build serving both reflux (page root) and prism. `/assets/…` inside that tree is the bundle's OWN directory (`main.css`, the module media), not the mount point.
-
-**The renderer's leg is `/channel`**, the name the renderer's page already connects to (`mount()`'s default, stage's endpoint): the host adapts to the renderer, so the bundle needs no configuration and prism ships no page of its own just to name a path.
-
-**The layout is the first view operation, not an envelope.** `init` answers with the layout as ordinary `create` frames (the file source's frame list goes out verbatim; the event source forwards what its booth returns) and closes with a one-frame ack `init.result {frames: N}`. There is no `layout` payload and no client-side layout path: the renderer's ordinary draw path draws it. Prism's own verbs ride the same channel as `ev != "draw"` frames, which the renderer ignores by design — so the socket carries ONE frame shape, the renderer's.
-
-**The UI leg speaks the renderer's wire, and prism adapts.** Downstream `content::Message {ev, sender, created?, content}`; upstream `content::Outflow {event, id?, data}`. This is where the adaptation lives — prism's side, not the renderer's: fluxen is pure UI and cannot carry an adapter per consumer (its own WS transport is documented as one implementation of a seam, not as the protocol).
-
 **Legs, not one shared socket.** `/ui` is the renderer's leg and speaks that wire; `/ws` stays the programmatic leg (CLI, peers, tests) with `{ev, args}`. The precedent is stage, which exposes `/channel` for the UI and `/cli` for peers: two client classes, two vocabularies, one shape per leg. Two shapes on ONE leg would put the split into every frame's parser — and the peer leg's tests, the CLI and the effector dial-in all read `args`.
 
 **Streaming output format is a call argument.** The turn producer decides what its stream carries: gravity's turn call takes `protocol` (`data` — raw deltas, the default — or `fluxen` — view frames via `append`/`set` against the slot the layout declares). Application knowledge (which slot, what accumulates) stays with the booth; the renderer stays generic and no slot name is compiled into a bundle. Recorded on the fluxen side as `docs/decisions/0021-external-integration.md` and `docs/external-integration.md`.
+
+## Update — 2026-10-29 (later the same day): the envelope is the host's, so the venue speaks in operations
+
+fluxen removed the wire envelope (fluxen `460d867`, ADR 0021 decision 6). What crosses the
+renderer's socket is now THE ACTION LIST — `Vec<Content<Accrete>>`, a JSON/CBOR array, always
+(one action is a one-element array) — and a map is REFUSED at the renderer's boundary by name
+(`frame is an envelope, not an action list`). Three things in this record therefore stop being
+true, and the paragraphs above that state them are superseded, not merely amended:
+
+- **Downstream is not `content::Message{ev, sender, created, content}`.** The envelope moved to
+  the host, and prism does not need one: its own speech is expressed in the SAME vocabulary as
+  the application's view, as `inject` operations (fluxen ADR 0011 — a remote write into the
+  page's vals plane that is indistinguishable from an in-page emit). Two slots carry it:
+  `identity` (who am I: `{device, user}`, on connect / `signup.result` / `login.result` /
+  `logout.result`) and `notice` (refusals, failures, `turn.done`). A layout binds them with
+  `kind: local` like any other event, and the venue never teaches a page a verb.
+- **There are no `ev != "draw"` frames.** One frame shape survives: an array of operations. A
+  venue that wanted to say "connected" now says it as an operation or says nothing.
+- **There is no `init.result` terminator.** A message IS an action list, so the arrival of the
+  list is the end of it. The empty ack existed only because an envelope could be empty.
+- Unchanged: the layout is pushed on connect, `PRISM_INIT` still has the two legal sources, the
+  venue is still a subscriber (`renderer`/`view`), the bundle is still the origin, and the turn
+  still rides this leg (`protocol=fluxen`, slots declared here). `gravity`'s view frames arrive
+  as a batch and are forwarded AS that batch, because order inside a round is semantics: the
+  `set` of a text region must precede the patch that fills it.
+
+Consequence for tests: this leg's assertions read arrays (`frame[0]["action"]`), never
+`frame["ev"]`. `crates/prism/tests/ui_leg.rs` locks the new shapes, including that a booth's
+answer must BE an operation to be drawn.

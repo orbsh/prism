@@ -186,14 +186,14 @@ impl Gateway {
     /// Register a renderer connection; returns its id and the auth field the leg writes.
     pub(crate) fn register_ui(
         &self,
-        tx: mpsc::UnboundedSender<content::Message<serde_json::Value>>,
+        tx: mpsc::UnboundedSender<Vec<content::Content<serde_json::Value>>>,
         device: u64,
     ) -> (u64, Arc<AtomicU64>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let user = Arc::new(AtomicU64::new(0));
         self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id,
-            ui::UiConn { tx, device, user: Arc::clone(&user) },
+            ui::UiConn { tx, device, user: Arc::clone(&user), turns: 0 },
         );
         (id, user)
     }
@@ -211,10 +211,21 @@ impl Gateway {
     /// entry closes the channel, and that is what actually ends the writer (the peer leg's
     /// discipline — a local sender kept across the read loop makes revocation unable to
     /// close anything).
-    pub(crate) fn send_ui(&self, id: u64, msg: content::Message<serde_json::Value>) {
+    /// One message = one ACTION LIST (the renderer's wire since fluxen 460d867: no envelope).
+    pub(crate) fn send_ui(&self, id: u64, ops: Vec<content::Content<serde_json::Value>>) {
         if let Some(c) = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
-            let _ = c.tx.send(msg);
+            let _ = c.tx.send(ops);
         }
+    }
+
+    /// The streaming region for this connection's NEXT turn — `say.1`, `say.2`, … A constant
+    /// name would make each turn patch the region an earlier turn's bubble still reads, so the
+    /// counter is per connection and the name is declared fresh every time.
+    pub(crate) fn next_turn_slot(&self, id: u64, base: &str) -> Option<String> {
+        let mut conns = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let conn = conns.get_mut(&id)?;
+        conn.turns += 1;
+        Some(format!("{base}.{}", conn.turns))
     }
 
     pub(crate) fn unregister_ui(&self, id: u64) {
@@ -229,30 +240,6 @@ impl Gateway {
     /// The `init` source, if this deployment declared one (`PRISM_INIT`).
     pub(crate) fn init_source(&self) -> Option<init::InitSource> {
         self.deployment.init.clone()
-    }
-
-    /// Submit one event to a GLOBAL booth (its SINGLETON instance) and return the answer
-    /// normalized to a frame list. Used by the `event:` form of `init`; a cold booth is an
-    /// error — a layout cannot be fetched from an unloaded instance.
-    pub(crate) async fn call_global(
-        &self,
-        booth_type: &str,
-        handler: &str,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let target = InstanceId { booth_type: booth_type.to_string(), key: InstanceKey::Singleton };
-        let envelope = serde_json::json!({"sender": {"device": 0, "user": null}, "args": {}});
-        match self.engine.call(target, handler, envelope).await {
-            Ok(Waited::Done(Ok(v))) => {
-                init::normalize(v, &format!("booth:{booth_type}/{handler}"))
-            }
-            Ok(Waited::Done(Err(e))) => anyhow::bail!(
-                "init booth `{booth_type}/{handler}` answered an error: {e}"
-            ),
-            Ok(Waited::Pending(_)) => anyhow::bail!(
-                "init booth `{booth_type}/{handler}` is cold — a layout cannot be a cold call"
-            ),
-            Err(e) => anyhow::bail!("init booth `{booth_type}/{handler}`: {e}"),
-        }
     }
 
     /// Register the language echo booths (steel / python / nushell
