@@ -83,10 +83,22 @@ pub(crate) async fn serve_mounted(
                 }
                 (node_alias, carriers, public_key)
             }
+            // A claim that contradicts its own URL is refused like any other, and STATED: the
+            // node operator has one socket and no log on this machine, so a reason that only
+            // exists in the host's log is a reason nobody can act on.
             Frame::Register { node_alias, .. } => {
-                anyhow::bail!("register alias '{node_alias}' does not match the mount path '{path_alias}'")
+                let reason = format!(
+                    "register alias '{node_alias}' does not match the mount path '{path_alias}' — \
+                     the URL is the claim this socket arrived under"
+                );
+                refuse(&mut sink, reason.clone()).await;
+                anyhow::bail!("register refused: {reason}")
             }
-            other => anyhow::bail!("expected Register, got {other:?}"),
+            other => {
+                let reason = format!("expected Register, got {other:?}");
+                refuse(&mut sink, reason.clone()).await;
+                anyhow::bail!("register refused: {reason}")
+            }
         },
         other => anyhow::bail!("bad register frame: {other:?}"),
     };

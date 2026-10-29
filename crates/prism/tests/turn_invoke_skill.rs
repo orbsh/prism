@@ -258,12 +258,16 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
         .unwrap();
     assert_eq!(live, vec!["runner_py".to_string()]);
 
-    // The node dials in (the real effector runtime, node side of this stack).
-    std::env::set_var("PRISM_SKILL_E2E_CREDENTIAL", "tok");
+    // The node dials in (the real effector runtime, node side of this stack) with a key file:
+    // the mount verifies a signature over its per-connection nonce (effector ADR-0002).
+    let mut key_path = std::env::temp_dir();
+    key_path.push(format!("prism-skill-e2e-{}.key", std::process::id()));
+    let _ = std::fs::remove_file(&key_path);
+    effector_protocol::write_keypair(&key_path).unwrap();
     let node = effector_runtime::remote::run(effector_config::EffectorConfig {
         control_plane_url: format!("ws://127.0.0.1:{}/effector/skill-node", addr.port()),
         sandbox: false,
-        credential_env: "PRISM_SKILL_E2E_CREDENTIAL".into(),
+        private_key_path: key_path.display().to_string(),
         capabilities: effector_config::CapabilitySurface {
             node_alias: "skill-node".into(),
             carriers: vec!["exec".into()],

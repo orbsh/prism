@@ -22,7 +22,7 @@ type WsClient =
 
 async fn boot(deployment: Deployment) -> (SocketAddr, std::sync::Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
-    let registry = Registry::open(&dir.into_path()).unwrap();
+    let registry = Registry::open(&dir.keep()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::with_deployment(engine, registry, prism::nodes::Posture::Open, deployment);
@@ -118,7 +118,7 @@ async fn recv_speech(ws: &mut WsClient) -> (String, String, Value) {
     assert_eq!(op["action"], "inject", "expected venue speech: {op}");
     (
         op["slot"].as_str().unwrap().to_string(),
-        op["event"].as_str().unwrap().to_string(),
+        op["name"].as_str().unwrap().to_string(),
         op["data"].clone(),
     )
 }
@@ -134,8 +134,8 @@ fn layout_file() -> tempfile::NamedTempFile {
     let f = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(
         f.path(),
-        "- action: create\n  event: \"\"\n  data: {type: case, attrs: {}}\n\
-         - action: set\n  event: chat\n  data: {type: case}\n",
+        "- action: create\n  slot: \"\"\n  data: {type: case, attrs: {}}\n\
+         - action: set\n  slot: chat\n  data: {type: case}\n",
     )
     .unwrap();
     f
@@ -192,7 +192,7 @@ async fn init_delivers_the_layout_as_view_frames() {
     assert_eq!(ops[0]["action"], "create");
     assert_eq!(ops[0]["data"]["type"], "case");
     assert_eq!(ops[1]["action"], "set");
-    assert_eq!(ops[1]["event"], "chat");
+    assert_eq!(ops[1]["slot"], "chat");
 }
 
 #[tokio::test]
@@ -200,14 +200,13 @@ async fn a_deployment_without_init_answers_instead_of_hanging() {
     let (addr, _gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
     connect_and_expect_no_layout(&mut ws).await;
-    // The socket stays up: the next uplink gets its own answer, and `echo_steel` echoes the
-    // operation it was handed — which is what a booth answer has to be to be drawn at all.
-    let op = json!({"action": "set", "event": "graph", "data": {"type": "case"}});
-    send_uplink(&mut ws, json!({"event": "echo_steel", "data": op})).await;
+    // The socket stays up and still answers: the venue said it has no layout, and the next
+    // uplink is dispatched normally.
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case"}});
+    send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops.len(), 1, "{ops:?}");
-    assert_eq!(ops[0]["action"], "set");
-    assert_eq!(ops[0]["event"], "graph");
+    assert_eq!(ops[0]["slot"], "graph");
 }
 
 /// Two legs, two shapes: `/ws` keeps `{ev, args}` while `/channel` speaks the renderer's wire.
@@ -230,19 +229,24 @@ async fn the_peer_leg_keeps_its_own_shape() {
     assert!(frame.get("content").is_none(), "peer leg carries no Accrete: {frame}");
 }
 
-/// Application uplinks reach the booth plane: the booth NAMED BY THE EVENT is called and its
-/// answer arrives as an action list. `echo_steel` answers with its arguments, so the test hands
-/// it a real operation — an answer that is not an operation draws nothing, which is correct and
-/// not what this test is about.
+/// Application uplinks reach the booth plane: the booth NAMED BY THE EVENT is called, and it is
+/// called with the venue's envelope — `{sender: {device, user}, args: <uplink data>}`. Identity
+/// rides the payload (ADR-0017 §7), never the instance id, so this is the only place a booth can
+/// learn who asked; `echo_steel` hands that envelope straight back, which makes it readable here.
 #[tokio::test]
 async fn an_uplink_dispatches_to_the_booth_named_by_the_event() {
     let (addr, _gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
     connect_and_expect_no_layout(&mut ws).await;
-    let op = json!({"action": "set", "event": "graph", "data": {"type": "case", "attrs": {"class": ["echoed"]}}});
-    send_uplink(&mut ws, json!({"event": "echo_steel", "data": op})).await;
+    // The booth's answer IS the operation the caller sent: an answer that is not an operation
+    // is data, and data has no path down this leg — a booth that wants the page to see
+    // something emits `view:<name>`. So the drawn frame here proves the dispatch happened.
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["echoed"]}}});
+    send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops.len(), 1, "{ops:?}");
+    assert_eq!(ops[0]["action"], "set");
+    assert_eq!(ops[0]["slot"], "graph");
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "echoed");
 }
 
@@ -254,34 +258,36 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     let mut ws = open_ui(addr).await;
     connect_and_expect_no_layout(&mut ws).await;
 
-    let op = json!({"action": "set", "event": "secret", "data": {"type": "text"}});
-    send_uplink(&mut ws, json!({"event": "echo_priv", "data": op})).await;
+    let op = json!({"action": "set", "slot": "secret", "data": {"type": "text"}});
+    send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
     let (slot, event, data) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), event.as_str()), ("notice", "error"), "anonymous sender must be refused");
-    assert!(data["detail"].as_str().is_some_and(|d| d.contains("echo_priv")), "{data}");
+    assert!(data["detail"].as_str().is_some_and(|d| d.contains("echo_gate")), "{data}");
 
     // signup on the leg: the account is prism's, and the answer is identity, not a verb.
     send_uplink(
         &mut ws,
-        json!({"event": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
     )
     .await;
     let (slot, event, data) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), event.as_str()), ("identity", "signup.result"));
     assert!(data["user"].as_u64().is_some(), "identity carries the bound user: {data}");
 
-    // Bound now: the declared-auth event reaches the booth and its answer is drawn.
-    send_uplink(&mut ws, json!({"event": "echo_priv", "data": op})).await;
+    // Bound now: the same declared-auth event reaches the booth and its answer is DRAWN. The
+    // gate is not merely a boolean on a log line — the frame proves the call ran.
+    send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
-    assert_eq!(ops[0]["event"], "secret", "{ops:?}");
+    assert_eq!(ops.len(), 1, "{ops:?}");
+    assert_eq!(ops[0]["slot"], "secret");
 
     // After logout the same event is refused again — the field, not the account row, is what
     // the gate reads, and it is cleared on the same socket.
-    send_uplink(&mut ws, json!({"event": "logout", "data": null})).await;
+    send_uplink(&mut ws, json!({"dest": "logout", "data": null})).await;
     let (slot, event, data) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), event.as_str()), ("identity", "logout.result"));
     assert!(data["user"].is_null(), "logout clears the user: {data}");
-    send_uplink(&mut ws, json!({"event": "echo_priv", "data": op})).await;
+    send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
     let (slot, event, _) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), event.as_str()), ("notice", "error"));
 }
@@ -295,7 +301,7 @@ async fn revocation_kicks_the_renderer_leg_too() {
     let device = connect_and_expect_no_layout(&mut ws).await;
 
     // Bind an account so this connection carries an auth field worth clearing.
-    send_uplink(&mut ws, json!({"event": "signup", "data": {"username": "grace", "password": "p"}})).await;
+    send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "grace", "password": "p"}})).await;
     let (_, event, _) = recv_speech(&mut ws).await;
     assert_eq!(event, "signup.result");
 
@@ -336,10 +342,10 @@ async fn an_event_source_emits_and_forwards_the_applications_view_frames() {
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
-        "view",
-        json!({"device": device, "frames": [
-            {"action": "create", "event": "", "data": {"type": "case", "attrs": {"class": ["from-event"]}}},
-            {"action": "set", "event": "graph", "data": {"type": "case"}},
+        "view:layout",
+        json!({"name": "view:layout", "channel_id": device, "data": [
+            {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["from-event"]}}},
+            {"action": "set", "slot": "graph", "data": {"type": "case"}},
         ]}),
     )
     .await
@@ -350,7 +356,56 @@ async fn an_event_source_emits_and_forwards_the_applications_view_frames() {
     assert_eq!(ops[0]["action"], "create");
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "from-event");
     assert_eq!(ops[1]["action"], "set");
-    assert_eq!(ops[1]["event"], "graph");
+    assert_eq!(ops[1]["slot"], "graph");
+}
+
+/// DATA on the downlink: a `view:<name>` whose payload is not an operation list goes into the
+/// VALS plane under that name, exactly as if the page had emitted it — the operation list shape
+/// (the test above) and the data shape are both legal, and which one applies is the emitter's
+/// choice, not a second protocol.
+#[tokio::test]
+async fn a_view_event_carries_data_into_the_slot_named_by_it() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let device = connect_and_expect_no_layout(&mut ws).await;
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "view:identity",
+        json!({"name": "view:identity", "channel_id": device, "data": {"device": device, "user": null}}),
+    )
+    .await
+    .expect("emit view:identity");
+
+    let ops = recv_ops(&mut ws).await;
+    assert_eq!(ops.len(), 1, "{ops:?}");
+    assert_eq!(ops[0]["action"], "inject");
+    // The marker is stripped: the page's slot is `identity`, and the name it sees is the same
+    // name — nothing on the page knows what `view:` means.
+    assert_eq!(ops[0]["slot"], "identity");
+    assert_eq!(ops[0]["name"], "identity");
+    assert_eq!(ops[0]["data"]["device"].as_u64(), Some(device), "{ops:?}");
+}
+
+/// The sender does not hear its own emit: the fan-out is the channel minus whoever spoke.
+#[tokio::test]
+async fn a_view_event_does_not_echo_back_to_its_sender() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let device = connect_and_expect_no_layout(&mut ws).await;
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "view:chat",
+        json!({"name": "view:chat", "channel_id": device, "sender": {"device": device}, "data": {"echo": true}}),
+    )
+    .await
+    .expect("emit view:chat");
+    // Nothing comes back, so the next message on this socket is the answer to our own uplink.
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
+    let ops = recv_ops(&mut ws).await;
+    assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
 }
 
 /// A view event aimed at another device reaches nobody here: the fan-out is by device when the
@@ -363,15 +418,15 @@ async fn a_view_event_for_another_device_is_not_drawn_here() {
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
-        "view",
-        json!({"device": device + 999, "frames": [{"action": "set", "event": "graph", "data": {"type": "case"}}]}),
+        "view:graph",
+        json!({"name": "view:graph", "channel_id": device + 999, "data": {"mark": "theirs"}}),
     )
     .await
     .expect("emit view");
     // Ours, not theirs: the next message answers our own uplink, which proves nothing was
     // drawn from the other device's event.
-    let op = json!({"action": "set", "event": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
-    send_uplink(&mut ws, json!({"event": "echo_steel", "data": op})).await;
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
 }
@@ -456,11 +511,11 @@ async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
     connect_and_expect_no_layout(&mut ws).await;
 
     // The turn type declares `turn` user-gated: bind an account on this same socket.
-    send_uplink(&mut ws, json!({"event": "signup", "data": {"username": "ada", "password": "p"}})).await;
+    send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "ada", "password": "p"}})).await;
     let (_, event, _) = recv_speech(&mut ws).await;
     assert_eq!(event, "signup.result");
 
-    send_uplink(&mut ws, json!({"event": "turn.submit", "data": {"content": "hi"}})).await;
+    send_uplink(&mut ws, json!({"dest": "turn.submit", "data": {"content": "hi"}})).await;
 
     let mut appends: Vec<String> = Vec::new();
     let mut sets: Vec<String> = Vec::new();
@@ -475,13 +530,15 @@ async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
             .cloned()
             .unwrap_or_else(|| panic!("not an action list: {frame}"));
         for op in ops {
-            if op["action"] == "inject" && op["event"] == "turn.done" {
+            if op["action"] == "inject" && op["name"] == "turn.done" {
                 done = true;
                 continue;
             }
             match op["action"].as_str().unwrap_or("") {
-                "append" => appends.push(op["event"].as_str().unwrap_or("").to_string()),
-                "set" => sets.push(op["event"].as_str().unwrap_or("").to_string()),
+                // fluxen's tree address is `slot` (460d867): an event is the uplink's name,
+                // never an address inside the tree.
+                "append" => appends.push(op["slot"].as_str().unwrap_or("").to_string()),
+                "set" => sets.push(op["slot"].as_str().unwrap_or("").to_string()),
                 "patch" => patched.push_str(op["value"].as_str().unwrap_or("")),
                 other => panic!("unexpected action `{other}`: {op}"),
             }
@@ -493,8 +550,46 @@ async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
     assert!(done, "the turn never finished");
     // The question, then the answer bubble, both on the venue's declared rack.
     assert_eq!(appends, vec!["chat".to_string(), "chat".to_string()], "{appends:?}");
-    // The streaming region is the venue's OTHER declared slot.
-    assert_eq!(sets, vec!["say".to_string()], "{sets:?}");
+    // The streaming region is the venue's OTHER declared slot, numbered by turn.
+    assert_eq!(sets, vec!["say.1".to_string()], "{sets:?}");
     // Every provider token landed through a patch, in order.
     assert!(patched.contains("Hello") && patched.contains("world"), "{patched:?}");
+
+    // ---- a SECOND turn on the same connection --------------------------------
+    // The region must be a NEW name. Reusing one would make this turn's patches rewrite the
+    // text inside the first turn's bubble: every frame correct, the conversation smeared.
+    send_uplink(&mut ws, json!({"dest": "turn.submit", "data": {"content": "again"}})).await;
+    let mut sets2: Vec<String> = Vec::new();
+    let mut patched2 = String::new();
+    let mut done2 = false;
+    for _ in 0..60 {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(20), recv_json(&mut ws))
+            .await
+            .expect("the second turn must not stall");
+        let ops = frame
+            .as_array()
+            .cloned()
+            .unwrap_or_else(|| panic!("not an action list: {frame}"));
+        for op in ops {
+            if op["action"] == "inject" && op["name"] == "turn.done" {
+                done2 = true;
+                continue;
+            }
+            match op["action"].as_str().unwrap_or("") {
+                "set" => sets2.push(op["slot"].as_str().unwrap_or("").to_string()),
+                "patch" => {
+                    assert_eq!(op["slot"], "say.2", "turn 2 patches its OWN region: {op}");
+                    patched2.push_str(op["value"].as_str().unwrap_or(""));
+                }
+                "append" => {}
+                other => panic!("unexpected action `{other}`: {op}"),
+            }
+        }
+        if done2 {
+            break;
+        }
+    }
+    assert!(done2, "the second turn never finished");
+    assert_eq!(sets2, vec!["say.2".to_string()], "{sets2:?}");
+    assert!(!patched2.is_empty(), "the second turn streamed nothing");
 }

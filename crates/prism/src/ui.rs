@@ -6,7 +6,9 @@
 //!   rest of this crate dispatches.
 //! - `/channel` — the browser leg: downstream THE ACTION LIST, `Vec<content::Content>` as a
 //!   JSON/CBOR array (always an array, one action is a one-element array), upstream
-//!   `content::Outflow {event, id?, data}`. fluxen is pure UI and never adapts to a host, so
+//!   `content::Outflow {dest, id?, data}` — `dest` is the host-side target of the interaction;
+//!   `event` is not a word this wire uses (fluxen ADR 0023), and the downlink's `slot` is a
+//!   different thing on purpose (one is a page-side position, the other a host-side target). fluxen is pure UI and never adapts to a host, so
 //!   the host adapts here — and since fluxen 460d867 the ENVELOPE IS THE HOST'S, not the
 //!   wire's: a map on this socket is refused at the renderer's boundary.
 //!
@@ -71,8 +73,9 @@ pub(crate) type UiConns = Arc<std::sync::Mutex<std::collections::HashMap<u64, Ui
 /// The booth type the venue registers for itself: the application emits, this forwards.
 pub const RENDERER_BOOTH: &str = "renderer";
 
-/// The event an application emits to put frames on a renderer. One name, declared once.
-pub const VIEW_EVENT: &str = "view";
+/// The marker on every UI-facing name, both directions (ADR 0023's rule applied here): a page
+/// may only ever address, and be addressed by, `view:<name>`. Anything else is internal.
+const VIEW_PREFIX: &str = "view:";
 
 /// One renderer connection: its writer channel and the auth field a `login` writes. The
 /// table lives on [`Gateway`] so the acts that must reach every leg (revocation) see it.
@@ -105,14 +108,21 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns) {
         hooks: std::collections::BTreeMap::new(),
         // Singleton: the venue is one process, not one per client. A view event names the
         // renderer in its payload when it cares (`device`), and the fan-out happens here.
+        // ONE PREFIX ROUTE. Every UI-facing emit is `view:<name>` — the marker is what stops a
+        // page (or any transport) from forging an internal event — so the venue subscribes to
+        // the prefix, not to a list of names it would have to know in advance.
         receives: vec![aura_booth::ReceiveDecl {
-            event: VIEW_EVENT.to_string(),
+            // WITH the star: aura's consumer decides "wildcard" by `event.ends_with('*')`
+            // (`realm/src/instance.rs`), and a declaration without it would bind an exact queue
+            // named `view:` that nothing ever publishes to — the route matches, the delivery
+            // silently never happens.
+            event: format!("{VIEW_PREFIX}*"),
             resolution: aura_booth::RouteResolution::Singleton,
-            wildcard: false,
+            wildcard: true,
         }],
     };
     match engine.register(booth).await {
-        Ok(()) => println!("prism: view events reach renderers (booth `{RENDERER_BOOTH}`, event `{VIEW_EVENT}`)"),
+        Ok(()) => println!("prism: `{VIEW_PREFIX}<name>` reaches renderers (booth `{RENDERER_BOOTH}`, prefix route)"),
         Err(e) => eprintln!("prism: the renderer booth did not register: {e} — the UI will not update"),
     }
 }
@@ -122,41 +132,58 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns) {
 /// a bare frame stands alone. The frames are the renderer's vocabulary — the venue does not
 /// interpret them, which is why it can forward a layout, an append and a patch alike.
 pub(crate) fn forward(conns: &UiConns, payload: Value) {
-    // The TARGET comes from the payload; the FRAMES come from its `frames`/`content` field
-    // (or the payload is one frame). Reading the device off the frames value instead would
-    // make every named event a broadcast — a fan-out bug that looks like "it works".
-    let target = payload.get("device").and_then(Value::as_u64);
-    let frame_list: Vec<Value> = match payload.get("frames").or_else(|| payload.get("content")).cloned() {
-        Some(Value::Array(frames)) => frames,
-        Some(one) => vec![one],
-        None if payload.get("action").is_some() => vec![payload.clone()],
-        None => {
-            eprintln!("prism: view event carried no frames: {payload}");
-            return;
-        }
+    // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
+    // name is consumed by the dispatcher), so the emitter states it: `name` is the recipient
+    // event, marked with the same `view:` prefix as the emit itself. The venue strips the
+    // marker — the page is not a party to this vocabulary — and forwards the payload.
+    let Some(name) = payload.get("name").and_then(Value::as_str) else {
+        eprintln!("prism: view event without a `name`: nothing to deliver — {payload}");
+        return;
     };
-    let mut ops: Vec<Content<Value>> = Vec::with_capacity(frame_list.len());
-    for (index, frame) in frame_list.iter().cloned().enumerate() {
-        match serde_json::from_value::<Content<Value>>(frame) {
-            Ok(op) => ops.push(op),
-            Err(e) => eprintln!("prism: view frame #{index} is not an Accrete operation: {e}"),
+    let name = name.strip_prefix(VIEW_PREFIX).unwrap_or(name).to_string();
+    // Who it is for: the channel, or a single device. `sender` is excluded from the fan-out —
+    // a page does not hear its own input echoed back.
+    let target = payload
+        .get("channel_id")
+        .or_else(|| payload.get("device"))
+        .and_then(Value::as_u64);
+    let sender = payload
+        .get("sender")
+        .and_then(|s| s.get("device").and_then(Value::as_u64).or_else(|| s.as_u64()));
+    // What it is: an operation list is DRAWN; anything else is DATA and takes the vals plane,
+    // injected into the slot named by the event. Both shapes are legal on this wire and the
+    // renderer decides what it can do with them — a host that pre-validated would be teaching
+    // the page a second vocabulary.
+    let body = payload.get("data").cloned().unwrap_or_else(|| {
+        let mut rest = payload.clone();
+        if let Some(o) = rest.as_object_mut() {
+            for k in ["name", "channel_id", "device", "sender"] {
+                o.remove(k);
+            }
         }
-    }
+        rest
+    });
+    let ops: Vec<Content<Value>> = match body {
+        Value::Array(frames) => ops_of(frames, "view"),
+        other => inject(&name, &name, other),
+    };
     if ops.is_empty() {
-        eprintln!("prism: view event carried no decodable frames");
+        eprintln!("prism: view event `{name}` carried nothing deliverable");
         return;
     }
     let conns = conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sent = 0usize;
     for c in conns.values() {
-        if target.is_some_and(|t| t != c.device) {
+        if target.is_some_and(|t| t != c.device) || sender == Some(c.device) {
             continue;
         }
         let _ = c.tx.send(ops.clone());
         sent += 1;
     }
     if sent == 0 {
-        eprintln!("prism: view event reached no renderer (device {target:?}, {} frames)", ops.len());
+        eprintln!(
+            "prism: view event `{name}` reached no renderer (channel {target:?}, sender {sender:?})"
+        );
     }
 }
 
@@ -226,12 +253,17 @@ pub(crate) async fn serve(
             Ws::Close(_) => break,
             _ => continue, // ping/pong stay inside tungstenite
         };
-        let uplink: Outflow = match codec.decode_auto(&bytes) {
+        // The UPLINK is a map (`Outflow`), and fluxen's `decode_auto` now guards the DOWNSTREAM
+        // shape by first byte — it refuses a map on purpose ("the envelope belongs to the host"),
+        // which would refuse every uplink. So this side decodes with the codec the connection
+        // PINNED: a renderer's transport sends in that same codec, and a client that flips its
+        // encoder mid-connection is not a case worth a second parser.
+        let uplink: Outflow = match codec.decode(&bytes) {
             Ok(v) => v,
             Err(e) => {
                 // A frame we cannot read is the client's bug, and its payloads are not ours
                 // to guess. Say so on the log, keep the socket up.
-                eprintln!("prism: /ui uplink not decodable as Outflow: {e}");
+                eprintln!("prism: /channel uplink not decodable as Outflow: {e}");
                 continue;
             }
         };
@@ -252,14 +284,17 @@ async fn dispatch(
     device: u64,
     uplink: Outflow,
 ) {
-    let event = uplink.event.clone();
+    // The name the page sent. fluxen calls the uplink's destination `slot` (ADR 0023: one word
+    // per side, `event` belongs to the DOM and to aura). prism's own word for it is the intent
+    // of this connection — local, not on any wire.
+    let asked = uplink.dest.clone();
     let data = uplink.data;
-    match event.as_str() {
+    match asked.as_str() {
         "login" | "signup" => {
             let username = data.get("username").and_then(Value::as_str).unwrap_or("");
             let password = data.get("password").and_then(Value::as_str).unwrap_or("");
             let nickname = data.get("nickname").and_then(Value::as_str).unwrap_or("");
-            let outcome = if event == "signup" {
+            let outcome = if asked == "signup" {
                 gw.registry().signup(username, nickname, password, device)
             } else {
                 gw.registry().login(username, password, device)
@@ -269,10 +304,10 @@ async fn dispatch(
                     user.store(user_id, Ordering::Relaxed);
                     // The SAME slot `connected` wrote, with the event name saying which verb
                     // it was: a client reads `identity` and always sees who it is.
-                    gw.send_ui(id, identify(&format!("{event}.result"), json!({"device": device, "user": user_id})));
+                    gw.send_ui(id, identify(&format!("{asked}.result"), json!({"device": device, "user": user_id})));
                 }
                 Err(e) => {
-                    eprintln!("prism: /channel {event} refused: {e}");
+                    eprintln!("prism: /channel {asked} refused: {e}");
                     gw.send_ui(id, notice("error", Some(e.to_string())));
                 }
             }
@@ -287,7 +322,7 @@ async fn dispatch(
                 gw.send_ui(id, notice("error", Some(e.to_string())));
             }
         },
-        "turn.submit" | "turn.cancel" => turn(gw, id, user, device, &event, data).await,
+        "turn.submit" | "turn.cancel" => turn(gw, id, user, device, &asked, data).await,
         other => {
             // The auth gate runs BEFORE the call, reading the booth's persisted
             // interface_schema `auth` block — the same declaration face the peer leg
@@ -310,8 +345,18 @@ async fn dispatch(
                 // A booth may answer a layout, one operation, or a list — all of it is drawn
                 // by the same decoder, so the answer is one action list either way.
                 Ok(aura_booth::call::Waited::Done(Ok(v))) => {
+                    // AN OPERATION IS DRAWN; ANYTHING ELSE IS DATA, AND DATA HAS NO PATH DOWN
+                    // THIS LEG. The venue does not invent a name for it — names belong to the
+                    // emitter (a booth that wants the page to see something emits `view:<name>`
+                    // with the envelope that says which channel and who is talking). What is
+                    // left here is a diagnostic: an answer that draws nothing is a booth bug a
+                    // reader would otherwise hunt for in the renderer.
                     let ops = ops_of(vec![v], other);
-                    if !ops.is_empty() {
+                    if ops.is_empty() {
+                        eprintln!(
+                            "prism: /channel event `{other}` answered data, not operations — nothing to draw"
+                        );
+                    } else {
                         gw.send_ui(id, ops);
                     }
                 }
@@ -449,10 +494,16 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 /// plane exactly as an in-page emit would (fluxen ADR 0011), which is the only way this leg can
 /// say anything — a renderer refuses a frame that is not an action list, and that refusal is
 /// deliberate (a map here would be a second protocol).
-fn identify(event: &str, data: Value) -> Vec<Content<Value>> {
+fn identify(name: &str, data: Value) -> Vec<Content<Value>> {
+    inject(IDENTITY_SLOT, name, data)
+}
+
+/// One `inject` into a named slot. Every way this leg speaks goes through here, so the shape of
+/// "the venue says something" exists once.
+fn inject(slot: &str, name: &str, data: Value) -> Vec<Content<Value>> {
     vec![Content::Inject(InjectOp {
-        slot: IDENTITY_SLOT.to_string(),
-        event: Some(event.to_string()),
+        slot: slot.to_string(),
+        name: Some(name.to_string()),
         id: None,
         data,
     })]
@@ -461,15 +512,10 @@ fn identify(event: &str, data: Value) -> Vec<Content<Value>> {
 /// A refusal, a failure, or a turn's end — same mechanism, the notice slot. `detail` is the
 /// reason the log already carries; a layout may show it, and the venue decides nothing about
 /// how a page presents it.
-fn notice(event: &str, detail: Option<String>) -> Vec<Content<Value>> {
-    let mut data = json!({ "event": event });
+fn notice(name: &str, detail: Option<String>) -> Vec<Content<Value>> {
+    let mut data = json!({});
     if let Some(detail) = detail {
         data["detail"] = json!(detail);
     }
-    vec![Content::Inject(InjectOp {
-        slot: NOTICE_SLOT.to_string(),
-        event: Some(event.to_string()),
-        id: None,
-        data,
-    })]
+    inject(NOTICE_SLOT, name, data)
 }

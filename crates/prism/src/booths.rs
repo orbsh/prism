@@ -68,6 +68,26 @@ pub fn echo_booths() -> Vec<Echo> {
 (define (echo_priv args) (hash-ref args "sender"))"#
             .into(),
     });
+    // The DRAWN-answer booth: a booth answer that is an operation gets drawn, so a caller can
+    // see dispatch happen on the wire instead of inferring it from a log. This one hands back
+    // its `args` (what the caller sent), which is how a test supplies the operation.
+    #[cfg(feature = "steel")]
+    v.push(Echo {
+        type_name: "echo_frame",
+        language: "steel",
+        source: r#"(define (echo_frame args) (hash-ref args "args"))"#.into(),
+    });
+    // The same answer, behind the auth declaration: it proves an event is REFUSED anonymously
+    // and DELIVERED once a user is bound, without either half having to be inferred.
+    #[cfg(feature = "steel")]
+    v.push(Echo {
+        type_name: "echo_gate",
+        language: "steel",
+        source: r#"(define (interface_schema args)
+  (hash "auth" (hash "echo_gate" "required")))
+(define (echo_gate args) (hash-ref args "args"))"#
+            .into(),
+    });
     #[cfg(feature = "python")]
     v.push(Echo {
         type_name: "echo_python",

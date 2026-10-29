@@ -24,7 +24,7 @@ type WsClient =
 
 async fn boot(posture: Posture) -> (SocketAddr, std::sync::Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
-    let registry = Registry::open(&dir.into_path()).unwrap();
+    let registry = Registry::open(&dir.keep()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     let gw = Gateway::with_deployment(engine, registry, posture, Deployment::default());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -188,8 +188,9 @@ async fn open_admits_a_key_no_registry_knows() {
     assert!(gw.engine.realm.lock().await.effectors.contains_key("nobody-enrolled-this"));
 }
 
-/// The alias claim is stated twice (path and frame) and both must agree — a path that admitted
-/// any alias would make the URL a lie in every log line that follows.
+/// The alias claim is stated twice (path and frame) and both must agree — and the refusal says
+/// so on the wire, before the socket goes away. A bare reset would leave the node's operator
+/// looking at a closed connection and a host-side log they cannot read.
 #[tokio::test]
 async fn a_frame_claiming_another_alias_is_refused() {
     let (addr, _gw) = boot(Posture::Open).await;
@@ -211,21 +212,10 @@ async fn a_frame_claiming_another_alias_is_refused() {
     ))
     .await
     .unwrap();
-    // The mount bails before answering: the socket closes without `Registered`.
-    let mut closed = false;
-    while let Some(msg) = ws.next().await {
-        match msg.expect("ws msg") {
-            Ws::Close(_) => {
-                closed = true;
-                break;
-            }
-            Ws::Text(t) => {
-                if let Ok(Frame::Registered) = serde_json::from_str::<Frame>(&t) {
-                    panic!("an alias mismatch must never be registered");
-                }
-            }
-            _ => continue,
+    match recv_frame(&mut ws).await {
+        Frame::Refused { reason } => {
+            assert!(reason.contains("node1") && reason.contains("node2"), "{reason}");
         }
+        other => panic!("an alias mismatch must be refused, got {other:?}"),
     }
-    assert!(closed, "the mount closes on an alias mismatch");
 }

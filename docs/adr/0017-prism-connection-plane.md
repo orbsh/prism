@@ -134,3 +134,45 @@ true, and the paragraphs above that state them are superseded, not merely amende
 Consequence for tests: this leg's assertions read arrays (`frame[0]["action"]`), never
 `frame["ev"]`. `crates/prism/tests/ui_leg.rs` locks the new shapes, including that a booth's
 answer must BE an operation to be drawn.
+
+## Update — 2026-10-29 (later still): both directions are `view:<name>`, and a booth never answers into the page
+
+The renderer leg is a TRANSPORT in both directions, and the marker is what makes that safe. What
+follows is the settled shape; it replaces the "booth's answer becomes frames" reading that this
+record carried earlier the same day.
+
+**One vocabulary, marked.** Everything that crosses this leg is named `view:<name>`. The marker
+is not decoration: a page may only ever address, and be addressed by, `view:`-prefixed names, so
+it cannot forge an internal event no matter what it sends. prism subscribes to the PREFIX
+(`view:*` — aura's wildcard stores the prefix, so the declaration carries the star), one
+singleton route, not a list of event names it would have to know in advance.
+
+**Uplink.** A page emits `Outflow {slot, id?, data}` (`slot` is where the interaction goes; the
+word `event` is not on this wire — fluxen ADR 0023). The venue wraps it and emits
+`view:<slot>` — payload `{channel_id, sender, data}` — and aura routes it to the booth bound to
+that name. The chunk of knowledge the venue adds is the ENVELOPE: which channel, who is talking.
+The booth learns what happened from its own declaration (`@on("view:add-to-cart")`), never from
+a runtime event name.
+
+**Downlink.** A booth emits `view:<name>` with `{name, channel_id, sender, data}`; the `name`
+carries the marker too, because a Rust booth body is not told which event fired (the dispatcher
+consumes the concrete name). The venue strips the marker, excludes the `sender` from the fan-out —
+a page does not hear its own input echoed — and hands the payload on.
+
+**Two payload shapes, both legal.** An OPERATION LIST is drawn. Anything else is DATA and goes
+out as `inject {slot: <name>, name: <name>, data}`: the surface is the vals plane, exactly as if
+the page had emitted that name itself. The venue does not pre-validate beyond decoding — a host
+that checked would be enforcing a second vocabulary on top of fluxen's, and fluxen is where a
+frame's validity is decided.
+
+**What this deletes.** A booth's RETURN VALUE is not a way to reach the page. `invoke` is not the
+channel here: an answer that is not an operation list draws nothing, and the venue does not
+invent a name for it (`<event>.result` was such an invention; gone). What remains at the call
+site is one diagnostic line, because an answer that draws nothing is otherwise hunted for in the
+renderer.
+
+**Owed, and named here so it is not forgotten:** prism's own speech (`identity` on connect and
+after `login`/`logout`, `notice` on a refusal or a turn's end) still rides two slot constants.
+Under this model the venue is just another emitter and would say `view:identity` /
+`view:notice` like anyone else, which retires both constants — but that also decides how login
+results and refusal reasons reach a page, so it is a ruling, not a cleanup.

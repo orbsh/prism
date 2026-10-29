@@ -53,13 +53,23 @@ async fn boot() -> (std::net::SocketAddr, aura_engine::Engine) {
     (addr, engine)
 }
 
+/// A node keypair on disk for the dial (effector ADR-0002: possession is proved by signing the
+/// host's nonce, not by sharing a token, so every dial needs its own key file).
+fn node_key(alias: &str) -> String {
+    let mut path = std::env::temp_dir();
+    path.push(format!("prism-mount-{alias}-{}.key", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    effector_protocol::write_keypair(&path).unwrap();
+    path.display().to_string()
+}
+
 /// The real effector's dial config, pointed at prism's mount path.
 fn effector_config(port: u16, alias: &str) -> effector_config::EffectorConfig {
     effector_config::EffectorConfig {
         control_plane_url: format!("ws://127.0.0.1:{port}/effector/{alias}"),
         // The call path, not the sandbox (steel runs in-process).
         sandbox: true,
-        credential_env: "PRISM_MOUNT_E2E_CREDENTIAL".into(),
+        private_key_path: node_key(alias),
         capabilities: effector_config::CapabilitySurface {
             node_alias: alias.into(),
             carriers: vec!["steel".into()],
@@ -219,10 +229,20 @@ async fn effector_mount_refuses_alias_mismatch() {
     .await
     .expect("ws handshake on the mount path");
 
+    // The host speaks first (a per-connection nonce); the node answers with a SIGNED register.
+    let nonce = match ws.next().await {
+        Some(Ok(Message::Text(t))) => match serde_json::from_str::<effector_protocol::Frame>(&t) {
+            Ok(effector_protocol::Frame::Challenge { nonce }) => nonce,
+            other => panic!("expected a challenge, got {other:?}"),
+        },
+        other => panic!("expected a challenge, got {other:?}"),
+    };
+    let key = effector_protocol::read_signing_key(std::path::Path::new(&node_key("mismatch"))).unwrap();
     // The WRONG alias (path said test-node).
     let frame = effector_protocol::Frame::Register {
         node_alias: "other-node".into(),
-        credential: "tok".into(),
+        public_key: effector_protocol::public_key_b64(&key),
+        signature: effector_protocol::sign_register(&key, &nonce, "other-node"),
         carriers: vec!["steel".into()],
     };
     ws.send(Message::Text(serde_json::to_string(&frame).unwrap().into()))

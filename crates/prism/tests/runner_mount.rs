@@ -128,13 +128,17 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         "both mounts registered"
     );
 
-    // The node dials in (a real effector, node side of the same stack).
-    std::env::set_var("PRISM_RUNNER_E2E_CREDENTIAL", "tok");
+    // The node dials in (a real effector, node side of the same stack): a key file, not a
+    // shared token — the mount verifies a signature over its nonce (effector ADR-0002).
+    let mut key_path = std::env::temp_dir();
+    key_path.push(format!("prism-runner-e2e-{}.key", std::process::id()));
+    let _ = std::fs::remove_file(&key_path);
+    effector_protocol::write_keypair(&key_path).unwrap();
     let config = effector_config::EffectorConfig {
         control_plane_url: format!("ws://127.0.0.1:{}/effector/runner-node", addr.port()),
         // The policy belongs to the deployment; this test locks the call path.
         sandbox: false,
-        credential_env: "PRISM_RUNNER_E2E_CREDENTIAL".into(),
+        private_key_path: key_path.display().to_string(),
         capabilities: effector_config::CapabilitySurface {
             node_alias: "runner-node".into(),
             carriers: vec!["exec".into()],
