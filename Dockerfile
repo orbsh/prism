@@ -75,6 +75,14 @@ COPY --from=build /out/prism /usr/local/bin/prism
 COPY --from=guests /usr/local/bin/gravity-turn /usr/local/bin/gravity-turn
 COPY --from=guests /usr/local/bin/gravity-provider /usr/local/bin/gravity-provider
 
+# The renderer's faces (ADR-0017 §8): the bundle IS the origin, and the layout is a
+# deployment fact. Both are staged by the build harness into `venue/` — the image carries an
+# artifact, so the front end is never rebuilt here and the trunk version that made it is the
+# one fluxen's own image pins. `PRISM_ASSETS`/`PRISM_INIT` are defaults a deployment may
+# override (`-e PRISM_INIT=event:ui_init` for a venue whose layout comes from a booth).
+COPY venue/dist/ /app/dist/
+COPY venue/layout/ /app/layout/
+
 # The steel echo booth keeps a home directory under `$HOME` and does not create its
 # parents; without this it logs "Unable to create steel home directory" at every boot
 # and the steel verb answers from a booth with no home.
@@ -84,7 +92,9 @@ RUN mkdir -p /root/.local/share/steel
 # lives. Everything else — store URL, model endpoint, key variable NAME — belongs to
 # the deployment that runs this image, so it is left unset rather than guessed.
 ENV PRISM_ADDR=0.0.0.0:8765 \
-    PRISM_DATA=/data
+    PRISM_DATA=/data \
+    PRISM_ASSETS=/app/dist \
+    PRISM_INIT=file:/app/layout/venue.yaml
 VOLUME ["/data"]
 EXPOSE 8765
 
