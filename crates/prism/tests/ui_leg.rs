@@ -42,6 +42,24 @@ async fn get(addr: SocketAddr, path: &str) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// One raw HTTP POST with a JSON body (the admin faces).
+async fn post_json(addr: SocketAddr, path: &str, body: Value) -> String {
+    let payload = serde_json::to_string(&body).unwrap();
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(
+        format!(
+            "POST {path} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{payload}",
+            payload.len()
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).await.unwrap();
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
 /// A renderer connection: the browser leg, JSON pinned for readable assertions.
 async fn open_ui(addr: SocketAddr) -> WsClient {
     let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ui?codec=json"))
@@ -181,4 +199,84 @@ async fn the_peer_leg_keeps_its_own_shape() {
     assert_eq!(frame["ev"], "connected");
     assert!(frame.get("args").is_some(), "peer leg answers with args: {frame}");
     assert!(frame.get("content").is_none(), "peer leg carries no Accrete: {frame}");
+}
+
+/// Application uplinks reach the booth plane: the booth NAMED BY THE EVENT is called, and
+/// its answer comes back as frames (a terminator at minimum). `echo_steel` answers with the
+/// envelope, which is not an Accrete operation — the leg skips it, logs it, and still
+/// terminates the answer. The point under test is the DISPATCH, not the echo's shape.
+#[tokio::test]
+async fn an_uplink_dispatches_to_the_booth_named_by_the_event() {
+    let addr = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let _hello = recv_json(&mut ws).await;
+    send_uplink(&mut ws, json!({"event": "echo_steel", "data": {"msg": "hi"}})).await;
+    let done = recv_json(&mut ws).await;
+    assert_eq!(done["ev"], "echo_steel.result", "{done}");
+}
+
+/// The per-event auth declaration is enforced on THIS leg too, with the same surface: a
+/// booth that declares `auth` refuses an anonymous renderer, and the socket stays up.
+#[tokio::test]
+async fn the_auth_declaration_gates_the_renderer_leg() {
+    let addr = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let _hello = recv_json(&mut ws).await;
+
+    send_uplink(&mut ws, json!({"event": "echo_priv", "data": {}})).await;
+    assert_eq!(recv_json(&mut ws).await["ev"], "error", "anonymous sender must be refused");
+
+    // signup on the leg: the account is prism's, and the answer carries who we are.
+    send_uplink(
+        &mut ws,
+        json!({"event": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let signed = recv_json(&mut ws).await;
+    assert_eq!(signed["ev"], "signup.result", "{signed}");
+    assert!(signed["sender"].as_str().unwrap().starts_with("user:"), "{signed}");
+
+    // Bound now: the declared-auth event reaches the booth (its answer terminates).
+    send_uplink(&mut ws, json!({"event": "echo_priv", "data": {}})).await;
+    assert_eq!(recv_json(&mut ws).await["ev"], "echo_priv.result");
+
+    // After logout the same event is refused again — the field, not the account row, is
+    // what the gate reads, and it is cleared on the same socket.
+    send_uplink(&mut ws, json!({"event": "logout", "data": null})).await;
+    assert!(recv_json(&mut ws).await["sender"].as_str().unwrap().starts_with("device:"));
+    send_uplink(&mut ws, json!({"event": "echo_priv", "data": {}})).await;
+    assert_eq!(recv_json(&mut ws).await["ev"], "error");
+}
+
+/// Revocation reaches BOTH legs: a revoked device's renderer socket is closed, not left
+/// watching a page that still believes it is logged in.
+#[tokio::test]
+async fn revocation_kicks_the_renderer_leg_too() {
+    let addr = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let hello = recv_json(&mut ws).await;
+    let device: u64 = hello["sender"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("device:")
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Bind an account so this connection carries an auth field worth clearing.
+    send_uplink(&mut ws, json!({"event": "signup", "data": {"username": "grace", "password": "p"}})).await;
+    assert_eq!(recv_json(&mut ws).await["ev"], "signup.result");
+
+    let resp = post_json(addr, "/admin/revoke", json!({"device_id": device})).await;
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+
+    // The pump closes the socket (the table dropped its sender).
+    let mut closed = false;
+    while let Some(msg) = ws.next().await {
+        if matches!(msg.expect("ws msg"), Ws::Close(_)) {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "a revoked renderer connection must be closed");
 }

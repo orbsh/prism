@@ -126,6 +126,11 @@ pub struct Gateway {
     /// one submit at a time per connection). Shared behind an Arc so
     /// the spawned stream pump can free its slot on completion.
     turns: std::sync::Arc<std::sync::Mutex<turns::TurnTable>>,
+    /// The renderer's connections (ADR-0017 §8). A separate table from `conns` because
+    /// the two legs write different frame types — but the SAME identity facts: a device,
+    /// and the auth field a `login` writes. Keeping them apart is what lets one leg speak
+    /// Accrete without teaching the peer leg about it.
+    ui_conns: Arc<Mutex<HashMap<u64, ui::UiConn>>>,
 }
 
 /// The handshake extras read in accept_hdr (before the upgrade
@@ -162,6 +167,7 @@ impl Gateway {
             conns: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             turns: Arc::new(std::sync::Mutex::new(turns::TurnTable::new())),
+            ui_conns: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -169,6 +175,40 @@ impl Gateway {
     /// surface + the handshake's future verdict source).
     pub fn nodes(&self) -> nodes::NodeStore {
         self.registry.nodes()
+    }
+
+    /// Register a renderer connection; returns its id and the auth field the leg writes.
+    pub(crate) fn register_ui(
+        &self,
+        tx: mpsc::UnboundedSender<content::Message<serde_json::Value>>,
+        device: u64,
+    ) -> (u64, Arc<AtomicU64>) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let user = Arc::new(AtomicU64::new(0));
+        self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
+            id,
+            ui::UiConn { tx, device, user: Arc::clone(&user) },
+        );
+        (id, user)
+    }
+
+    /// Queue one frame to a renderer connection. The TABLE owns the sender: a removed
+    /// entry closes the channel, and that is what actually ends the writer (the peer leg's
+    /// discipline — a local sender kept across the read loop makes revocation unable to
+    /// close anything).
+    pub(crate) fn send_ui(&self, id: u64, msg: content::Message<serde_json::Value>) {
+        if let Some(c) = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
+            let _ = c.tx.send(msg);
+        }
+    }
+
+    pub(crate) fn unregister_ui(&self, id: u64) {
+        self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+    }
+
+    /// The account/device facts (the same registry the peer leg uses — identity has one home).
+    pub(crate) fn registry(&self) -> &identity::Registry {
+        &self.registry
     }
 
     /// The `init` source, if this deployment declared one (`PRISM_INIT`).
@@ -276,15 +316,17 @@ impl Gateway {
         let Some(head) = code_export::read_head(&mut stream).await else {
             return Ok(()); // client died mid-head: nothing to serve
         };
-        if let Some(response) = admin::serve_admin(&self.nodes(), &head.method, &head.path, &head.body) {
+        // The revocation face needs the WHOLE gateway (registry + live-connection
+        // table), not just the node store, and it must be asked FIRST: `serve_admin`
+        // claims every path under `/admin` (answering 404 for the ones it does not
+        // know), so routing it first made `POST /admin/revoke` unreachable — a dead
+        // route behind a live-looking handler (found by the renderer-leg suite).
+        if let Some(response) = admin::serve_revoke(self.as_ref(), &head.method, &head.path, &head.body).await {
             let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;
             return Ok(());
         }
-        // The revocation face needs the WHOLE gateway (registry +
-        // live-connection table), not just the node store — same
-        // curl-first accept loop, routed before the WS handshake.
-        if let Some(response) = admin::serve_revoke(self.as_ref(), &head.method, &head.path, &head.body).await {
+        if let Some(response) = admin::serve_admin(&self.nodes(), &head.method, &head.path, &head.body) {
             let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;
             return Ok(());
@@ -579,6 +621,22 @@ impl Gateway {
         for id in dead {
             conns.remove(&id);
         }
+        drop(conns);
+        // The renderer's leg carries the same auth field, so it is cleared and kicked by the
+        // same act: clearing only the peer table would leave a revoked device watching a
+        // browser tab that still believes it is logged in.
+        let mut ui = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ui_dead = Vec::new();
+        for (id, c) in ui.iter() {
+            if c.device == device_id {
+                c.user.store(0, Ordering::Relaxed);
+                ui_dead.push(*id);
+                kicked += 1;
+            }
+        }
+        for id in ui_dead {
+            ui.remove(&id);
+        }
         Ok(kicked)
     }
 
@@ -732,7 +790,7 @@ impl Gateway {
     /// requirement. An unresolvable declaration is fail-OPEN: a missing
     /// block never silently blocks a public event — the declared-auth
     /// case requires the block to be present.
-    async fn handler_requires_auth(&self, ev: &str) -> bool {
+    pub(crate) async fn handler_requires_auth(&self, ev: &str) -> bool {
         self.engine
             .realm
             .lock()
