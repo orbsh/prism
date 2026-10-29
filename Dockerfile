@@ -49,6 +49,10 @@ COPY effector/ effector/
 COPY induction/ induction/
 COPY krystallizer/ krystallizer/
 COPY gravity/ gravity/
+# fluxen is a PATH dependency of the renderer leg (`content = { path = "../../../fluxen/..." }`):
+# the wire type lives in that repo, so the build needs the checkout even though nothing of
+# fluxen's is shipped from here — the bundle that IS shipped is staged under `venue/`.
+COPY fluxen/ fluxen/
 COPY prism/ prism/
 
 # No `RUSTFLAGS`: libpython lives in /usr/local/lib here, which the linker searches

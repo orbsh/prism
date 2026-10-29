@@ -20,6 +20,37 @@ THE TURN ON THE RENDERER LEG 2026-10-29 (fifth cut): `turn.submit`/`turn.cancel`
 PUSH, NOT ASK — AND THE BUG IT EXPOSED 2026-10-29 (fourth cut, user's correction): the layout is pushed on connect; there is no `init` verb on the leg. `PRISM_INIT=file:<path>` pushes the boot-read frames (+ empty `init.result`); `PRISM_INIT=event:<name>` EMITS that event (`ui_init`) and stops — the application's own work ends in view events, and the venue forwards them: it registers a booth type for itself (`renderer`) with handler `view` and pushes `{device?, frames}` payloads to the renderers they name (all, when unnamed). A Rust-body booth because the venue is in this process. Absent source answers `init.error` on connect. TESTED end to end in headless chromium with NO page-side code: page loads, frames pushed, two-column shell draws — and getting there found a REAL fluxen bug: `ui_core`'s transport bridge kept ONE latest frame in a signal, so a burst (layout + terminator) lost all but the last, which the user-visible symptom "connected but blank" hides perfectly. Fixed there to a queue drained in order (a layout must arrive before the `set`s that follow it), which is what makes push-on-connect usable at all. `tests/ui_leg.rs` 9/9 (pushes on connect, event source + view forwarding, device targeting, no-source refusal).
 MOUNT + LEG NAMED 2026-10-29 (third cut, from a browser standing on the real bundle): the bundle is served AT THE ORIGIN (`/` = its index.html, every other unreserved path = that file; reserved prefixes routed first, so a bundle cannot shadow a verb) instead of under `/assets/` — that is stage's shape and it is what makes the artifact work as trunk emitted it (no `--public-url`, no link rewriting, one build for reflux and prism too). The leg is `/channel`, the name the renderer's page already connects to, so the bundle needs no configuration. Verified end to end in headless chromium: page loads, device connects, `init` answered from `layout/venue.yaml` (gravitational-prism), and the two-column shell renders (`.stage-split`/`.stage-graph`/`.stage-stream`/`.--message`/input all present; screenshot inspected). One finding that decides the next unit: THE EXAMPLE PAGE NEVER ASKS FOR `init` — the renderer's core does not, on purpose (a push on connect would race the boot), and `examples/renderer` is a reference host pointed at stage. So a host that serves that bundle as-is gets a connected, empty page; prism's own small page (mount the core, ask for the layout, then get out of the way) is the owed piece, not a nicety.
 STILL OWED here: prism's front-end page/boot crate (the `init` ask); the turn's `protocol=fluxen` stream landing in a layout slot; the bundle's route into the image; per-client instance partitioning on the leg (one `Named("channel")` instance serves every renderer until sessions exist). `tests/ui_leg.rs` 4/4, lib 13/13.
+
+## Next, in order — and what is WAITING on fluxen (2026-10-29)
+
+GATE: fluxen is REMOVING THE WIRE ENVELOPE. Everything below is written against today's wire
+(`content::Message` down / `content::Outflow` up, and prism wrapping booth answers as
+`Message{ev:"draw"}`), so nothing here starts until that refactor lands. When it does, re-derive
+the shapes from fluxen's own docs/ADR and change, in one pass: `ui.rs` (decode/encode, `draw`,
+`verb`), `turns.rs` (`turn.frames` → frames), gravity's `protocol=fluxen` item (`frames` inside
+the envelope), and the renderer-leg tests' assertions (they read `frame["ev"]` / `frame["content"]`).
+Do not guess the post-refactor shape in advance; the contract is fluxen's to state.
+
+- N1 — THE TEXT SLOT MUST BE PER TURN (defect, prism's side). `UI_TEXT` is the constant `"say"`,
+  so turn 2's `set` + patches rewrite the region that turn 1's bubble also binds (`kind: source`):
+  each frame is individually correct and the history smears. Fix: a per-device turn counter, slot
+  `say.<n>` declared per turn (the caller names slot), and a TWO-TURN e2e that fails today.
+- N2 — LOGIN AS A COMPONENT IN THE LAYOUT. `signup`/`login`/`logout` exist on the leg and answer
+  `<verb>.result`; the UI has no entry point, so a stranger can look but not ask (the turn type
+  declares `turn: true`). Add the form to `layout/venue.yaml` (input + button, `bind: kind: event`)
+  and let the leg's answers arrive as view frames.
+- N3 — SESSIONS INSTEAD OF DEVICES. The leg partitions by device id today; sessions are the real
+  key, and "connect and see the history" is the `event:ui_init` path already ruled (the venue emits,
+  an application booth projects k10r's session into view frames). Needs the session concept first.
+- N4 — THE NODE HANDSHAKE (Phase 1.8 step 2, unblocked 2026-10-29): `docs/handshake-plan.md`.
+  NOT gated by fluxen — a separate landing with effector; do it whenever, it is what makes
+  `required` honest.
+
+CORRECTION (2026-10-29): the "STILL OWED: prism's front-end page/boot crate (the `init` ask)"
+line below is VOID — the user's ruling replaced client-asked `init` with a push on connect, so no
+page-side ask exists and the stock bundle works against this venue unchanged. Likewise the
+"`/assets/` mount + `--public-url`" prerequisite is VOID: the bundle is the origin.
+
   Prerequisites: the user registry table (§7) is LANDED (2026-09-26 — `identity.rs`, prism's own okm instance, ns 50 `Account` + ns 51 device bindings); the `/effector/<alias>` mount is LANDED (f5837d2) and its handshake is UNBLOCKED 2026-10-29 (Phase 1.8 step 2). On the bundle side the artifact owes two things this repo does not supply: an `index.html` in the release bundle, and a build whose public URL is `/assets/` (trunk `--public-url`), so the mount point is the artifact's declaration rather than a rewrite here. The UI leg speaks the RENDERER's wire, and the adaptation is this repo's: downstream `content::Message {ev, sender, created?, content}`, upstream `content::Outflow {event, id?, data}`; prism's own verbs ride `ev != "draw"` frames, which the renderer ignores by design — one shape per leg, never two shapes on one leg (`{ev, args}` stays the CLI/effector/peer shape). This repo therefore supplies a transport implementation and a boot in a small front-end crate that re-wraps fluxen's `ui-core`; fluxen is pure UI and carries NO per-host adapter (its own WS transport is a seam implementation, not the protocol) — fluxen ADR 0021, `fluxen/docs/external-integration.md` (en + zh). Streaming format is a call argument on the producer: gravity's turn takes `protocol` (`data` — raw deltas, default — or `fluxen` — view frames against the slot the layout declares). No code yet in this repo.
 
 Deferred gates:
