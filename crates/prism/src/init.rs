@@ -26,8 +26,11 @@ use std::path::Path;
 pub enum InitSource {
     /// Frames read from a document at boot.
     File(Vec<Value>),
-    /// Frames produced by a global booth on every `init`.
-    Event { booth_type: String, handler: String },
+    /// An EVENT emitted into the plane on every renderer connect. The venue does not wait
+    /// for an answer: whatever the application does after that (a call, a query, a whole
+    /// conversation with a model) ends in view events, and those are what the renderer
+    /// sees. A call would put the venue in the middle of the application's work.
+    Event { event: String },
 }
 
 impl InitSource {
@@ -39,25 +42,24 @@ impl InitSource {
             return Ok(Self::File(read_document(Path::new(path))?));
         }
         if let Some(rest) = spec.strip_prefix("event:") {
-            let (booth_type, handler) = rest
-                .split_once('/')
-                .filter(|(t, h)| !t.is_empty() && !h.is_empty())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("PRISM_INIT 'event:' wants `<booth_type>/<handler>`, got `{rest}`")
-                })?;
-            return Ok(Self::Event { booth_type: booth_type.to_string(), handler: handler.to_string() });
+            let event = rest.trim();
+            if event.is_empty() {
+                anyhow::bail!("PRISM_INIT 'event:' wants an event name, got `{rest}`");
+            }
+            return Ok(Self::Event { event: event.to_string() });
         }
         if spec.starts_with("webhook:") {
             anyhow::bail!(
                 "PRISM_INIT 'webhook:' is refused (2026-10-29 ruling): a gateway fetch puts a \
                  network dependency and a config surface on the client's first event and buys \
-                 nothing a booth cannot do — use `event:<type>/<handler>` and make the call \
-                 inside the handler's body"
+                 nothing a booth cannot do — use `event:<name>` and make the HTTP call inside \
+                 the booth that reacts to it"
             );
         }
         anyhow::bail!(
             "PRISM_INIT must be `file:<path>` (YAML or JSON frame list, read at boot) or \
-             `event:<booth_type>/<handler>` (a global booth's answer), got `{spec}`"
+             `event:<name>` (an event emitted on every renderer connect, e.g. `ui_init`), \
+             got `{spec}`"
         )
     }
 
@@ -73,8 +75,8 @@ impl InitSource {
     pub fn describe(&self) -> String {
         match self {
             Self::File(frames) => format!("prism: init layout from a file, {} frame(s)", frames.len()),
-            Self::Event { booth_type, handler } => {
-                format!("prism: init layout from booth `{booth_type}` handler `{handler}` (singleton)")
+            Self::Event { event } => {
+                format!("prism: init layout: emit `{event}` on each renderer connect")
             }
         }
     }
@@ -121,17 +123,16 @@ mod tests {
         let err = InitSource::parse("webhook:https://example/say").expect_err("refused");
         let text = err.to_string();
         assert!(text.contains("refused"), "{text}");
-        assert!(text.contains("event:<type>/<handler>"), "{text}");
+        assert!(text.contains("event:<name>"), "{text}");
     }
 
     #[test]
     fn forms_parse() {
-        assert!(matches!(
-            InitSource::parse("event:chat/layout").expect("event form"),
-            InitSource::Event { .. }
-        ));
-        assert!(InitSource::parse("event:chat").is_err(), "handler missing");
-        assert!(InitSource::parse("event:/layout").is_err(), "type missing");
+        match InitSource::parse("event:ui_init").expect("event form") {
+            InitSource::Event { event } => assert_eq!(event, "ui_init"),
+            InitSource::File(_) => panic!("an event source, not a file"),
+        }
+        assert!(InitSource::parse("event:").is_err(), "empty name");
         assert!(InitSource::parse("nonsense").is_err(), "unknown form");
         assert!(InitSource::parse("file:/nonexistent/layout.yaml").is_err(), "unreadable file");
     }

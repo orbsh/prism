@@ -130,7 +130,7 @@ pub struct Gateway {
     /// the two legs write different frame types — but the SAME identity facts: a device,
     /// and the auth field a `login` writes. Keeping them apart is what lets one leg speak
     /// Accrete without teaching the peer leg about it.
-    ui_conns: Arc<Mutex<HashMap<u64, ui::UiConn>>>,
+    ui_conns: ui::UiConns,
 }
 
 /// The handshake extras read in accept_hdr (before the upgrade
@@ -190,6 +190,15 @@ impl Gateway {
             ui::UiConn { tx, device, user: Arc::clone(&user) },
         );
         (id, user)
+    }
+
+    /// Emit into the default realm, fire and forget. A failure is a LOG, not a reply: the
+    /// application's readiness is not the renderer's business (its frames are), and a
+    /// connect that dies because an emit failed would be a worse venue than one that says so.
+    pub(crate) async fn emit(&self, event: &str, data: serde_json::Value) {
+        if let Err(e) = aura_realm::Realm::emit(&self.engine.realm, None, event, data).await {
+            eprintln!("prism: emit `{event}` failed: {e}");
+        }
     }
 
     /// Queue one frame to a renderer connection. The TABLE owns the sender: a removed
@@ -285,6 +294,9 @@ impl Gateway {
     /// line states the trust posture where it is visible (ADR-0015 §7's
     /// disclosure rule) — an `open` deployment says so in its own log.
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
+        // The venue is also a subscriber: an application's view events become renderer
+        // frames. Installed here so every path that serves (tests, `main`) gets it.
+        ui::install(&self.engine, std::sync::Arc::clone(&self.ui_conns)).await;
         match self.posture {
             nodes::Posture::Required => {
                 eprintln!("prism: identity posture: `required` (ed25519 handshake gates effectors — ADR-0015)")
@@ -710,7 +722,7 @@ impl Gateway {
                 let _ = c.tx.send(Frame::new(ev, a));
             }
         };
-        tokio::spawn(turns::run_turn(realm, table, config, id, session_id, content, send));
+        tokio::spawn(turns::run_turn(realm, table, config, id, session_id, content, None, send));
     }
 
     /// `turn.cancel {}` — dispose this connection's live turn. The
@@ -720,7 +732,7 @@ impl Gateway {
     /// next pull fails ("not live") and reports `turn.error`; the
     /// slot frees. Cancel with no live turn is idempotent-ok
     /// (logout's shape).
-    fn turn_cancel(&self, id: u64) {
+    pub(crate) fn turn_cancel(&self, id: u64) {
         let taken = {
             let t = self.turns_arc();
             let mut guard = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -750,7 +762,7 @@ impl Gateway {
 
     /// The turn table behind a shared handle (the spawned pump frees
     /// its slot through this Arc on completion).
-    fn turns_arc(&self) -> std::sync::Arc<std::sync::Mutex<turns::TurnTable>> {
+    pub(crate) fn turns_arc(&self) -> std::sync::Arc<std::sync::Mutex<turns::TurnTable>> {
         Arc::clone(&self.turns)
     }
 

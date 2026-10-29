@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
         println!("{line}");
     }
     if deployment.assets.is_none() {
-        println!("prism: no renderer bundle (PRISM_ASSETS unset) — /assets/ answers 404");
+        println!("prism: no renderer bundle (PRISM_ASSETS unset) — / serves nothing");
     }
     let gw = Gateway::with_deployment(engine, registry, posture, deployment);
 
@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     println!(
         "prism: ws://{addr}/ws — CBOR default, ?protocol=json for debug; \
          verbs: echo (steel|python|nushell), echo_sender, signup, login, broadcast, ping; \
-         static: GET /code/<sha256> (ADR-0027 export); renderer leg: /ui (Message/Outflow)"
+         static: GET /code/<sha256> (ADR-0027 export); renderer leg: /channel (Message/Outflow)"
     );
     gw.serve(listener).await
 }

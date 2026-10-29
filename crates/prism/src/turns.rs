@@ -192,6 +192,7 @@ impl TurnTable {
 
 /// One pulled stream envelope, classified for the frame translation.
 enum Pulled {
+    Frames(Vec<Value>),
     Delta(String),
     Done(Value),
     Malformed(String),
@@ -201,14 +202,28 @@ enum Pulled {
 /// carrier wraps every generator `yield` as `item` (done:false), the
 /// terminal round (done:true) delivers its `value` as the turn's
 /// result.
+/// What a caller may ask the turn to say: raw deltas (`data`, the default) or view frames
+/// against slots IT names (`fluxen`). The slots are the caller's because a layout's names
+/// belong to whoever wrote the layout — the executor has no layout and must not invent one.
+#[derive(Clone, Debug)]
+pub struct ViewSlots {
+    pub rack: String,
+    pub text: String,
+}
+
 fn classify(v: &Value, done: bool) -> Pulled {
     if done {
         return Pulled::Done(v.get("value").cloned().unwrap_or(Value::Null));
     }
     let item = v.get("item");
+    // View protocol first: a batch of Accrete frames, forwarded as received (the venue does
+    // not read them — that is what lets a layout, a patch and an append travel the same way).
+    if let Some(Value::Array(frames)) = item.and_then(|i| i.get("frames")) {
+        return Pulled::Frames(frames.clone());
+    }
     match item.and_then(|i| i.get("delta")).and_then(|d| d.as_str()) {
         Some(d) => Pulled::Delta(d.to_string()),
-        None => Pulled::Malformed("envelope item carries no delta string".into()),
+        None => Pulled::Malformed("envelope item carries neither `delta` nor `frames`".into()),
     }
 }
 
@@ -241,6 +256,7 @@ pub async fn run_turn(
     conn: u64,
     session_id: String,
     user_message: String,
+    view: Option<ViewSlots>,
     mut send: impl FnMut(&str, Value) + Send + 'static,
 ) {
     // The instance key IS the channel id (one conversation log per
@@ -251,6 +267,12 @@ pub async fn run_turn(
     args["channel_id"] = json!(session_id.parse::<u64>().unwrap_or(1));
     args["member_id"] = json!(1);
     args["user_message"] = json!(user_message);
+    if let Some(slots) = &view {
+        // The caller asks; the executor obeys. Absent = `data` (the CLI's fields), so a
+        // non-UI consumer never pays for a vocabulary it cannot draw.
+        args["protocol"] = json!("fluxen");
+        args["slots"] = json!({ "rack": slots.rack, "text": slots.text });
+    }
     let target = InstanceId {
         booth_type: EXECUTOR_TYPE.into(),
         key: InstanceKey::Named(session_id),
@@ -302,6 +324,7 @@ pub async fn run_turn(
         }
         match classify(&v, done) {
             Pulled::Delta(d) => send("turn.delta", json!({"delta": d})),
+            Pulled::Frames(frames) => send("turn.frames", json!({"frames": frames})),
             Pulled::Done(value) => {
                 send("turn.done", json!({"value": value}));
                 table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(conn);
