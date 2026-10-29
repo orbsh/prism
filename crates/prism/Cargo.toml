@@ -23,6 +23,10 @@ base64 = "0.22"
 aura-realm = { path = "../../../aura/crates/realm" }
 gravity-booth = { path = "../../../gravity/crates/booth" }
 effector-protocol = { path = "../../../effector/crates/protocol" }
+# The renderer's wire (ADR-0017 §8): prism speaks fluxen's `content` on the /ui leg —
+# Message down, Outflow up — so the shapes are the renderer's types, not a paraphrase.
+content = { path = "../../../fluxen/crates/content" }
+serde_yaml = "0.9"
 
 [dev-dependencies]
 tempfile = "3"

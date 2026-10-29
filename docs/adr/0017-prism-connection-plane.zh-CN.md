@@ -98,6 +98,8 @@ Phase 1.10 悬着的问题作为一个部署事实收口，不引入新机制。
 
 **布局是第一个视图操作，不是一种信封。** `init` 用普通 `create` 帧答布局（`file:` 来源把帧列表原样送出，`event:` 来源转发摊位返回的内容），末尾一帧 ack `init.result {frames: N}`。没有 `layout` 载荷，客户端也没有第二条布局路径：渲染器用普通的绘制路径把它画出来。Prism 自己的动词以 `ev != "draw"` 的帧走同一条通道，渲染器按设计忽略它们——于是这个 socket 上只有一种帧形状，即渲染器的那种。
 
-**UI 腿说渲染器的线上格式，适配在 prism 这边。** 下行 `content::Message {ev, sender, created?, content}`；上行 `content::Outflow {event, id?, data}`。适配就住在这里——prism 侧，不是渲染器侧：fluxen 是纯 UI，不可能为每个使用方各带一层适配（它自己的 WS 传输在文档里就是一个接缝的实现，不是协议本身）。对本仓的后果：`{ev, args}` 仍是 CLI/effector 腿与对端协议的形状，而 `/ws`——浏览器腿——说 Accrete。一条腿一种形状，同一条腿上绝不两种。
+**UI 腿说渲染器的线上格式，适配在 prism 这边。** 下行 `content::Message {ev, sender, created?, content}`；上行 `content::Outflow {event, id?, data}`。适配就住在这里——prism 侧，不是渲染器侧：fluxen 是纯 UI，不可能为每个使用方各带一层适配（它自己的 WS 传输在文档里就是一个接缝的实现，不是协议本身）。
+
+**是两条腿，不是一个共享 socket。** `/ui` 是渲染器腿，说上述格式；`/ws` 保持程序腿（CLI、对端、测试）的 `{ev, args}`。先例是 stage：UI 走 `/channel`，对端走 `/cli`——两个客户端类别、两套词汇、一条腿一种形状。同一条腿上放两种形状，等于把分裂塞进每一帧的解析器；而对端腿的测试、CLI 与 effector 拨入读的都是 `args`。
 
 **流式输出格式是调用参数。** 由生产端决定流里装什么：gravity 的 turn 调用带 `protocol`（`data`——裸 delta，默认——或 `fluxen`——对布局声明的槽做 `append`/`set` 的视图帧）。应用知识（哪个槽、累积什么）留在摊位；渲染器保持通用，槽名不编进 bundle。fluxen 侧记在 `docs/decisions/0021-external-integration.md` 与 `docs/external-integration.md`。

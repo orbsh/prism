@@ -34,24 +34,31 @@
 //!   connections (modeling.md).
 //!
 //! `/admin/nodes...` (the ADR-0015 approval surface) and the
-//! `/code/{sha256}` export (ADR-0027) ride the same accept loop;
-//! `/effector/<alias>` mount, `/assets`, booth upload are the rest of
-//! ADR-0017 — deliberately not here; README states the gap so it reads
-//! as scope, not as drift.
+//! `/code/{sha256}` export (ADR-0027) ride the same accept loop, as do the
+//! renderer's faces (ADR-0017 §8): `/assets/<rel>` (the static bundle,
+//! `assets.rs`) and `/ui` (the renderer's leg, `ui.rs` — fluxen's
+//! `Message`/`Outflow` wire, with `init` answered from `PRISM_INIT`,
+//! `init.rs`). ONE SHAPE PER LEG: `/ws` is the programmatic leg and keeps
+//! `{ev, args}`; `/ui` carries the renderer's vocabulary. Booth upload is
+//! the rest of ADR-0017 — deliberately not here; README states the gap so
+//! it reads as scope, not as drift.
 
 
 // Unit tests may use the unwrap/panic vocabulary the production targets are
 // denied (a panicking test is a failing test). `cfg(test)` is on only for this
 // crate's own test build; `tests/` crates set the same line at their own root.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+pub mod assets;
 pub mod booths;
 pub mod admin;
 pub mod code_export;
 pub mod effectors;
 pub mod identity;
+pub mod init;
 pub mod mounts;
 pub mod nodes;
 pub mod turns;
+pub mod ui;
 
 use aura_booth::{call::Waited, InstanceId, InstanceKey};
 use aura_engine::Engine;
@@ -76,13 +83,43 @@ struct Conn {
     device: u64,
 }
 
+/// The venue's optional faces: the renderer's static bundle and the `init` answer's
+/// source. Both are DEPLOYMENT FACTS with a legal absence — an install that serves
+/// identity/turns/peers and no UI is a real deployment, and it says so at boot.
+#[derive(Default)]
+pub struct Deployment {
+    pub assets: Option<assets::AssetRoot>,
+    pub init: Option<init::InitSource>,
+}
+
+impl Deployment {
+    /// Read both facts from the environment. A declared-but-broken fact is a boot error
+    /// (the operator must see it), never a silent downgrade to "no UI".
+    pub fn from_env() -> anyhow::Result<Self> {
+        Ok(Self { assets: assets::AssetRoot::from_env()?, init: init::InitSource::from_env()? })
+    }
+
+    /// One line per configured face, for the boot log.
+    pub fn describe(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(a) = &self.assets {
+            lines.push(a.describe());
+        }
+        if let Some(i) = &self.init {
+            lines.push(i.describe());
+        }
+        lines
+    }
+}
+
 /// Shared gateway state: the engine, prism's own account registry, the
 /// declared trust posture (ADR-0015 §7 — constructed, never defaulted),
-/// and the live-connection table.
+/// the two optional front-end facts, and the live-connection table.
 pub struct Gateway {
     pub engine: Engine,
     registry: identity::Registry,
     posture: nodes::Posture,
+    deployment: Deployment,
     conns: Arc<Mutex<HashMap<u64, Conn>>>,
     next_id: AtomicU64,
     /// Live turn streams, keyed by connection id (turns::TurnTable —
@@ -97,6 +134,8 @@ pub struct Gateway {
 struct Handshake {
     codec: Codec,
     device: Option<u64>,
+    /// Which leg this connection belongs to (ADR-0017 §8): `/ui` = the renderer's wire.
+    ui: bool,
 }
 
 impl Gateway {
@@ -105,10 +144,21 @@ impl Gateway {
     /// no `Default`, no optional; the binary reads `PRISM_IDENTITY`
     /// (`required` | `open`) and refuses to boot without it.
     pub fn new(engine: Engine, registry: identity::Registry, posture: nodes::Posture) -> Arc<Self> {
+        Self::with_deployment(engine, registry, posture, Deployment::default())
+    }
+
+    /// Construct with the front-end faces declared (ADR-0017 §1/§8, PLAN Phase 1.10).
+    pub fn with_deployment(
+        engine: Engine,
+        registry: identity::Registry,
+        posture: nodes::Posture,
+        deployment: Deployment,
+    ) -> Arc<Self> {
         Arc::new(Self {
             engine,
             registry,
             posture,
+            deployment,
             conns: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             turns: Arc::new(std::sync::Mutex::new(turns::TurnTable::new())),
@@ -119,6 +169,35 @@ impl Gateway {
     /// surface + the handshake's future verdict source).
     pub fn nodes(&self) -> nodes::NodeStore {
         self.registry.nodes()
+    }
+
+    /// The `init` source, if this deployment declared one (`PRISM_INIT`).
+    pub(crate) fn init_source(&self) -> Option<init::InitSource> {
+        self.deployment.init.clone()
+    }
+
+    /// Submit one event to a GLOBAL booth (its SINGLETON instance) and return the answer
+    /// normalized to a frame list. Used by the `event:` form of `init`; a cold booth is an
+    /// error — a layout cannot be fetched from an unloaded instance.
+    pub(crate) async fn call_global(
+        &self,
+        booth_type: &str,
+        handler: &str,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let target = InstanceId { booth_type: booth_type.to_string(), key: InstanceKey::Singleton };
+        let envelope = serde_json::json!({"sender": {"device": 0, "user": null}, "args": {}});
+        match self.engine.call(target, handler, envelope).await {
+            Ok(Waited::Done(Ok(v))) => {
+                init::normalize(v, &format!("booth:{booth_type}/{handler}"))
+            }
+            Ok(Waited::Done(Err(e))) => anyhow::bail!(
+                "init booth `{booth_type}/{handler}` answered an error: {e}"
+            ),
+            Ok(Waited::Pending(_)) => anyhow::bail!(
+                "init booth `{booth_type}/{handler}` is cold — a layout cannot be a cold call"
+            ),
+            Err(e) => anyhow::bail!("init booth `{booth_type}/{handler}`: {e}"),
+        }
     }
 
     /// Register the language echo booths (steel / python / nushell
@@ -214,6 +293,13 @@ impl Gateway {
         if code_export::serve_code_export(&mq, &head, &mut stream).await {
             return Ok(());
         }
+        // The renderer's static face (ADR-0017 §8): plain downloads on the same accept
+        // loop, no upgrade, no event semantics.
+        if let Some(assets) = &self.deployment.assets {
+            if assets.serve(&head, &mut stream).await {
+                return Ok(());
+            }
+        }
         // Effector dial-in (ADR-0017 §6): `/effector/<alias>` mounts the
         // realm's remote-booth gateway on THIS accept loop. The head is
         // still raw here — the effector's WS carries no `?protocol=`
@@ -230,9 +316,13 @@ impl Gateway {
         let slot = Arc::clone(&hs_slot);
         let ws = tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {
             let query = req.uri().query().unwrap_or("");
+            // The renderer pins its wire with `codec=`, the programmatic leg with
+            // `protocol=`; honour both rather than making one client learn the other's word.
+            let codec_q = query_param(query, "protocol").or_else(|| query_param(query, "codec"));
             *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Handshake {
-                codec: Codec::from_query(query_param(query, "protocol")),
+                codec: Codec::from_query(codec_q),
                 device: query_param(query, "device").and_then(|v| v.parse().ok()),
+                ui: req.uri().path() == ui::UI_PATH,
             });
             Ok(resp)
         })
@@ -240,8 +330,27 @@ impl Gateway {
 
         // The callback ran during the handshake; `unwrap_or` only
         // guards a handshake that never reached `accept`.
-        let Handshake { codec, device } =
-            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Cbor, device: None });
+        let Handshake { codec, device, ui } =
+            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Cbor, device: None, ui: false });
+
+        // The renderer's leg (ADR-0017 §8): its own wire, its own writer. It is routed
+        // BEFORE the peer leg's connection table: a renderer is not a caller, and its
+        // identity/questions land here, not on the booth plane.
+        if ui {
+            let device = match device {
+                Some(d) => match self.registry.device_user(d)? {
+                    Some(_) => d,
+                    None => self.registry.new_device()?,
+                },
+                None => self.registry.new_device()?,
+            };
+            let cc = content::codec::ActiveCodec::new(match codec {
+                Codec::Json => content::codec::CodecType::Json,
+                Codec::Cbor => content::codec::CodecType::Cbor,
+            });
+            return ui::serve(Arc::clone(&self), ws, cc, device).await;
+        }
+
         let (mut write, mut read) = ws.split();
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);

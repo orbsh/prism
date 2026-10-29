@@ -5,7 +5,7 @@ use aura_engine::Engine;
 use prism::{
     identity::Registry,
     nodes::Posture,
-    Gateway,
+    Deployment, Gateway,
 };
 use tokio::net::TcpListener;
 
@@ -26,14 +26,24 @@ async fn main() -> anyhow::Result<()> {
     let posture_raw = std::env::var("PRISM_IDENTITY")
         .map_err(|_| anyhow::anyhow!("PRISM_IDENTITY is required: `required` | `open`"))?;
     let posture = Posture::parse(&posture_raw)?;
-    let gw = Gateway::new(engine, registry, posture);
+    // The front-end faces (ADR-0017 §1/§8): the renderer's bundle and the `init` answer's
+    // source. Both are deployment facts with a legal absence — a venue with no UI still
+    // serves identity, turns and the peer leg, and the boot log says which faces are live.
+    let deployment = Deployment::from_env()?;
+    for line in deployment.describe() {
+        println!("{line}");
+    }
+    if deployment.assets.is_none() {
+        println!("prism: no renderer bundle (PRISM_ASSETS unset) — /assets/ answers 404");
+    }
+    let gw = Gateway::with_deployment(engine, registry, posture, deployment);
 
     let addr = std::env::var("PRISM_ADDR").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let listener = TcpListener::bind(&addr).await?;
     println!(
         "prism: ws://{addr}/ws — CBOR default, ?protocol=json for debug; \
          verbs: echo (steel|python|nushell), echo_sender, signup, login, broadcast, ping; \
-         static: GET /code/<sha256> (ADR-0027 export)"
+         static: GET /code/<sha256> (ADR-0027 export); renderer leg: /ui (Message/Outflow)"
     );
     gw.serve(listener).await
 }
