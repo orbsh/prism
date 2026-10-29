@@ -15,7 +15,8 @@
 //! Which means prism's own verbs are NOT frames any more. They are `inject` operations (fluxen
 //! ADR 0011): a remote write into the page's vals plane that is indistinguishable from an
 //! in-page emit, so the layout binds it with `kind: local` like any other event. Two slots
-//! carry them — [`IDENTITY_SLOT`] (who am I: device, user) and [`NOTICE_SLOT`] (what failed).
+//! carry them — `view:identity` (who am I: device, user) and `view:notice` (what failed) —
+//! because the venue is just another emitter on this wire, not a third vocabulary.
 //! Everything else is an ordinary application event, dispatched to the booth NAMED BY THE
 //! EVENT (the peer leg's rule: type == handler == `event`), and its answer is a frame list —
 //! a handler may return a layout, one operation, or a list, and the renderer only draws.
@@ -52,19 +53,24 @@ const UI_INSTANCE: &str = "channel";
 /// region the answer streams into. They are prism's to name (it serves `layout/venue.yaml`);
 /// the executor builds frames against whatever it is told.
 const UI_RACK: &str = "chat";
+
+/// A turn's end, said as an event so the page can stop its streaming state without knowing a verb.
+const TURN_DONE_EVENT: &str = "turn.done";
+/// A turn's failure, said the same way.
+const TURN_ERROR_EVENT: &str = "turn.error";
 const UI_TEXT: &str = "say";
 
 /// Where this leg puts facts about the CONNECTION: `{device, user}` after connect, a `logout`,
 /// a `login.result`. A layout binds it with `bind: {value: {kind: local, slot: identity}}`;
 /// the event name inside the inject carries which verb it was, so a subscriber that cares can
 /// distinguish and one that does not reads the same fields either way.
-pub const IDENTITY_SLOT: &str = "identity";
+pub const IDENTITY_EVENT: &str = "identity";
 
 /// Where the venue talks about the CONNECTION's work: refusals, failures, and a turn's end
 /// (`{event, detail?}`). One slot for all of it because they are all "things the venue has to
 /// say that are not the application's view" — a layout decides whether to show them, and the
 /// venue does not invent a display for each kind.
-pub const NOTICE_SLOT: &str = "notice";
+pub const NOTICE_EVENT: &str = "notice";
 
 /// The renderer connection table: id → connection. The venue owns it, the forwarding booth
 /// writes into it, and the peer-plane acts (revocation) reach it.
@@ -154,6 +160,12 @@ pub(crate) fn forward(conns: &UiConns, payload: Value) {
     // injected into the slot named by the event. Both shapes are legal on this wire and the
     // renderer decides what it can do with them — a host that pre-validated would be teaching
     // the page a second vocabulary.
+    if payload.get("data").is_none() && payload.get("args").is_some() {
+        // A page's own uplink, seen by the venue's subscription to the same prefix. It is a
+        // REQUEST (the booth answers by emitting), not a delivery — forwarding it would echo
+        // the input back into the page.
+        return;
+    }
     let body = payload.get("data").cloned().unwrap_or_else(|| {
         let mut rest = payload.clone();
         if let Some(o) = rest.as_object_mut() {
@@ -219,7 +231,7 @@ pub(crate) async fn serve(
 
     // The connect answer: identity on the wire, in the renderer's shape. `ev != "draw"`, so
     // a renderer ignores it; a client that cares (a login form, a test) reads `sender`.
-    gw.send_ui(id, identify("connected", json!({"device": device, "user": null})));
+    say(&gw, device, IDENTITY_EVENT, json!({"device": device, "user": null})).await;
     eprintln!("prism: renderer leg: device {device} connected (conn {id})");
 
     // THE LAYOUT IS PUSHED ON CONNECT, not asked for. A client cannot know when it is ready
@@ -230,7 +242,10 @@ pub(crate) async fn serve(
             let ops = ops_of(frames, "init");
             eprintln!("prism: renderer leg: device {device} pushed {} layout frame(s)", ops.len());
             if !ops.is_empty() {
-                gw.send_ui(id, ops);
+                // Through the same plane as everything else the venue says: the identity fact
+                // was emitted first, so the page cannot receive the layout before it — a direct
+                // write here raced the queue and could arrive in either order.
+                say_ops(&gw, device, "layout", ops).await;
             }
         }
         Some(crate::init::InitSource::Event { event }) => {
@@ -242,7 +257,7 @@ pub(crate) async fn serve(
         }
         None => {
             eprintln!("prism: renderer leg: no init source — device {device} gets an empty venue");
-            gw.send_ui(id, notice("init.error", None));
+            say(&gw, device, NOTICE_EVENT, json!({"detail": "no layout source in this deployment"})).await;
         }
     }
 
@@ -302,37 +317,43 @@ async fn dispatch(
             match outcome {
                 Ok(user_id) => {
                     user.store(user_id, Ordering::Relaxed);
-                    // The SAME slot `connected` wrote, with the event name saying which verb
-                    // it was: a client reads `identity` and always sees who it is.
-                    gw.send_ui(id, identify(&format!("{asked}.result"), json!({"device": device, "user": user_id})));
+                    // The SAME fact a connect wrote: a page that binds `identity` always sees
+                    // who it is, so the layout needs no per-verb case.
+                    say(&gw, device, IDENTITY_EVENT, json!({"device": device, "user": user_id})).await;
                 }
                 Err(e) => {
                     eprintln!("prism: /channel {asked} refused: {e}");
-                    gw.send_ui(id, notice("error", Some(e.to_string())));
+                    say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
                 }
             }
         }
         "logout" => match gw.registry().logout(device) {
             Ok(()) => {
                 user.store(0, Ordering::Relaxed);
-                gw.send_ui(id, identify("logout.result", json!({"device": device, "user": null})));
+                say(&gw, device, IDENTITY_EVENT, json!({"device": device, "user": null})).await;
             }
             Err(e) => {
                 eprintln!("prism: /channel logout refused: {e}");
-                gw.send_ui(id, notice("error", Some(e.to_string())));
+                say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
             }
         },
         "turn.submit" | "turn.cancel" => turn(gw, id, user, device, &asked, data).await,
         other => {
-            // The auth gate runs BEFORE the call, reading the booth's persisted
-            // interface_schema `auth` block — the same declaration face the peer leg
-            // enforces, so a booth declares its requirement once for both legs.
+            // THE DECLARATION STILL GATES AT THE VENUE. An anonymous connection never gets to
+            // put the event on the plane at all, so a booth that declared `auth` cannot be
+            // reached by someone it did not agree to serve — the check stays on this side of
+            // delivery, not inside every booth.
             let bound = user.load(Ordering::Relaxed);
             if bound == 0 && gw.handler_requires_auth(other).await {
                 eprintln!("prism: /channel event `{other}` refused: authentication required");
-                gw.send_ui(id, notice("error", Some(format!("`{other}` requires a bound user"))));
+                say(&gw, device, NOTICE_EVENT, json!({"detail": format!("`{other}` requires a bound user")})).await;
                 return;
             }
+            // THE UPLINK IS AN INVOKE *FOR NOW*. The ruling is that it becomes an emit of
+            // `view:<dest>`, but the marker cannot work until the dispatcher stops handing the
+            // body the marked name as its handler name — a script booth's handler is looked up
+            // BY that name, and `view:echo_frame` is not a function any script can define (and
+            // the miss is silent). See docs/PLAN.md; this is the one place the wire rule waits.
             let envelope = json!({
                 "sender": {"device": device, "user": (bound != 0).then_some(bound)},
                 "args": data,
@@ -342,15 +363,10 @@ async fn dispatch(
                 key: aura_booth::InstanceKey::Named(UI_INSTANCE.to_string()),
             };
             match gw.engine.call(target, other, envelope).await {
-                // A booth may answer a layout, one operation, or a list — all of it is drawn
-                // by the same decoder, so the answer is one action list either way.
                 Ok(aura_booth::call::Waited::Done(Ok(v))) => {
-                    // AN OPERATION IS DRAWN; ANYTHING ELSE IS DATA, AND DATA HAS NO PATH DOWN
-                    // THIS LEG. The venue does not invent a name for it — names belong to the
-                    // emitter (a booth that wants the page to see something emits `view:<name>`
-                    // with the envelope that says which channel and who is talking). What is
-                    // left here is a diagnostic: an answer that draws nothing is a booth bug a
-                    // reader would otherwise hunt for in the renderer.
+                    // An answer that is not an operation draws nothing, and the venue does not
+                    // invent a name for it — a booth that wants the page to see something emits
+                    // `view:<name>`. Left here is the diagnostic that says so.
                     let ops = ops_of(vec![v], other);
                     if ops.is_empty() {
                         eprintln!(
@@ -360,17 +376,12 @@ async fn dispatch(
                         gw.send_ui(id, ops);
                     }
                 }
-                Ok(aura_booth::call::Waited::Done(Err(e))) => {
+                Ok(aura_booth::call::Waited::Done(Err(e))) | Err(e) => {
                     eprintln!("prism: /channel event `{other}` answered an error: {e}");
-                    gw.send_ui(id, notice("error", Some(e.to_string())));
+                    say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
                 }
                 Ok(aura_booth::call::Waited::Pending(_)) => {
-                    eprintln!("prism: /channel event `{other}`: this leg has no cold path");
-                    gw.send_ui(id, notice("error", Some("cold path not available here".into())));
-                }
-                Err(e) => {
-                    eprintln!("prism: /channel event `{other}`: {e}");
-                    gw.send_ui(id, notice("error", Some(e.to_string())));
+                    say(&gw, device, NOTICE_EVENT, json!({"detail": "cold path not available here"})).await;
                 }
             }
         }
@@ -396,7 +407,7 @@ async fn turn(
     // else on this leg. A renderer may connect anonymously; it may not spend a model call.
     if user.load(Ordering::Relaxed) == 0 {
         eprintln!("prism: /channel turn refused: authentication required");
-        gw.send_ui(id, notice("error", Some("a turn requires a bound user".into())));
+        say(&gw, device, NOTICE_EVENT, json!({"detail": "a turn requires a bound user"})).await;
         return;
     }
     let content = data
@@ -408,7 +419,7 @@ async fn turn(
         .to_string();
     if content.is_empty() {
         eprintln!("prism: /channel turn refused: empty message");
-        gw.send_ui(id, notice("error", Some("the turn carried no content".into())));
+        say(&gw, device, NOTICE_EVENT, json!({"detail": "the turn carried no content"})).await;
         return;
     }
     // The conversation's partition: one channel per renderer DEVICE until sessions exist
@@ -422,7 +433,7 @@ async fn turn(
     let table = gw.turns_arc();
     if table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_live(id) {
         eprintln!("prism: /channel turn refused: a turn is already live — cancel first");
-        gw.send_ui(id, notice("error", Some("a turn is already live on this connection".into())));
+        say(&gw, device, NOTICE_EVENT, json!({"detail": "a turn is already live on this connection"})).await;
         return;
     }
     // The deployment facts (endpoint, model, store) are read per submit: a venue without
@@ -431,7 +442,7 @@ async fn turn(
         Ok(c) => c,
         Err(e) => {
             eprintln!("prism: /channel turn: {e}");
-            gw.send_ui(id, notice("turn.error", Some(e.to_string())));
+            say(&gw, device, TURN_ERROR_EVENT, json!({"detail": e.to_string()})).await;
             return;
         }
     };
@@ -460,10 +471,19 @@ async fn turn(
                 out.send_ui(id, ops);
             }
         }
-        "turn.done" => out.send_ui(id, notice("turn.done", None)),
+        // `send` is a sync callback (the pump drives it), so the emit is spawned: the frames of
+        // this turn are already queued on the same writer, which keeps them ahead of this.
+        "turn.done" => {
+            let out = Arc::clone(&out);
+            tokio::spawn(async move { say(&out, device, TURN_DONE_EVENT, json!({})).await });
+        }
         "turn.error" => {
             eprintln!("prism: turn failed: {a}");
-            out.send_ui(id, notice("turn.error", Some(a.to_string())));
+            let out = Arc::clone(&out);
+            let detail = a.to_string();
+            tokio::spawn(async move {
+                say(&out, device, TURN_ERROR_EVENT, json!({ "detail": detail })).await
+            });
         }
         other => eprintln!("prism: the turn answered `{other}` on the renderer leg: {a}"),
     };
@@ -490,12 +510,22 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
         .collect()
 }
 
-/// The venue speaking about the CONNECTION: `inject` writes the event into the page's vals
-/// plane exactly as an in-page emit would (fluxen ADR 0011), which is the only way this leg can
-/// say anything — a renderer refuses a frame that is not an action list, and that refusal is
-/// deliberate (a map here would be a second protocol).
-fn identify(name: &str, data: Value) -> Vec<Content<Value>> {
-    inject(IDENTITY_SLOT, name, data)
+/// THE VENUE SAYS THINGS AS EVENTS. It is an emitter on this wire like any other: a fact it
+/// wants a page to hold is `view:<fact>`, forwarded by its own renderer booth and landing in the
+/// vals slot named by the fact. Two names are conventions, not law: `identity` (who am I:
+/// `{device, user}`) and `notice` (what failed: `{detail}`).
+/// Same path, for a batch of OPERATIONS (the init layout): an action list is drawn, so this is
+/// the one shape that skips the vals plane on its way to the page.
+async fn say_ops(gw: &Gateway, device: u64, fact: &str, ops: Vec<Content<Value>>) {
+    let event = format!("{VIEW_PREFIX}{fact}");
+    let envelope = json!({ "name": event, "channel_id": device, "data": ops });
+    gw.emit(&event, envelope).await;
+}
+
+async fn say(gw: &Gateway, device: u64, fact: &str, data: Value) {
+    let event = format!("{VIEW_PREFIX}{fact}");
+    let envelope = json!({ "name": event, "channel_id": device, "data": data });
+    gw.emit(&event, envelope).await;
 }
 
 /// One `inject` into a named slot. Every way this leg speaks goes through here, so the shape of
@@ -509,13 +539,4 @@ fn inject(slot: &str, name: &str, data: Value) -> Vec<Content<Value>> {
     })]
 }
 
-/// A refusal, a failure, or a turn's end — same mechanism, the notice slot. `detail` is the
-/// reason the log already carries; a layout may show it, and the venue decides nothing about
-/// how a page presents it.
-fn notice(name: &str, detail: Option<String>) -> Vec<Content<Value>> {
-    let mut data = json!({});
-    if let Some(detail) = detail {
-        data["detail"] = json!(detail);
-    }
-    inject(NOTICE_SLOT, name, data)
-}
+

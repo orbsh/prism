@@ -171,8 +171,13 @@ invent a name for it (`<event>.result` was such an invention; gone). What remain
 site is one diagnostic line, because an answer that draws nothing is otherwise hunted for in the
 renderer.
 
-**Owed, and named here so it is not forgotten:** prism's own speech (`identity` on connect and
-after `login`/`logout`, `notice` on a refusal or a turn's end) still rides two slot constants.
-Under this model the venue is just another emitter and would say `view:identity` /
-`view:notice` like anyone else, which retires both constants — but that also decides how login
-results and refusal reasons reach a page, so it is a ruling, not a cleanup.
+**Settled the same day (the ruling was "退场"):** the venue is an emitter like any other. It
+says `view:identity` (`{device, user}`), `view:notice` (`{detail}`), `view:turn.done`,
+`view:turn.error`, and its own init layout rides the same plane (`view:layout`, payload = the
+action list) — ordering between facts is then the queue's, not two writers' racing. The
+`identity`/`notice` SLOT constants are gone; those two names survive only as conventions a layout
+may bind. Facts lose their per-verb sub-name (`connected`, `signup.result`): a page that binds
+`identity` always sees who it is, which is what it actually wanted. **Still open:** the UPLINK is
+an `invoke`, not yet an emit of `view:<dest>` — the marker collides with handler dispatch (a
+script booth resolves its handler BY the event name, and `view:echo_frame` is not something a
+script can define; the miss is silent), so the framework needs a rule first.

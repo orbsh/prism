@@ -38,17 +38,20 @@ async fn boot(deployment: Deployment) -> (SocketAddr, std::sync::Arc<Gateway>) {
 /// venue stated in `identity`.
 async fn connect_and_expect_no_layout(ws: &mut WsClient) -> u64 {
     let device = read_connected(ws).await;
-    let (slot, event, _) = recv_speech(ws).await;
+    let (slot, name, data) = recv_speech(ws).await;
     assert_eq!(slot, "notice", "a venue without a layout says so");
-    assert_eq!(event, "init.error", "{slot} {event}");
+    assert_eq!(name, "notice", "{slot} {name}");
+    assert!(data["detail"].as_str().is_some_and(|d| d.contains("layout")), "{data}");
     device
 }
 
-/// The connect answer: `identity` carrying the device the venue assigned.
+/// The connect answer: the `identity` fact, carrying the device the venue assigned. The fact is
+/// said as an EVENT like any other (`view:identity`), so the page sees a slot named after it —
+/// there is no per-verb `connected`/`signup.result` name to learn.
 async fn read_connected(ws: &mut WsClient) -> u64 {
-    let (slot, event, data) = recv_speech(ws).await;
+    let (slot, name, data) = recv_speech(ws).await;
     assert_eq!(slot, "identity", "connect answers identity");
-    assert_eq!(event, "connected", "{event}");
+    assert_eq!(name, "identity", "{name}");
     data["device"].as_u64().expect("device id in identity")
 }
 
@@ -260,8 +263,8 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
 
     let op = json!({"action": "set", "slot": "secret", "data": {"type": "text"}});
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
-    let (slot, event, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), event.as_str()), ("notice", "error"), "anonymous sender must be refused");
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"), "anonymous sender must be refused");
     assert!(data["detail"].as_str().is_some_and(|d| d.contains("echo_gate")), "{data}");
 
     // signup on the leg: the account is prism's, and the answer is identity, not a verb.
@@ -270,8 +273,8 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
         json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
     )
     .await;
-    let (slot, event, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), event.as_str()), ("identity", "signup.result"));
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("identity", "identity"));
     assert!(data["user"].as_u64().is_some(), "identity carries the bound user: {data}");
 
     // Bound now: the same declared-auth event reaches the booth and its answer is DRAWN. The
@@ -284,12 +287,12 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     // After logout the same event is refused again — the field, not the account row, is what
     // the gate reads, and it is cleared on the same socket.
     send_uplink(&mut ws, json!({"dest": "logout", "data": null})).await;
-    let (slot, event, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), event.as_str()), ("identity", "logout.result"));
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("identity", "identity"));
     assert!(data["user"].is_null(), "logout clears the user: {data}");
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
-    let (slot, event, _) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), event.as_str()), ("notice", "error"));
+    let (slot, name, _) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
 }
 
 /// Revocation reaches BOTH legs: a revoked device's renderer socket is closed, not left
@@ -302,8 +305,8 @@ async fn revocation_kicks_the_renderer_leg_too() {
 
     // Bind an account so this connection carries an auth field worth clearing.
     send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "grace", "password": "p"}})).await;
-    let (_, event, _) = recv_speech(&mut ws).await;
-    assert_eq!(event, "signup.result");
+    let (_, name, _) = recv_speech(&mut ws).await;
+    assert_eq!(name, "identity");
 
     let resp = post_json(addr, "/admin/revoke", json!({"device_id": device})).await;
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
@@ -512,8 +515,8 @@ async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
 
     // The turn type declares `turn` user-gated: bind an account on this same socket.
     send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "ada", "password": "p"}})).await;
-    let (_, event, _) = recv_speech(&mut ws).await;
-    assert_eq!(event, "signup.result");
+    let (_, name, _) = recv_speech(&mut ws).await;
+    assert_eq!(name, "identity");
 
     send_uplink(&mut ws, json!({"dest": "turn.submit", "data": {"content": "hi"}})).await;
 
@@ -530,7 +533,7 @@ async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
             .cloned()
             .unwrap_or_else(|| panic!("not an action list: {frame}"));
         for op in ops {
-            if op["action"] == "inject" && op["name"] == "turn.done" {
+            if op["action"] == "inject" && op["slot"] == "turn.done" {
                 done = true;
                 continue;
             }
@@ -571,7 +574,7 @@ async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
             .cloned()
             .unwrap_or_else(|| panic!("not an action list: {frame}"));
         for op in ops {
-            if op["action"] == "inject" && op["name"] == "turn.done" {
+            if op["action"] == "inject" && op["slot"] == "turn.done" {
                 done2 = true;
                 continue;
             }
