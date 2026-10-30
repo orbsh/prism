@@ -80,6 +80,12 @@ Why this is a modularity claim and not just "frames compose":
 - **Regions are slots, so a part can be replaced without touching the shell.** The island frame names positions; who fills them is a routing question on the plane.
 - **It is the same in one process or many.** Every step is ordinary traffic: a part written by someone else, running elsewhere, answers the same event the same way.
 
+**Navigation needs no separate machinery.** A nav bar is just another named region in the shell, and a link is just a control inside it whose `dest` names an event; whoever declared that event answers with frames. So there is no such thing as navigation here: the page stays the one page, and what changes is the layout it receives; the only thing that leaves the plane is a link pointing outside it — that is not navigation, that is leaving.
+
+**It is also why "front-end microservices" hold here and held nowhere else.** The earlier attempts got the split right and paid for it everywhere else — sandboxes, version arbitration over shared dependencies, who takes over the router — the business was separated and the implementation got heavier. Here the split sits at the message layer: an island is a layout that declared an event, and isolation is what the wire gives.
+
+So there is no separate "front-end microservice" problem left to solve: an application's front end and back end are one development unit, microservice-shaped from the start, with the view as one of its composable members — splittable, replaceable, assemblable, with no need to build a whole page first and then take it apart. The unit can be finer than "one front-end application" too: one region, one event. And the side writing an island never has to know who else is there, nor share a build with them.
+
 ## Where state lives
 
 | owner | what it owns | what it must never hold |
@@ -96,6 +102,7 @@ The same application may speak to a renderer and to a program. The difference is
 ## What this model refuses
 
 - A page that renders business knowledge it was not handed (fields, defaults, ranges) — the renderer stays dumb by construction.
+- A router of the page's own — where a click goes is said by the layout the application emitted, not by a list of destinations the page keeps.
 - A transport that learns an application's vocabulary — the moment prism knows what a model is, every application change is a gateway change.
 - A second surface for administration — one vocabulary, one auth story, one client for the product and its settings.
 - A layout that exists only as a deployment file, when the application behind it could state it itself.
