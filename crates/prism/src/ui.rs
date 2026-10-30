@@ -48,17 +48,6 @@ pub const UI_PATH: &str = "/channel";
 
 /// The instance key every application event on this leg lands on.
 
-/// The slots THIS venue declares for a turn: the rack the conversation appends to, and the
-/// region the answer streams into. They are prism's to name (it serves `layout/venue.yaml`);
-/// the executor builds frames against whatever it is told.
-const UI_RACK: &str = "chat";
-
-/// A turn's end, said as an event so the page can stop its streaming state without knowing a verb.
-const TURN_DONE_EVENT: &str = "turn.done";
-/// A turn's failure, said the same way.
-const TURN_ERROR_EVENT: &str = "turn.error";
-const UI_TEXT: &str = "say";
-
 /// Where this leg puts facts about the CONNECTION: `{device, user}` after connect, a `logout`,
 /// a `login.result`. A layout binds it with `bind: {value: {kind: local, slot: identity}}`;
 /// the event name inside the inject carries which verb it was, so a subscriber that cares can
@@ -85,7 +74,7 @@ pub const RENDERER_BOOTH: &str = "renderer";
 
 /// The marker on every UI-facing name, both directions (ADR 0023's rule applied here): a page
 /// may only ever address, and be addressed by, `view:<name>`. Anything else is internal.
-const VIEW_PREFIX: &str = "view:";
+pub(crate) const VIEW_PREFIX: &str = "view:";
 
 /// One renderer connection: its writer channel and the auth field a `login` writes. The
 /// table lives on [`Gateway`] so the acts that must reach every leg (revocation) see it.
@@ -95,21 +84,26 @@ pub(crate) struct UiConn {
     pub tx: mpsc::UnboundedSender<Vec<Content<Value>>>,
     pub device: identity::DeviceId,
     pub user: crate::AuthField,
-    /// How many turns this connection has started — the counter behind per-turn slot names.
-    pub turns: u64,
 }
 
+/// Where a booth's DATA payload goes on the programmatic leg: the same event, `{ev, args}`,
+/// to the peer connections it addresses. A renderer draws an operation list; a program reads
+/// the data shape — one emit, two legs (`gravity ADR-0009`'s two renderings).
+pub(crate) type PeerDeliver = Arc<dyn Fn(Option<&str>, Option<&str>, &str, Value) + Send + Sync>;
+
 /// Install the venue's one subscription: what the application emits as a VIEW event is
-/// pushed to the renderers. A Rust body because the venue is IN this process — the frames go
+/// pushed to the renderers (and, as data, to a program). A Rust body because the venue is IN this process — the frames go
 /// to sockets it owns, not over a carrier, and no script has to learn about sockets.
-pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns) {
+pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers: PeerDeliver) {
     let handler_conns = Arc::clone(&conns);
+    let handler_peers = Arc::clone(&peers);
     let booth = aura_booth::BoothType {
         name: RENDERER_BOOTH.to_string(),
         body: aura_booth::Body::Rust(Arc::new(move |_ctx, args| {
             let conns = Arc::clone(&handler_conns);
+            let peers = Arc::clone(&handler_peers);
             Box::pin(async move {
-                forward(&conns, args);
+                forward(&conns, &peers, args);
                 Ok(Value::Null)
             })
         })),
@@ -142,7 +136,7 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns) {
 /// <frame or list>}`; `content` is accepted as a synonym (it is the wire's name for it), and
 /// a bare frame stands alone. The frames are the renderer's vocabulary — the venue does not
 /// interpret them, which is why it can forward a layout, an append and a patch alike.
-pub(crate) fn forward(conns: &UiConns, payload: Value) {
+pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
     // name is consumed by the dispatcher), so the emitter states it: `name` is the recipient
     // event, marked with the same `view:` prefix as the emit itself. The venue strips the
@@ -184,6 +178,12 @@ pub(crate) fn forward(conns: &UiConns, payload: Value) {
         }
         rest
     });
+    // A PROGRAM IS A CLIENT TOO: the data shape (everything that is not an operation list)
+    // reaches the peer connections the event addresses, as `{ev, args}` — the same event the
+    // renderer gets, minus the drawing.
+    if !body.is_array() {
+        peers(target.as_deref(), sender.as_deref(), &name, body.clone());
+    }
     let ops: Vec<Content<Value>> = match body {
         Value::Array(frames) => ops_of(frames, "view"),
         other => inject(&name, &name, other),
@@ -274,7 +274,7 @@ pub(crate) async fn serve(
                 continue;
             }
         };
-        dispatch(&gw, id, &user, device, token, uplink).await;
+        dispatch(&gw, &user, device, token, uplink).await;
     }
 
     gw.unregister_ui(id);
@@ -286,7 +286,6 @@ pub(crate) async fn serve(
 /// the event.
 async fn dispatch(
     gw: &Arc<Gateway>,
-    id: u64,
     user: &crate::AuthField,
     device: identity::DeviceId,
     token: identity::TokenId,
@@ -339,14 +338,13 @@ async fn dispatch(
                 say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
             }
         },
-        "turn.submit" | "turn.cancel" => turn(gw, id, user, device, &asked, data).await,
         other => {
             // THE DECLARATION STILL GATES AT THE VENUE. An anonymous connection never gets to
             // put the event on the plane at all, so a booth that declared `auth` cannot be
             // reached by someone it did not agree to serve — the check stays on this side of
             // delivery, not inside every booth.
             let bound = crate::auth_get(user);
-            if identity::is_anonymous(bound) && gw.handler_requires_auth(other).await {
+            if identity::is_anonymous(bound) && gw.event_requires_auth(&format!("{VIEW_PREFIX}{other}")).await {
                 eprintln!("prism: /channel event `{other}` refused: authentication required");
                 say(&gw, device, NOTICE_EVENT, json!({"detail": format!("`{other}` requires a bound user")})).await;
                 return;
@@ -362,120 +360,18 @@ async fn dispatch(
             let event = format!("{VIEW_PREFIX}{other}");
             let envelope = json!({
                 "name": event,
-                "channel_id": device.to_string(),
+                // The ADDRESS is a device (ADR-0018: a channel is an application's business) and
+                // the payload is `data` — the shape a booth reads as a delivery, not a request.
+                "device": device.to_string(),
                 "sender": {
                     "device": device.to_string(),
                     "user": (!identity::is_anonymous(bound)).then(|| bound.to_string()),
                 },
-                "args": data,
+                "data": data,
             });
             gw.emit(&event, envelope).await;
         }
     }
-}
-
-/// The renderer's turn: the same executor the peer leg drives, asked for VIEW FRAMES. The
-/// slots are prism's to declare (it serves the layout), the frames are gravity's to build,
-/// and the renderer draws whatever arrives — no delta never reaches this leg.
-async fn turn(
-    gw: &Arc<Gateway>,
-    id: u64,
-    user: &crate::AuthField,
-    device: identity::DeviceId,
-    event: &str,
-    data: Value,
-) {
-    if event == "turn.cancel" {
-        gw.turn_cancel(id);
-        return;
-    }
-    // The turn type declares `turn` user-gated — the same declaration face as everything
-    // else on this leg. A renderer may connect anonymously; it may not spend a model call.
-    if identity::is_anonymous(crate::auth_get(user)) {
-        eprintln!("prism: /channel turn refused: authentication required");
-        say(&gw, device, NOTICE_EVENT, json!({"detail": "a turn requires a bound user"})).await;
-        return;
-    }
-    let content = data
-        .get("content")
-        .or_else(|| data.get("value"))
-        .or_else(|| data.get("message"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    if content.is_empty() {
-        eprintln!("prism: /channel turn refused: empty message");
-        say(&gw, device, NOTICE_EVENT, json!({"detail": "the turn carried no content"})).await;
-        return;
-    }
-    // The conversation's partition: one channel per renderer DEVICE until sessions exist
-    // (the executor's instance key is the channel id, so this is what keeps two browsers
-    // out of one another's history).
-    let session_id = data
-        .get("session_id")
-        .and_then(Value::as_str)
-        .map(String::from)
-        .unwrap_or_else(|| device.to_string());
-    let table = gw.turns_arc();
-    if table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_live(id) {
-        eprintln!("prism: /channel turn refused: a turn is already live — cancel first");
-        say(&gw, device, NOTICE_EVENT, json!({"detail": "a turn is already live on this connection"})).await;
-        return;
-    }
-    // The deployment facts (endpoint, model, store) are read per submit: a venue without
-    // them still serves the shell, and the refusal names what is missing.
-    let config = match crate::turns::TurnConfig::from_env() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("prism: /channel turn: {e}");
-            say(&gw, device, TURN_ERROR_EVENT, json!({"detail": e.to_string()})).await;
-            return;
-        }
-    };
-    table.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reserve(id);
-    let realm = Arc::clone(&gw.engine.realm);
-    // ONE REGION PER TURN. A bubble reads the region it was bound to, so a constant name would
-    // make turn 2's `set` and patches rewrite the text inside turn 1's bubble — every frame
-    // correct, the history smeared. The counter lives with the connection (a reconnect gets a
-    // fresh layout, so it has no old bubbles to protect).
-    let Some(text) = gw.next_turn_slot(id, UI_TEXT) else {
-        eprintln!("prism: /channel turn: connection {id} is already gone");
-        return;
-    };
-    let slots = crate::turns::ViewSlots { rack: UI_RACK.to_string(), text };
-    let out = Arc::clone(gw);
-    let send = move |ev: &str, a: Value| match ev {
-        "turn.frames" => {
-            let Some(frames) = a.get("frames").and_then(Value::as_array).cloned() else {
-                eprintln!("prism: turn.frames carried no array");
-                return;
-            };
-            // One batch per round: the frames of a round are ordered (a `set` of the text
-            // region must precede the patch that fills it), and a batch preserves that.
-            let ops = ops_of(frames, "turn");
-            if !ops.is_empty() {
-                out.send_ui(id, ops);
-            }
-        }
-        // `send` is a sync callback (the pump drives it), so the emit is spawned: the frames of
-        // this turn are already queued on the same writer, which keeps them ahead of this.
-        "turn.done" => {
-            let out = Arc::clone(&out);
-            tokio::spawn(async move { say(&out, device, TURN_DONE_EVENT, json!({})).await });
-        }
-        "turn.error" => {
-            eprintln!("prism: turn failed: {a}");
-            let out = Arc::clone(&out);
-            let detail = a.to_string();
-            tokio::spawn(async move {
-                say(&out, device, TURN_ERROR_EVENT, json!({ "detail": detail })).await
-            });
-        }
-        other => eprintln!("prism: the turn answered `{other}` on the renderer leg: {a}"),
-    };
-    tokio::spawn(crate::turns::run_turn(
-        realm, table, config, id, session_id, content, Some(slots), send,
-    ));
 }
 
 /// A booth's answer, a layout file or a turn's round as an ACTION LIST. A frame that is not an
@@ -502,7 +398,7 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 /// `{device, user}`) and `notice` (what failed: `{detail}`).
 async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) {
     let event = format!("{VIEW_PREFIX}{fact}");
-    let envelope = json!({ "name": event, "channel_id": device.to_string(), "data": data });
+    let envelope = json!({ "name": event, "device": device.to_string(), "data": data });
     gw.emit(&event, envelope).await;
 }
 

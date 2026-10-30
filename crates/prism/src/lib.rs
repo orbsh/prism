@@ -57,7 +57,6 @@ pub mod effectors;
 pub mod identity;
 pub mod mounts;
 pub mod nodes;
-pub mod turns;
 pub mod ui;
 
 use aura_booth::{call::Waited, InstanceId, InstanceKey};
@@ -137,10 +136,6 @@ pub struct Gateway {
     deployment: Deployment,
     conns: Arc<Mutex<HashMap<u64, Conn>>>,
     next_id: AtomicU64,
-    /// Live turn streams, keyed by connection id (turns::TurnTable —
-    /// one submit at a time per connection). Shared behind an Arc so
-    /// the spawned stream pump can free its slot on completion.
-    turns: std::sync::Arc<std::sync::Mutex<turns::TurnTable>>,
     /// The renderer's connections (ADR-0017 §8). A separate table from `conns` because
     /// the two legs write different frame types — but the SAME identity facts: a device,
     /// and the auth field a `login` writes. Keeping them apart is what lets one leg speak
@@ -182,7 +177,6 @@ impl Gateway {
             deployment,
             conns: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
-            turns: Arc::new(std::sync::Mutex::new(turns::TurnTable::new())),
             ui_conns: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -210,7 +204,7 @@ impl Gateway {
         let user = auth_field(user0);
         self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id,
-            ui::UiConn { tx, device, user: Arc::clone(&user), turns: 0 },
+            ui::UiConn { tx, device, user: Arc::clone(&user) },
         );
         (id, user)
     }
@@ -235,15 +229,6 @@ impl Gateway {
         }
     }
 
-    /// The streaming region for this connection's NEXT turn — `say.1`, `say.2`, … A constant
-    /// name would make each turn patch the region an earlier turn's bubble still reads, so the
-    /// counter is per connection and the name is declared fresh every time.
-    pub(crate) fn next_turn_slot(&self, id: u64, base: &str) -> Option<String> {
-        let mut conns = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let conn = conns.get_mut(&id)?;
-        conn.turns += 1;
-        Some(format!("{base}.{}", conn.turns))
-    }
 
     pub(crate) fn unregister_ui(&self, id: u64) {
         self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
@@ -293,7 +278,7 @@ impl Gateway {
         // turn.error per call. The deployment facts (TurnConfig) are
         // read per submit, not here: a boot without them still serves
         // echo/identity; turn verbs report the missing fact.
-        match turns::register_executor(engine).await {
+        match gravity_booth::register(engine).await {
             Ok(()) => println!("prism: turn executor live (gravity booths)"),
             Err(err) => eprintln!("prism: turn executor not registered: {err}"),
         }
@@ -320,7 +305,23 @@ impl Gateway {
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
         // The venue is also a subscriber: an application's view events become renderer
         // frames. Installed here so every path that serves (tests, `main`) gets it.
-        ui::install(&self.engine, std::sync::Arc::clone(&self.ui_conns)).await;
+        // Two sinks: a renderer draws an operation list, a program reads the data shape.
+        let peer_conns = std::sync::Arc::clone(&self.conns);
+        let peers: ui::PeerDeliver = std::sync::Arc::new(
+            move |target: Option<&str>, sender: Option<&str>, name: &str, data: serde_json::Value| {
+                let Ok(conns) = peer_conns.lock() else {
+                    return;
+                };
+                for c in conns.values() {
+                    let here = c.device.to_string();
+                    if target.is_some_and(|t| t != here) || sender == Some(here.as_str()) {
+                        continue;
+                    }
+                    let _ = c.tx.send(Frame::new(name, data.clone()));
+                }
+            },
+        );
+        ui::install(&self.engine, std::sync::Arc::clone(&self.ui_conns), peers).await;
         match self.posture {
             nodes::Posture::Required => {
                 eprintln!("prism: identity posture: `required` (ed25519 handshake gates effectors — ADR-0015)")
@@ -562,15 +563,43 @@ impl Gateway {
                 self.send_to(id, Frame::new("ping.result", serde_json::json!({"pong": true})));
                 return;
             }
-            "turn.submit" => {
-                self.turn_submit(id, args).await;
-                return;
-            }
-            "turn.cancel" => {
-                self.turn_cancel(id);
-                return;
-            }
             _ => {}
+        }
+
+        // A PROGRAM SPEAKS THE VIEW VOCABULARY TOO (a turn has one home, and it is the
+        // application's booth): an `ev` that already carries the marker is an EMIT to the plane,
+        // not a booth name — the venue adds nothing to it, and the recipient is the calling
+        // device. A bare `ev` keeps the dispatch rule (`ev` names the booth type), so which one a
+        // client means stays explicit instead of guessed.
+        if ev.starts_with(ui::VIEW_PREFIX) {
+            let (device, user) = self.identities(id);
+            if identity::is_anonymous(user) && self.event_requires_auth(&ev).await {
+                self.send_to(
+                    id,
+                    Frame::new(
+                        "error",
+                        serde_json::json!({"ev": ev, "message": "authentication required"}),
+                    ),
+                );
+                return;
+            }
+            let envelope = serde_json::json!({
+                "name": ev,
+                "device": device.to_string(),
+                "sender": {
+                    "device": device.to_string(),
+                    "user": (!identity::is_anonymous(user)).then(|| user.to_string()),
+                },
+                "data": args,
+            });
+            if let Err(e) = aura_realm::Realm::emit(&self.engine.realm, None, &ev, envelope).await {
+                eprintln!("prism: `{ev}` did not reach the plane: {e}");
+                self.send_to(
+                    id,
+                    Frame::new("error", serde_json::json!({"ev": ev, "message": e.to_string()})),
+                );
+            }
+            return;
         }
 
         let (device, user) = self.identities(id);
@@ -676,121 +705,7 @@ impl Gateway {
         Ok(kicked)
     }
 
-    /// `turn.submit {session_id, content}` — the streaming turn (the
-    /// PLAN's "turn submit ... streaming back" half, riding ADR-0034
-    /// iterate). One live turn per connection: a second submit while
-    /// one runs is refused (the client cancels or waits). The auth
-    /// gate reuses the echo plane's declaration face — the executor
-    /// type's persisted interface_schema `auth` block (the stub
-    /// declares `turn` user-gated); anonymous senders get the standard
-    /// error VALUE. The stream pump runs spawned: the read loop stays
-    /// free, deltas flow as `turn.delta` frames, `turn.done` (terminal
-    /// value) or `turn.error` closes.
-    async fn turn_submit(&self, id: u64, args: serde_json::Value) {
-        if self.turns_arc().lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_live(id) {
-            self.send_to(
-                id,
-                Frame::new(
-                    "error",
-                    serde_json::json!({"ev": "turn.submit", "message": "a turn is already live — cancel first"}),
-                ),
-            );
-            return;
-        }
-        let (_, user) = self.identities(id);
-        if identity::is_anonymous(user)
-            && self.type_handler_requires_auth(turns::EXECUTOR_TYPE, "turn").await
-        {
-            self.send_to(
-                id,
-                Frame::new(
-                    "error",
-                    serde_json::json!({"ev": "turn.submit", "message": "authentication required"}),
-                ),
-            );
-            return;
-        }
-        let session_id = match args.get("session_id").and_then(|v| v.as_str()) {
-            Some(s) if !s.is_empty() => s.to_string(),
-            _ => {
-                self.send_to(
-                    id,
-                    Frame::new(
-                        "error",
-                        serde_json::json!({"ev": "turn.submit", "message": "session_id required"}),
-                    ),
-                );
-                return;
-            }
-        };
-        let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        // Reserve SYNCHRONOUSLY — the duplicate check above and this
-        // insert are one dispatch pass, no spawn can interleave.
-        self.turns_arc().lock().unwrap_or_else(std::sync::PoisonError::into_inner).reserve(id);
-        // The deployment facts: read per submit (env). A missing fact
-        // reports as turn.error — the session plane serves without it.
-        let config = match turns::TurnConfig::from_env() {
-            Ok(c) => c,
-            Err(e) => {
-                self.send_to(
-                    id,
-                    Frame::new("turn.error", serde_json::json!({"message": e.to_string()})),
-                );
-                self.turns_arc().lock().unwrap_or_else(std::sync::PoisonError::into_inner).take(id);
-                return;
-            }
-        };
-        let conns = Arc::clone(&self.conns);
-        let realm = Arc::clone(&self.engine.realm);
-        let table = self.turns_arc();
-        let send = move |ev: &str, a: serde_json::Value| {
-            if let Some(c) = conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
-                let _ = c.tx.send(Frame::new(ev, a));
-            }
-        };
-        tokio::spawn(turns::run_turn(realm, table, config, id, session_id, content, None, send));
-    }
 
-    /// `turn.cancel {}` — dispose this connection's live turn. The
-    /// turn may still be starting (reserved, stream id unminted):
-    /// wait briefly for the realm to mint the id, then dispose
-    /// (Dispose is idempotent realm-side — ADR-0034 §3). The pump's
-    /// next pull fails ("not live") and reports `turn.error`; the
-    /// slot frees. Cancel with no live turn is idempotent-ok
-    /// (logout's shape).
-    pub(crate) fn turn_cancel(&self, id: u64) {
-        let taken = {
-            let t = self.turns_arc();
-            let mut guard = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            // A minted id disposes directly; a still-unminted one
-            // would have its put rejected by the freed slot — so
-            // poll briefly before freeing.
-            if guard.live_of(id).is_none() && guard.is_live(id) {
-                for _ in 0..50 {
-                    drop(guard);
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    guard = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if guard.live_of(id).is_some() {
-                        break;
-                    }
-                }
-            }
-            guard.take(id)
-        };
-        if let Some(stream_id) = taken {
-            let realm = Arc::clone(&self.engine.realm);
-            tokio::spawn(async move {
-                let _ = aura_realm::Realm::iterate(&realm, aura_booth::IterateOp::Dispose { stream_id }).await;
-            });
-        }
-        self.send_to(id, Frame::new("turn.cancel.result", serde_json::json!({"ok": true})));
-    }
-
-    /// The turn table behind a shared handle (the spawned pump frees
-    /// its slot through this Arc on completion).
-    pub(crate) fn turns_arc(&self) -> std::sync::Arc<std::sync::Mutex<turns::TurnTable>> {
-        Arc::clone(&self.turns)
-    }
 
     /// signup/login: registry calls, the auth FIELD of this connection
     /// is the write (§3 one set — no move, no second collection).
@@ -849,22 +764,26 @@ impl Gateway {
             .unwrap_or(false)
     }
 
-    /// The turn verb's auth gate: the EXECUTOR type's persisted
-    /// interface_schema `auth` block, keyed by the handler the submit
-    /// drives (`turn`) — the same declaration face the echo plane
-    /// enforces, read through the type's schema instead of the
-    /// event-name-is-type dispatch rule. Fail-open like the echo gate.
-    async fn type_handler_requires_auth(&self, booth_type: &str, handler: &str) -> bool {
-        self.engine
-            .realm
-            .lock()
-            .await
-            .schema_of(booth_type)
-            .cloned()
-            .flatten()
-            .and_then(|schema| schema.get("auth")?.get(handler).map(|v| v.as_bool().unwrap_or(true)))
-            .unwrap_or(false)
+    /// Does the event require a bound user? The ROUTE is what names the booth now that an event
+    /// no longer names a type (a page's `turn.submit` becomes `view:turn.submit`, routed to
+    /// whichever booth declared it): every type routed for the event is asked, and a type whose
+    /// persisted `interface_schema` declares ANY `auth` block gates its events. The declaration
+    /// face is unchanged; only the lookup follows the plane instead of the event name.
+    pub(crate) async fn event_requires_auth(&self, ev: &str) -> bool {
+        let realm = self.engine.realm.lock().await;
+        realm
+            .router
+            .matches(ev)
+            .into_iter()
+            .filter_map(|route| realm.schema_of(&route.booth_type).cloned().flatten())
+            .any(|schema| {
+                schema
+                    .get("auth")
+                    .and_then(|a| a.as_object())
+                    .is_some_and(|m| !m.is_empty())
+            })
     }
+
 
     fn identities(&self, id: u64) -> (identity::DeviceId, identity::UserId) {
         let guard = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

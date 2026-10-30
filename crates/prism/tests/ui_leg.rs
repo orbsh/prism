@@ -203,7 +203,7 @@ async fn connect_is_an_event_and_the_application_answers_it() {
         &gw.engine.realm,
         None,
         "view:layout",
-        json!({"name": "view:layout", "channel_id": device, "data": [
+        json!({"name": "view:layout", "device": device, "data": [
             {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["from-event"]}}},
             {"action": "set", "slot": "graph", "data": {"type": "case"}},
         ]}),
@@ -344,7 +344,7 @@ async fn a_view_event_carries_data_into_the_slot_named_by_it() {
         &gw.engine.realm,
         None,
         "view:identity",
-        json!({"name": "view:identity", "channel_id": device, "data": {"device": device, "user": null}}),
+        json!({"name": "view:identity", "device": device, "data": {"device": device, "user": null}}),
     )
     .await
     .expect("emit view:identity");
@@ -369,7 +369,7 @@ async fn a_view_event_does_not_echo_back_to_its_sender() {
         &gw.engine.realm,
         None,
         "view:chat",
-        json!({"name": "view:chat", "channel_id": device, "sender": {"device": device}, "data": {"echo": true}}),
+        json!({"name": "view:chat", "device": device, "sender": {"device": device}, "data": {"echo": true}}),
     )
     .await
     .expect("emit view:chat");
@@ -395,7 +395,7 @@ async fn a_view_event_for_another_device_is_not_drawn_here() {
         "view:graph",
         // Another device's address: any id that is not ours. Ids are opaque text, so "another
         // device" is simply another uuid — nothing about it is arithmetic.
-        json!({"name": "view:graph", "channel_id": okm_core::Uuid7::now().to_string(), "data": {"mark": "theirs"}}),
+        json!({"name": "view:graph", "device": okm_core::Uuid7::now().to_string(), "data": {"mark": "theirs"}}),
     )
     .await
     .expect("emit view");
@@ -405,167 +405,4 @@ async fn a_view_event_for_another_device_is_not_drawn_here() {
     send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
-}
-
-// ---- the turn fixture -------------------------------------------------------
-// The same stubs `turn_e2e` uses (an SSE provider and a mem-server), copied rather than
-// shared: two test binaries cannot share a module without turning both into one, and the
-// duplication is thirty lines of stub. `TurnConfig` rides the PROCESS environment, so one test
-// per process holds the serial guard for its whole body.
-
-static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().await
-}
-
-async fn sse_server(words: &[&str]) -> String {
-    let words: Vec<String> = words.iter().map(|w| w.to_string()).collect();
-    let app = axum::Router::new().route(
-        "/chat/completions",
-        axum::routing::post(move || {
-            let words = words.clone();
-            async move {
-                let chunks = futures_util::stream::iter(words.into_iter().map(|w| {
-                    let payload = serde_json::json!({"choices": [{"delta": {"content": format!("{w} ")}}]});
-                    Ok::<_, std::io::Error>(axum::body::Bytes::from(format!("data: {payload}\n\n")))
-                }))
-                .chain(futures_util::stream::once(async {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                    Ok(axum::body::Bytes::from("data: [DONE]\n\n"))
-                }))
-                .then(|b| async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                    b
-                });
-                axum::response::Response::builder()
-                    .header("content-type", "text/event-stream")
-                    .body(axum::body::Body::from_stream(chunks))
-                    .unwrap()
-            }
-        }),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    format!("http://{addr}")
-}
-
-async fn mem_server() -> String {
-    let dir = tempfile::tempdir().unwrap();
-    let app = mem_server::open(dir.path().to_path_buf()).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    std::mem::forget(dir); // the store outlives the test
-    format!("http://{addr}")
-}
-
-/// Boot a venue whose turn facts point at the local stubs (gravity's guest binaries are the
-/// path-adjacent repo's debug build — build gravity before running this).
-async fn turn_boot(words: &[&str]) -> (SocketAddr, std::sync::Arc<Gateway>) {
-    let gravity_bins = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../gravity/target/debug");
-    std::env::set_var("GRAVITY_PROVIDER_BIN", format!("{gravity_bins}/gravity-provider"));
-    std::env::set_var("GRAVITY_TURN_BIN", format!("{gravity_bins}/gravity-turn"));
-    let endpoint = sse_server(words).await;
-    let store_url = mem_server().await;
-    std::env::set_var("GRAVITY_STORE_URL", &store_url);
-    std::env::set_var("GRAVITY_ENDPOINT", &endpoint);
-    std::env::set_var("GRAVITY_MODEL", "test-model");
-    std::env::set_var("GRAVITY_KEY_ENV", "GRAVITY_TEST_KEY");
-    std::env::set_var("GRAVITY_TEST_KEY", "test-key");
-    boot(Deployment::default()).await
-}
-
-/// The turn on the RENDERER leg, end to end: the caller declares the slots, gravity builds the
-/// frames, the venue forwards them as action lists, and nothing about a delta reaches here.
-#[tokio::test]
-async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
-    let _guard = serial().await;
-    let (addr, _gw) = turn_boot(&["Hello", "world"]).await;
-    let mut ws = open_ui(addr).await;
-    read_connected(&mut ws).await;
-
-    // The turn type declares `turn` user-gated: bind an account on this same socket.
-    send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "ada", "password": "p"}})).await;
-    let (_, name, _) = recv_speech(&mut ws).await;
-    assert_eq!(name, "identity");
-
-    send_uplink(&mut ws, json!({"dest": "turn.submit", "data": {"content": "hi"}})).await;
-
-    let mut appends: Vec<String> = Vec::new();
-    let mut sets: Vec<String> = Vec::new();
-    let mut patched = String::new();
-    let mut done = false;
-    for _ in 0..60 {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(20), recv_json(&mut ws))
-            .await
-            .expect("the turn must not stall");
-        let ops = frame
-            .as_array()
-            .cloned()
-            .unwrap_or_else(|| panic!("not an action list: {frame}"));
-        for op in ops {
-            if op["action"] == "inject" && op["slot"] == "turn.done" {
-                done = true;
-                continue;
-            }
-            match op["action"].as_str().unwrap_or("") {
-                // fluxen's tree address is `slot` (460d867): an event is the uplink's name,
-                // never an address inside the tree.
-                "append" => appends.push(op["slot"].as_str().unwrap_or("").to_string()),
-                "set" => sets.push(op["slot"].as_str().unwrap_or("").to_string()),
-                "patch" => patched.push_str(op["value"].as_str().unwrap_or("")),
-                other => panic!("unexpected action `{other}`: {op}"),
-            }
-        }
-        if done {
-            break;
-        }
-    }
-    assert!(done, "the turn never finished");
-    // The question, then the answer bubble, both on the venue's declared rack.
-    assert_eq!(appends, vec!["chat".to_string(), "chat".to_string()], "{appends:?}");
-    // The streaming region is the venue's OTHER declared slot, numbered by turn.
-    assert_eq!(sets, vec!["say.1".to_string()], "{sets:?}");
-    // Every provider token landed through a patch, in order.
-    assert!(patched.contains("Hello") && patched.contains("world"), "{patched:?}");
-
-    // ---- a SECOND turn on the same connection --------------------------------
-    // The region must be a NEW name. Reusing one would make this turn's patches rewrite the
-    // text inside the first turn's bubble: every frame correct, the conversation smeared.
-    send_uplink(&mut ws, json!({"dest": "turn.submit", "data": {"content": "again"}})).await;
-    let mut sets2: Vec<String> = Vec::new();
-    let mut patched2 = String::new();
-    let mut done2 = false;
-    for _ in 0..60 {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(20), recv_json(&mut ws))
-            .await
-            .expect("the second turn must not stall");
-        let ops = frame
-            .as_array()
-            .cloned()
-            .unwrap_or_else(|| panic!("not an action list: {frame}"));
-        for op in ops {
-            if op["action"] == "inject" && op["slot"] == "turn.done" {
-                done2 = true;
-                continue;
-            }
-            match op["action"].as_str().unwrap_or("") {
-                "set" => sets2.push(op["slot"].as_str().unwrap_or("").to_string()),
-                "patch" => {
-                    assert_eq!(op["slot"], "say.2", "turn 2 patches its OWN region: {op}");
-                    patched2.push_str(op["value"].as_str().unwrap_or(""));
-                }
-                "append" => {}
-                other => panic!("unexpected action `{other}`: {op}"),
-            }
-        }
-        if done2 {
-            break;
-        }
-    }
-    assert!(done2, "the second turn never finished");
-    assert_eq!(sets2, vec!["say.2".to_string()], "{sets2:?}");
-    assert!(!patched2.is_empty(), "the second turn streamed nothing");
 }
