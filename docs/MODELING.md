@@ -42,13 +42,30 @@ A **device** is the address; a **user** may be reached through the devices bound
 An application's WHOLE surface — what it shows and how it is configured — is the same two things: layouts and events. Nothing about management is a different kind of thing.
 
 - **The initial layout is pushed, not requested.** A client cannot know when it is ready; the venue states what it has on connect and the client draws whatever arrives.
-- **It is an EVENT that produces that layout, not a file and not a call.** prism resolves the device when a connection is established and emits `view:init`; whichever booth declared that event answers with frames. A deployment file can still be served as content, but it is the shape that earns nothing: a layout with no logic is still an answer its carrier can produce (a booth returning those frames), so the file form is a candidate for removal.
+- **It is an EVENT that produces that layout, not a file and not a call.** The trigger is the connection notice described below (`view:connect`); whichever booth declared it answers with frames. A deployment file can still be served as content, but it is the shape that earns nothing: a layout with no logic is still an answer its carrier can produce (a booth returning those frames), so the file form is a candidate for removal.
 - **Why an event and not `invoke`.** `invoke` is CALL semantics: one named target, one answer the caller waits for — right for special cases, wrong for composition. Several booths own different parts of one application, so the trigger has to be something every interested booth can receive, each answering with its own frames.
 - **Later layouts are ordinary traffic.** An application emits frames at any moment: `create`, `set`, `append`, `patch` against slots it declared earlier.
 - **Expansion is a control and an event.** A layout names a control whose `dest` is an application event (a button "manage models", say); the event reaches the booth; the booth emits the frames that create or append that section; its controls emit further events. The venue cannot tell a management section from a chat rack and is never asked to.
 - **So there is no admin surface per application**: no admin HTTP verb, no config file, no second origin. `/admin` on the venue is only about the VENUE (node approval, device revocation) — things about connections, devices and the plane itself.
 - **A program is a client too.** Automation opens its own connection, gets its own device, and submits the same events with the same payloads; "operable by an agent" is a property of this shape, not an extra API.
 - **The layout is the only thing a frame can be checked against.** A slot name is the sentence "my surface reads here", and only the party holding the layout can say whether that sentence is true — which is why the names inside a rendering are declared by whoever serves the layout, never guessed by the executor that draws into it.
+
+## The connection lifecycle is an event stream
+
+The venue reports what happened to a connection as events on the plane, and an application subscribes to the ones it cares about. Four notices, two pairs:
+
+| event | when | payload | typically answered by |
+|-------|------|---------|-----------------------|
+| `view:connect` | a device's connection is established | `{device}` | the orchestration booth, with the shell layout |
+| `view:login` | that device binds to a user (signup included) | `{device, user}` | whatever presents the account |
+| `view:logout` | the binding ends | `{device}` | the same |
+| `view:disconnect` | the connection is gone | `{device}` | cleanup; nothing is drawn from it |
+
+`view:init` is the name this replaces: it described the venue's own act rather than the fact the application cares about.
+
+**The token never rides the plane.** It is the page's credential, and the venue states it to the page on its own connection (the `identity` inject); an application that must act on the user's behalf addresses the DEVICE that is logged in, and the venue's auth gate is what actually holds the permission.
+
+**Facts are named as they happened; requests are imperative.** `view:connect` and `view:login` are things the venue OBSERVED, so the application only has to know about them; `view:turn.submit` is a thing a client WANTS, so it is named as an act. The difference is a word on the wire, and it is why a lifecycle notice never reads like a command an application might refuse.
 
 ## Islands: one application, several booths
 
