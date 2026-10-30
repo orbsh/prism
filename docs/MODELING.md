@@ -1,0 +1,97 @@
+# Prism Modeling — the connection plane
+
+The model of the plane in one place: who the participants are, what crosses the wire, who names what,
+and where state lives. It describes the SHAPE; the reasons behind each ruling live in the ADRs
+(0017 the wire, 0018 devices). When this document and an ADR disagree, the ADR is the record and this
+file is the defect.
+
+> **Languages:** [English](MODELING.md) (primary) · [中文](MODELING.zh-CN.md)
+
+## Participants
+
+| name | what it is | who issues it |
+|------|------------|---------------|
+| **device** | one connection's identity, and the only reachability the venue knows | the venue, at connect (`?device=` anchors it across a reconnect) |
+| **user** | the account a device is bound to; anonymous is a state, not a different device | the registry, at `login` |
+| **token** | the credential naming (device, user); the page carries it and nothing else claims identity | the registry |
+| **booth** | an application instance on the plane: declared by a name, told what happened by its own `@on` declarations | the application, at registration |
+| **renderer (page)** | draws what arrives, sends `Outflow {dest, id?, data}` upstream | the venue (it is the page's origin) |
+| **the venue (prism)** | forwards, adds and strips the marker, gates on declarations, fans out to devices | — |
+
+## The wire
+
+One vocabulary, marked. Everything that crosses the renderer leg is named `view:<name>`; the marker is
+what stops a page from forging an internal event, and it is the venue's to add and strip — a page never
+writes it and never sees it.
+
+| direction | the participant writes | what lands on the plane | what the recipient sees |
+|-----------|-----------------------|-------------------------|-------------------------|
+| uplink | `Outflow {dest, id?, data}` — a BARE name | `view:<dest>`, payload `{device, sender, data}` | the booth is called by its own declared entry |
+| downlink | `view:<name>`, payload `{name, device, sender?, data}` | the same event | the page gets the payload with the marker stripped |
+
+Two payload shapes are legal downstream, and the recipient decides what it can do with them:
+
+- an **operation list** (`Vec<Content>`) is DRAWN — always an array, one array per message;
+- **anything else is DATA** and lands on the vals plane at the slot named by the event, exactly as if
+  the page had emitted that name itself.
+
+Order inside one batch is semantics (a region's `set` precedes the patch that fills it), so a message
+is never split or reordered on the way.
+
+**A sender hears nothing of its own event.** The venue excludes the sending device from the fan-out,
+which is why a page's own request never comes back to it — and why a booth's own speech names no
+`sender` when it wants the asking device to receive it.
+
+## What addresses what
+
+A **device** is the address; a **user** may be reached through the devices bound to it. There is no
+channel on this wire: a channel is a user-visible grouping (a group chat, or a one-to-one conversation
+using the same mechanism), and grouping is an application's business — it stores its own membership,
+answers "who is in here" itself, and turns a group into a list of recipients. The venue cannot
+enumerate a group, validate membership, or issue a channel id (ADR-0018).
+
+## The application is a view
+
+An application's WHOLE surface — what it shows and how it is configured — is the same two things:
+layouts and events. Nothing about management is a different kind of thing.
+
+- **The initial layout is pushed, not requested.** A client cannot know when it is ready; the venue
+  states what it has on connect and the client draws whatever arrives.
+- **Later layouts are ordinary traffic.** An application emits frames at any moment: `create`, `set`,
+  `append`, `patch` against slots it declared earlier.
+- **Expansion is a control and an event.** A layout names a control whose `dest` is an application
+  event (a button "manage models", say); the event reaches the booth; the booth emits the frames that
+  create or append that section; its controls emit further events. The venue cannot tell a management
+  section from a chat rack and is never asked to.
+- **So there is no admin surface per application**: no admin HTTP verb, no config file, no second
+  origin. `/admin` on the venue is only about the VENUE (node approval, device revocation) — things
+  about connections, devices and the plane itself.
+- **A program is a client too.** Automation opens its own connection, gets its own device, and submits
+  the same events with the same payloads; "operable by an agent" is a property of this shape, not an
+  extra API.
+
+## Where state lives
+
+| owner | what it owns | what it must never hold |
+|-------|--------------|--------------------------|
+| the venue | connections, devices, users, tokens, the routes it was told to serve | an application's vocabulary (a model, a rule, a setting) |
+| the application | its rows (in its own namespace), its layouts, its event vocabulary | a copy of the venue's reachability facts |
+| the page | the token and what it was handed | anything durable: a page that stores truth is a second source of truth |
+| the platform (aura) | the field: types, routes, the embedded store an application declares | business policy for any application |
+
+## Two renderings of one application
+
+The same application may speak to a renderer and to a program. The difference is the OUTPUT SHAPE, not
+a second implementation: frames for a surface that only draws, raw deltas for a client that reads. The
+shape is the caller's choice on the way in, the names inside it are the caller's declaration, and both
+travel the one wire — the venue strips the `view:` marker either way, so a program sees the plain names
+it already speaks.
+
+## What this model refuses
+
+- A page that renders business knowledge it was not handed (fields, defaults, ranges) — the renderer
+  stays dumb by construction.
+- A transport that learns an application's vocabulary — the moment prism knows what a model is, every
+  application change is a gateway change.
+- A second surface for administration — one vocabulary, one auth story, one client for the product and
+  its settings.
