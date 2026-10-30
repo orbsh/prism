@@ -37,8 +37,9 @@
 //! `/code/{sha256}` export (ADR-0027) ride the same accept loop, as do the
 //! renderer's faces (ADR-0017 §8): `/assets/<rel>` (the static bundle,
 //! `assets.rs`) and `/ui` (the renderer's leg, `ui.rs` — fluxen's
-//! `Message`/`Outflow` wire, with `init` answered from `PRISM_INIT`,
-//! `init.rs`). ONE SHAPE PER LEG: `/ws` is the programmatic leg and keeps
+//! `Message`/`Outflow` wire; the layout is the APPLICATION's answer to the
+//! `view:connect` event, not a deployment fact). ONE SHAPE PER LEG: `/ws` is
+//! the programmatic leg and keeps
 //! `{ev, args}`; `/ui` carries the renderer's vocabulary. Booth upload is
 //! the rest of ADR-0017 — deliberately not here; README states the gap so
 //! it reads as scope, not as drift.
@@ -54,7 +55,6 @@ pub mod admin;
 pub mod code_export;
 pub mod effectors;
 pub mod identity;
-pub mod init;
 pub mod mounts;
 pub mod nodes;
 pub mod turns;
@@ -101,20 +101,20 @@ pub(crate) fn auth_set(field: &AuthField, user: identity::UserId) {
     *field.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = user;
 }
 
-/// The venue's optional faces: the renderer's static bundle and the `init` answer's
-/// source. Both are DEPLOYMENT FACTS with a legal absence — an install that serves
-/// identity/turns/peers and no UI is a real deployment, and it says so at boot.
+/// The venue's optional face: the renderer's static bundle. A DEPLOYMENT FACT with a legal
+/// absence — an install that serves identity/turns/peers and no UI is a real deployment, and
+/// it says so at boot. The LAYOUT is not here: it is the application's answer to
+/// `view:connect`, so there is nothing for a deployment to configure.
 #[derive(Default)]
 pub struct Deployment {
     pub assets: Option<assets::AssetRoot>,
-    pub init: Option<init::InitSource>,
 }
 
 impl Deployment {
-    /// Read both facts from the environment. A declared-but-broken fact is a boot error
-    /// (the operator must see it), never a silent downgrade to "no UI".
+    /// Read the fact from the environment. A declared-but-broken fact is a boot error (the
+    /// operator must see it), never a silent downgrade to "no UI".
     pub fn from_env() -> anyhow::Result<Self> {
-        Ok(Self { assets: assets::AssetRoot::from_env()?, init: init::InitSource::from_env()? })
+        Ok(Self { assets: assets::AssetRoot::from_env()? })
     }
 
     /// One line per configured face, for the boot log.
@@ -122,9 +122,6 @@ impl Deployment {
         let mut lines = Vec::new();
         if let Some(a) = &self.assets {
             lines.push(a.describe());
-        }
-        if let Some(i) = &self.init {
-            lines.push(i.describe());
         }
         lines
     }
@@ -274,11 +271,6 @@ impl Gateway {
         let user = identity::anonymous();
         let token = self.registry.issue_token(device, user)?;
         Ok((device, user, token))
-    }
-
-    /// The `init` source, if this deployment declared one (`PRISM_INIT`).
-    pub(crate) fn init_source(&self) -> Option<init::InitSource> {
-        self.deployment.init.clone()
     }
 
     /// Register the language echo booths (steel / python / nushell

@@ -71,6 +71,11 @@ pub const IDENTITY_EVENT: &str = "identity";
 /// venue does not invent a display for each kind.
 pub const NOTICE_EVENT: &str = "notice";
 
+/// What the venue says when a connection is established: a FACT about the device, named as it
+/// happened. Whoever declared it answers with the layout — the application decides what a fresh
+/// device is shown, and there is nothing for a deployment to configure.
+pub const CONNECT_EVENT: &str = "view:connect";
+
 /// The renderer connection table: id → connection. The venue owns it, the forwarding booth
 /// writes into it, and the peer-plane acts (revocation) reach it.
 pub(crate) type UiConns = Arc<std::sync::Mutex<std::collections::HashMap<u64, UiConn>>>;
@@ -241,32 +246,12 @@ pub(crate) async fn serve(
     say(&gw, device, IDENTITY_EVENT, identity_fact(device, identity::anonymous(), token)).await;
     eprintln!("prism: renderer leg: device {device} connected (conn {id})");
 
-    // THE LAYOUT IS PUSHED ON CONNECT, not asked for. A client cannot know when it is ready
-    // to receive it and the venue cannot know when a page is up, so the venue states what it
-    // has and the client draws whatever arrives — one ordering, no handshake, no page code.
-    match gw.init_source() {
-        Some(crate::init::InitSource::File(frames)) => {
-            let ops = ops_of(frames, "init");
-            eprintln!("prism: renderer leg: device {device} pushed {} layout frame(s)", ops.len());
-            if !ops.is_empty() {
-                // Through the same plane as everything else the venue says: the identity fact
-                // was emitted first, so the page cannot receive the layout before it — a direct
-                // write here raced the queue and could arrive in either order.
-                say_ops(&gw, device, "layout", ops).await;
-            }
-        }
-        Some(crate::init::InitSource::Event { event }) => {
-            // The venue does not wait for an answer: the application decides what "ready"
-            // means, and its view events carry the frames.
-            eprintln!("prism: renderer leg: device {device} connect -> emit `{event}`");
-            let event = event.clone();
-            gw.emit(&event, json!({"device": device.to_string()})).await;
-        }
-        None => {
-            eprintln!("prism: renderer leg: no init source — device {device} gets an empty venue");
-            say(&gw, device, NOTICE_EVENT, json!({"detail": "no layout source in this deployment"})).await;
-        }
-    }
+    // THE CONNECTION IS A FACT, AND THE LAYOUT IS THE APPLICATION'S ANSWER TO IT. The venue says
+    // `view:connect {device}` on the plane; whichever booth declared it answers with frames, and
+    // the page draws whatever arrives. Nothing is configured here: a deployment has no layout
+    // source to name, and a venue with no such booth draws nothing while the connection stays up.
+    eprintln!("prism: renderer leg: device {device} connect -> emit `{CONNECT_EVENT}`");
+    gw.emit(CONNECT_EVENT, json!({ "device": device.to_string() })).await;
 
     while let Some(msg) = read.next().await {
         let bytes = match msg? {
@@ -515,14 +500,6 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 /// wants a page to hold is `view:<fact>`, forwarded by its own renderer booth and landing in the
 /// vals slot named by the fact. Two names are conventions, not law: `identity` (who am I:
 /// `{device, user}`) and `notice` (what failed: `{detail}`).
-/// Same path, for a batch of OPERATIONS (the init layout): an action list is drawn, so this is
-/// the one shape that skips the vals plane on its way to the page.
-async fn say_ops(gw: &Gateway, device: identity::DeviceId, fact: &str, ops: Vec<Content<Value>>) {
-    let event = format!("{VIEW_PREFIX}{fact}");
-    let envelope = json!({ "name": event, "channel_id": device.to_string(), "data": ops });
-    gw.emit(&event, envelope).await;
-}
-
 async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) {
     let event = format!("{VIEW_PREFIX}{fact}");
     let envelope = json!({ "name": event, "channel_id": device.to_string(), "data": data });

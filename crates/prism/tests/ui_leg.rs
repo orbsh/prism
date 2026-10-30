@@ -10,7 +10,7 @@
 
 use aura_engine::Engine;
 use futures_util::{SinkExt, StreamExt};
-use prism::{assets::AssetRoot, identity::Registry, init::InitSource, Deployment, Gateway};
+use prism::{assets::AssetRoot, identity::Registry, Deployment, Gateway};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -31,18 +31,6 @@ async fn boot(deployment: Deployment) -> (SocketAddr, std::sync::Arc<Gateway>) {
     let served = std::sync::Arc::clone(&gw);
     tokio::spawn(async move { served.serve(listener).await.unwrap() });
     (addr, gw)
-}
-
-/// A deployment with no layout source answers `notice`/`init.error` on connect — the model has
-/// no client-asked `init`, so the refusal is PUSHED, not waited for. Returns the device the
-/// venue stated in `identity`.
-async fn connect_and_expect_no_layout(ws: &mut WsClient) -> String {
-    let device = read_connected(ws).await;
-    let (slot, name, data) = recv_speech(ws).await;
-    assert_eq!(slot, "notice", "a venue without a layout says so");
-    assert_eq!(name, "notice", "{slot} {name}");
-    assert!(data["detail"].as_str().is_some_and(|d| d.contains("layout")), "{data}");
-    device
 }
 
 /// The connect answer: the `identity` fact, carrying the device the venue assigned. The fact is
@@ -136,26 +124,12 @@ async fn send_uplink(ws: &mut WsClient, value: Value) {
 }
 
 /// The layout document an application ships: a list of Accrete frames.
-fn layout_file() -> tempfile::NamedTempFile {
-    let f = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(
-        f.path(),
-        "- action: create\n  slot: \"\"\n  data: {type: case, attrs: {}}\n\
-         - action: set\n  slot: chat\n  data: {type: case}\n",
-    )
-    .unwrap();
-    f
-}
-
 #[tokio::test]
 async fn assets_are_plain_downloads_on_the_shared_loop() {
     let bundle = tempfile::tempdir().unwrap();
     std::fs::write(bundle.path().join("index.html"), "<!doctype html><div id=main></div>").unwrap();
     std::fs::write(bundle.path().join("ui_leptos-abc123.js"), "console.log(1)").unwrap();
-    let (addr, _gw) = boot(Deployment {
-        assets: Some(AssetRoot::open(bundle.path()).unwrap()),
-        init: None,
-    })
+    let (addr, _gw) = boot(Deployment { assets: Some(AssetRoot::open(bundle.path()).unwrap()) })
     .await;
 
     // Hashed asset: content-typed and immutable for a year.
@@ -178,41 +152,70 @@ async fn assets_are_plain_downloads_on_the_shared_loop() {
     }
 }
 
-/// The layout arrives as ONE action list on connect: the whole document, in order, and no
-/// terminator — there is no verb vocabulary left to terminate with.
+/// The connection is a FACT on the plane, not a configured layout: the venue emits
+/// `view:connect {device}` and whoever declared it answers with frames. This is what lets one
+/// application be assembled from several booths — and why `PRISM_INIT` is gone.
 #[tokio::test]
-async fn init_delivers_the_layout_as_view_frames() {
-    let layout = layout_file();
-    let spec = format!("file:{}", layout.path().display());
-    let (addr, _gw) = boot(Deployment {
-        assets: None,
-        init: Some(InitSource::parse(&spec).expect("file source")),
-    })
-    .await;
+async fn connect_is_an_event_and_the_application_answers_it() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let collector = std::sync::Arc::clone(&seen);
+    gw.engine
+        .register(aura_booth::BoothType {
+            name: "connect_probe".into(),
+            body: aura_booth::Body::Rust(std::sync::Arc::new(move |_ctx, args| {
+                let collector = std::sync::Arc::clone(&collector);
+                Box::pin(async move {
+                    collector.lock().unwrap().push(args);
+                    Ok(Value::Null)
+                })
+            })),
+            idle_ttl: None,
+            max_exec: None,
+            hooks: std::collections::BTreeMap::new(),
+            receives: vec![aura_booth::ReceiveDecl {
+                event: "view:connect".into(),
+                entry: None,
+                resolution: aura_booth::RouteResolution::Singleton,
+                wildcard: false,
+            }],
+        })
+        .await
+        .expect("register the connect probe");
 
     let mut ws = open_ui(addr).await;
-    read_connected(&mut ws).await;
+    let device = read_connected(&mut ws).await;
+
+    // Delivery is queued on the plane, so wait for it rather than race it.
+    let mut fact = None;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if let Some(first) = seen.lock().unwrap().first() {
+            fact = Some(first.clone());
+            break;
+        }
+    }
+    let fact = fact.expect("view:connect reached the plane");
+    assert_eq!(fact["device"].as_str(), Some(device.as_str()), "the fact names the device: {fact}");
+
+    // The application's answer: frames the venue forwards AS the message (one action list).
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "view:layout",
+        json!({"name": "view:layout", "channel_id": device, "data": [
+            {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["from-event"]}}},
+            {"action": "set", "slot": "graph", "data": {"type": "case"}},
+        ]}),
+    )
+    .await
+    .expect("emit view:layout");
 
     let ops = recv_ops(&mut ws).await;
-    assert_eq!(ops.len(), 2, "the layout is one list: {ops:?}");
+    assert_eq!(ops.len(), 2, "both frames in one list: {ops:?}");
     assert_eq!(ops[0]["action"], "create");
-    assert_eq!(ops[0]["data"]["type"], "case");
-    assert_eq!(ops[1]["action"], "set");
-    assert_eq!(ops[1]["slot"], "chat");
-}
-
-#[tokio::test]
-async fn a_deployment_without_init_answers_instead_of_hanging() {
-    let (addr, _gw) = boot(Deployment::default()).await;
-    let mut ws = open_ui(addr).await;
-    connect_and_expect_no_layout(&mut ws).await;
-    // The socket stays up and still answers: the venue said it has no layout, and the next
-    // uplink is dispatched normally.
-    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case"}});
-    send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
-    let ops = recv_ops(&mut ws).await;
-    assert_eq!(ops.len(), 1, "{ops:?}");
-    assert_eq!(ops[0]["slot"], "graph");
+    assert_eq!(ops[0]["data"]["attrs"]["class"][0], "from-event");
+    assert_eq!(ops[1]["slot"], "graph");
 }
 
 /// Two legs, two shapes: `/ws` keeps `{ev, args}` while `/channel` speaks the renderer's wire.
@@ -243,7 +246,7 @@ async fn the_peer_leg_keeps_its_own_shape() {
 async fn an_uplink_dispatches_to_the_booth_named_by_the_event() {
     let (addr, _gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
-    connect_and_expect_no_layout(&mut ws).await;
+    read_connected(&mut ws).await;
     // The booth's answer IS the operation the caller sent: an answer that is not an operation
     // is data, and data has no path down this leg — a booth that wants the page to see
     // something emits `view:<name>`. So the drawn frame here proves the dispatch happened.
@@ -262,7 +265,7 @@ async fn an_uplink_dispatches_to_the_booth_named_by_the_event() {
 async fn the_auth_declaration_gates_the_renderer_leg() {
     let (addr, _gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
-    connect_and_expect_no_layout(&mut ws).await;
+    read_connected(&mut ws).await;
 
     let op = json!({"action": "set", "slot": "secret", "data": {"type": "text"}});
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
@@ -307,7 +310,7 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
 async fn revocation_kicks_the_renderer_leg_too() {
     let (addr, _gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
-    let device = connect_and_expect_no_layout(&mut ws).await;
+    let device = read_connected(&mut ws).await;
 
     // Bind an account so this connection carries an auth field worth clearing.
     send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "grace", "password": "p"}})).await;
@@ -328,46 +331,6 @@ async fn revocation_kicks_the_renderer_leg_too() {
     assert!(closed, "a revoked renderer connection must be closed");
 }
 
-/// The layout source that is an EVENT: connect emits it, the application decides what to do,
-/// and whatever it emits as `view` reaches the renderer — as one action list, because that is
-/// what a message is on this leg.
-#[tokio::test]
-async fn an_event_source_emits_and_forwards_the_applications_view_frames() {
-    let (addr, gw) = boot(Deployment {
-        assets: None,
-        init: Some(InitSource::parse("event:ui_init").expect("event source")),
-    })
-    .await;
-    let mut ws = open_ui(addr).await;
-    let device = read_connected(&mut ws).await;
-
-    // Nothing follows on its own: the venue emitted `ui_init` and is waiting on the
-    // application, which in this test is the test.
-    aura_realm::Realm::emit(&gw.engine.realm, None, "ui_init", json!({"device": device}))
-        .await
-        .expect("emit");
-
-    // The application's answer, as the venue sees it: one `view` event carrying frames.
-    aura_realm::Realm::emit(
-        &gw.engine.realm,
-        None,
-        "view:layout",
-        json!({"name": "view:layout", "channel_id": device, "data": [
-            {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["from-event"]}}},
-            {"action": "set", "slot": "graph", "data": {"type": "case"}},
-        ]}),
-    )
-    .await
-    .expect("emit view");
-
-    let ops = recv_ops(&mut ws).await;
-    assert_eq!(ops.len(), 2, "both frames in one list: {ops:?}");
-    assert_eq!(ops[0]["action"], "create");
-    assert_eq!(ops[0]["data"]["attrs"]["class"][0], "from-event");
-    assert_eq!(ops[1]["action"], "set");
-    assert_eq!(ops[1]["slot"], "graph");
-}
-
 /// DATA on the downlink: a `view:<name>` whose payload is not an operation list goes into the
 /// VALS plane under that name, exactly as if the page had emitted it — the operation list shape
 /// (the test above) and the data shape are both legal, and which one applies is the emitter's
@@ -376,7 +339,7 @@ async fn an_event_source_emits_and_forwards_the_applications_view_frames() {
 async fn a_view_event_carries_data_into_the_slot_named_by_it() {
     let (addr, gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
-    let device = connect_and_expect_no_layout(&mut ws).await;
+    let device = read_connected(&mut ws).await;
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
@@ -401,7 +364,7 @@ async fn a_view_event_carries_data_into_the_slot_named_by_it() {
 async fn a_view_event_does_not_echo_back_to_its_sender() {
     let (addr, gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
-    let device = connect_and_expect_no_layout(&mut ws).await;
+    let device = read_connected(&mut ws).await;
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
@@ -423,7 +386,9 @@ async fn a_view_event_does_not_echo_back_to_its_sender() {
 async fn a_view_event_for_another_device_is_not_drawn_here() {
     let (addr, gw) = boot(Deployment::default()).await;
     let mut ws = open_ui(addr).await;
-    let device = connect_and_expect_no_layout(&mut ws).await;
+    // The connection's own device is what the addressed-elsewhere event must NOT reach; only
+    // the fact is needed here, and it is read to prove the leg is established.
+    let _device = read_connected(&mut ws).await;
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
@@ -519,7 +484,7 @@ async fn a_turn_on_the_renderer_leg_arrives_as_view_frames() {
     let _guard = serial().await;
     let (addr, _gw) = turn_boot(&["Hello", "world"]).await;
     let mut ws = open_ui(addr).await;
-    connect_and_expect_no_layout(&mut ws).await;
+    read_connected(&mut ws).await;
 
     // The turn type declares `turn` user-gated: bind an account on this same socket.
     send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "ada", "password": "p"}})).await;
