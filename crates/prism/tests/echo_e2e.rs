@@ -74,7 +74,8 @@ async fn echo_round_trip(codec: Codec, ev: &'static str) {
     // §7 amendment: the gateway delivers handlers a {sender, args}
     // envelope; the plain echoes pass it through whole.
     assert_eq!(reply.args["args"], payload, "{ev} echo shape");
-    assert!(reply.args["sender"]["device"].as_u64().unwrap() > 0);
+    // The sender half carries the device as TEXT now (a uuid, sixteen bytes).
+    assert_eq!(reply.args["sender"]["device"].as_str().unwrap().len(), 36);
 }
 
 #[tokio::test]

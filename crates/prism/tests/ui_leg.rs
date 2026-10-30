@@ -36,7 +36,7 @@ async fn boot(deployment: Deployment) -> (SocketAddr, std::sync::Arc<Gateway>) {
 /// A deployment with no layout source answers `notice`/`init.error` on connect — the model has
 /// no client-asked `init`, so the refusal is PUSHED, not waited for. Returns the device the
 /// venue stated in `identity`.
-async fn connect_and_expect_no_layout(ws: &mut WsClient) -> u64 {
+async fn connect_and_expect_no_layout(ws: &mut WsClient) -> String {
     let device = read_connected(ws).await;
     let (slot, name, data) = recv_speech(ws).await;
     assert_eq!(slot, "notice", "a venue without a layout says so");
@@ -48,11 +48,14 @@ async fn connect_and_expect_no_layout(ws: &mut WsClient) -> u64 {
 /// The connect answer: the `identity` fact, carrying the device the venue assigned. The fact is
 /// said as an EVENT like any other (`view:identity`), so the page sees a slot named after it —
 /// there is no per-verb `connected`/`signup.result` name to learn.
-async fn read_connected(ws: &mut WsClient) -> u64 {
+async fn read_connected(ws: &mut WsClient) -> String {
     let (slot, name, data) = recv_speech(ws).await;
     assert_eq!(slot, "identity", "connect answers identity");
     assert_eq!(name, "identity", "{name}");
-    data["device"].as_u64().expect("device id in identity")
+    // The device id is a uuid: TEXT on this wire (a 128-bit id is not a JSON number), and the same
+    // fact also carries the token the page must keep.
+    assert!(data["token"].as_str().is_some_and(|t| t.len() == 36), "{data}");
+    data["device"].as_str().expect("device id in identity").to_string()
 }
 
 /// One raw HTTP GET, full response (the route closes the connection).
@@ -275,7 +278,10 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     .await;
     let (slot, name, data) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), name.as_str()), ("identity", "identity"));
-    assert!(data["user"].as_u64().is_some(), "identity carries the bound user: {data}");
+    assert!(
+        data["user"].as_str().is_some_and(|u| u.len() == 36),
+        "identity carries the bound user as uuid text: {data}"
+    );
 
     // Bound now: the same declared-auth event reaches the booth and its answer is DRAWN. The
     // gate is not merely a boolean on a log line — the frame proves the call ran.
@@ -387,7 +393,7 @@ async fn a_view_event_carries_data_into_the_slot_named_by_it() {
     // name — nothing on the page knows what `view:` means.
     assert_eq!(ops[0]["slot"], "identity");
     assert_eq!(ops[0]["name"], "identity");
-    assert_eq!(ops[0]["data"]["device"].as_u64(), Some(device), "{ops:?}");
+    assert_eq!(ops[0]["data"]["device"].as_str(), Some(device.as_str()), "{ops:?}");
 }
 
 /// The sender does not hear its own emit: the fan-out is the channel minus whoever spoke.
@@ -422,7 +428,9 @@ async fn a_view_event_for_another_device_is_not_drawn_here() {
         &gw.engine.realm,
         None,
         "view:graph",
-        json!({"name": "view:graph", "channel_id": device + 999, "data": {"mark": "theirs"}}),
+        // Another device's address: any id that is not ours. Ids are opaque text, so "another
+        // device" is simply another uuid — nothing about it is arithmetic.
+        json!({"name": "view:graph", "channel_id": okm_core::Uuid7::now().to_string(), "data": {"mark": "theirs"}}),
     )
     .await
     .expect("emit view");
