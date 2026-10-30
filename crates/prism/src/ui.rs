@@ -205,10 +205,11 @@ pub(crate) async fn serve(
     ws: WebSocketStream<Prefixed>,
     codec: ActiveCodec,
     device: u64,
+    user0: u64,
 ) -> anyhow::Result<()> {
     let (mut write, mut read) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Content<Value>>>();
-    let (id, user) = gw.register_ui(tx, device);
+    let (id, user) = gw.register_ui(tx, device, user0);
 
     // The single writer: replies, verbs and a revocation's kick all go through this channel,
     // so the socket has exactly one owner (the peer leg's discipline, on this leg's frames).

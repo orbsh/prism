@@ -188,9 +188,10 @@ impl Gateway {
         &self,
         tx: mpsc::UnboundedSender<Vec<content::Content<serde_json::Value>>>,
         device: u64,
+        user0: u64,
     ) -> (u64, Arc<AtomicU64>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let user = Arc::new(AtomicU64::new(0));
+        let user = Arc::new(AtomicU64::new(user0));
         self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id,
             ui::UiConn { tx, device, user: Arc::clone(&user), turns: 0 },
@@ -389,18 +390,21 @@ impl Gateway {
         // BEFORE the peer leg's connection table: a renderer is not a caller, and its
         // identity/questions land here, not on the booth plane.
         if ui {
-            let device = match device {
+            // The renderer's device anchor restores the BINDING, not just the number: the same
+            // rule the peer leg follows. A page that reloads keeps its login; a connection whose
+            // anchor is a number the registry has never bound starts anonymous either way.
+            let (device, user0) = match device {
                 Some(d) => match self.registry.device_user(d)? {
-                    Some(_) => d,
-                    None => self.registry.new_device()?,
+                    Some(u) => (d, u),
+                    None => (self.registry.new_device()?, 0),
                 },
-                None => self.registry.new_device()?,
+                None => (self.registry.new_device()?, 0),
             };
             let cc = content::codec::ActiveCodec::new(match codec {
                 Codec::Json => content::codec::CodecType::Json,
                 Codec::Cbor => content::codec::CodecType::Cbor,
             });
-            return ui::serve(Arc::clone(&self), ws, cc, device).await;
+            return ui::serve(Arc::clone(&self), ws, cc, device, user0).await;
         }
 
         let (mut write, mut read) = ws.split();
