@@ -7,7 +7,7 @@
 //! `/assets/main.css`) work as trunk emitted them, with NO rebuild flag and no link
 //! rewriting. That is also stage's shape (`crates/stage`: everything not a route is static),
 //! and the same build serves reflux, which serves the bundle at its page root too. The
-//! reserved prefixes are `/ws`, `/ui`, `/code/…`, `/admin/…` and `/effector/<alias>`; they
+//! reserved prefixes are `/channel`, `/ws`, `/code/…`, `/admin/…` and `/effector/<alias>`; they
 //! are routed before this branch, so a bundle can never shadow a verb.
 //!
 //! Path discipline: the root is canonicalized once at boot and every request path is
