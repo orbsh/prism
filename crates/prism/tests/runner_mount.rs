@@ -213,7 +213,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         .expect("mount type present")
         .body
     {
-        Body::RemoteProbe { source, .. } => source.clone(),
+        Body::Remote { source, .. } => source.clone(),
         _ => panic!("a mount's body is a remote arm"),
     };
     assert_eq!(source_now, nu_spec, "the runner is fixed across operations");

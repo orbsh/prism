@@ -1,6 +1,6 @@
 //! Node mounts (gravity ADR-0001): what makes a node's language callable.
 //!
-//! A mount is a `RemoteProbe` booth type. The alias names the node (its
+//! A mount is a `Remote` booth type. The alias names the node (its
 //! outbound dial-in connection is the only door, held by the realm) and the
 //! `runner` is a FIXED deployment artifact — the program that receives an
 //! operation's code and arguments as call arguments and executes them.
@@ -8,7 +8,7 @@
 //! travels as an argument of the call, so an emergent skill (or a new version
 //! of one) mints no type, no ns, no route, no definition row.
 //!
-//! Registration is idempotent per boot: `RemoteProbe` definitions are not
+//! Registration is idempotent per boot: `Remote` definitions are not
 //! persisted (aura 4.5b's scope is script booths), so the manifest is the
 //! durable form and boot replays it. A declaration names BOTH axes, so
 //! neither has to be inferred from the other: `carrier` is the node facility
@@ -79,7 +79,7 @@ impl MountDecl {
     pub fn booth_type(&self) -> BoothType {
         BoothType {
             name: self.type_name.clone(),
-            body: Body::RemoteProbe {
+            body: Body::Remote {
                 node_alias: self.node_alias.clone(),
                 // The body's `language` IS the carrier here: it is what the
                 // node's dispatch selects a session runtime with (aura's

@@ -160,7 +160,7 @@ async fn effector_mount_remote_call_roundtrip() {
     engine
         .register(BoothType {
             name: "remote-counter".into(),
-            body: Body::RemoteProbe {
+            body: Body::Remote {
                 encoding: aura_booth::Encoding::Json,
                 node_alias: "test-node".into(),
                 language: "steel".into(),
