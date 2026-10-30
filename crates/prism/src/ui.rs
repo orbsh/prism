@@ -24,7 +24,6 @@
 //! The instance key is `Named("ui")`: the renderer's leg is one instance for now. Per-client
 //! partitioning arrives with sessions, and that is the line that will change.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use content::codec::ActiveCodec;
@@ -36,6 +35,7 @@ use tokio_tungstenite::tungstenite::Message as Ws;
 use tokio_tungstenite::WebSocketStream;
 
 use crate::code_export::Prefixed;
+use crate::identity;
 use crate::Gateway;
 
 /// The renderer's path. Deliberately not `/ws`: the programmatic leg keeps the `{ev, args}`
@@ -88,8 +88,8 @@ pub(crate) struct UiConn {
     /// One message = one action list. Batched because the renderer decodes a list per frame:
     /// a layout of twelve operations is one message, not twelve.
     pub tx: mpsc::UnboundedSender<Vec<Content<Value>>>,
-    pub device: u64,
-    pub user: Arc<AtomicU64>,
+    pub device: identity::DeviceId,
+    pub user: crate::AuthField,
     /// How many turns this connection has started — the counter behind per-turn slot names.
     pub turns: u64,
 }
@@ -149,13 +149,17 @@ pub(crate) fn forward(conns: &UiConns, payload: Value) {
     let name = name.strip_prefix(VIEW_PREFIX).unwrap_or(name).to_string();
     // Who it is for: the channel, or a single device. `sender` is excluded from the fan-out —
     // a page does not hear its own input echoed back.
+    // Addresses arrive as TEXT: a uuid is 16 bytes, and a JSON number cannot carry them (JS
+    // Number is f64, so anything past 2^53 loses its tail). The spelling is the codec's business.
     let target = payload
         .get("channel_id")
         .or_else(|| payload.get("device"))
-        .and_then(Value::as_u64);
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let sender = payload
         .get("sender")
-        .and_then(|s| s.get("device").and_then(Value::as_u64).or_else(|| s.as_u64()));
+        .and_then(|s| s.get("device").and_then(Value::as_str).or_else(|| s.as_str()))
+        .map(str::to_string);
     // What it is: an operation list is DRAWN; anything else is DATA and takes the vals plane,
     // injected into the slot named by the event. Both shapes are legal on this wire and the
     // renderer decides what it can do with them — a host that pre-validated would be teaching
@@ -186,7 +190,8 @@ pub(crate) fn forward(conns: &UiConns, payload: Value) {
     let conns = conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sent = 0usize;
     for c in conns.values() {
-        if target.is_some_and(|t| t != c.device) || sender == Some(c.device) {
+        let here = c.device.to_string();
+        if target.as_ref().is_some_and(|t| *t != here) || sender.as_ref() == Some(&here) {
             continue;
         }
         let _ = c.tx.send(ops.clone());
@@ -204,8 +209,9 @@ pub(crate) async fn serve(
     gw: Arc<Gateway>,
     ws: WebSocketStream<Prefixed>,
     codec: ActiveCodec,
-    device: u64,
-    user0: u64,
+    device: identity::DeviceId,
+    user0: identity::UserId,
+    token: identity::TokenId,
 ) -> anyhow::Result<()> {
     let (mut write, mut read) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Content<Value>>>();
@@ -232,7 +238,7 @@ pub(crate) async fn serve(
 
     // The connect answer: identity on the wire, in the renderer's shape. `ev != "draw"`, so
     // a renderer ignores it; a client that cares (a login form, a test) reads `sender`.
-    say(&gw, device, IDENTITY_EVENT, json!({"device": device, "user": null})).await;
+    say(&gw, device, IDENTITY_EVENT, identity_fact(device, identity::anonymous(), token)).await;
     eprintln!("prism: renderer leg: device {device} connected (conn {id})");
 
     // THE LAYOUT IS PUSHED ON CONNECT, not asked for. A client cannot know when it is ready
@@ -254,7 +260,7 @@ pub(crate) async fn serve(
             // means, and its view events carry the frames.
             eprintln!("prism: renderer leg: device {device} connect -> emit `{event}`");
             let event = event.clone();
-            gw.emit(&event, json!({"device": device})).await;
+            gw.emit(&event, json!({"device": device.to_string()})).await;
         }
         None => {
             eprintln!("prism: renderer leg: no init source — device {device} gets an empty venue");
@@ -283,7 +289,7 @@ pub(crate) async fn serve(
                 continue;
             }
         };
-        dispatch(&gw, id, &user, device, uplink).await;
+        dispatch(&gw, id, &user, device, token, uplink).await;
     }
 
     gw.unregister_ui(id);
@@ -296,8 +302,9 @@ pub(crate) async fn serve(
 async fn dispatch(
     gw: &Arc<Gateway>,
     id: u64,
-    user: &Arc<AtomicU64>,
-    device: u64,
+    user: &crate::AuthField,
+    device: identity::DeviceId,
+    token: identity::TokenId,
     uplink: Outflow,
 ) {
     // The name the page sent. fluxen calls the uplink's destination `slot` (ADR 0023: one word
@@ -316,11 +323,11 @@ async fn dispatch(
                 gw.registry().login(username, password, device)
             };
             match outcome {
-                Ok(user_id) => {
-                    user.store(user_id, Ordering::Relaxed);
-                    // The SAME fact a connect wrote: a page that binds `identity` always sees
-                    // who it is, so the layout needs no per-verb case.
-                    say(&gw, device, IDENTITY_EVENT, json!({"device": device, "user": user_id})).await;
+                Ok((user_id, fresh)) => {
+                    crate::auth_set(user, user_id);
+                    // The SAME fact a connect wrote: a page that binds `identity` always sees who
+                    // it is — and the ROTATED token, which the page must keep (the old one died).
+                    say(&gw, device, IDENTITY_EVENT, identity_fact(device, user_id, fresh)).await;
                 }
                 Err(e) => {
                     eprintln!("prism: /channel {asked} refused: {e}");
@@ -330,8 +337,17 @@ async fn dispatch(
         }
         "logout" => match gw.registry().logout(device) {
             Ok(()) => {
-                user.store(0, Ordering::Relaxed);
-                say(&gw, device, IDENTITY_EVENT, json!({"device": device, "user": null})).await;
+                crate::auth_set(user, identity::anonymous());
+                // Logout revokes every token of the device, so the page gets a NEW anonymous one
+                // instead of keeping a dead credential in its storage.
+                let fresh = match gw.registry().issue_token(device, identity::anonymous()) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("prism: /channel logout: could not issue a fresh token: {e}");
+                        token
+                    }
+                };
+                say(&gw, device, IDENTITY_EVENT, identity_fact(device, identity::anonymous(), fresh)).await;
             }
             Err(e) => {
                 eprintln!("prism: /channel logout refused: {e}");
@@ -344,8 +360,8 @@ async fn dispatch(
             // put the event on the plane at all, so a booth that declared `auth` cannot be
             // reached by someone it did not agree to serve — the check stays on this side of
             // delivery, not inside every booth.
-            let bound = user.load(Ordering::Relaxed);
-            if bound == 0 && gw.handler_requires_auth(other).await {
+            let bound = crate::auth_get(user);
+            if identity::is_anonymous(bound) && gw.handler_requires_auth(other).await {
                 eprintln!("prism: /channel event `{other}` refused: authentication required");
                 say(&gw, device, NOTICE_EVENT, json!({"detail": format!("`{other}` requires a bound user")})).await;
                 return;
@@ -361,8 +377,11 @@ async fn dispatch(
             let event = format!("{VIEW_PREFIX}{other}");
             let envelope = json!({
                 "name": event,
-                "channel_id": device,
-                "sender": {"device": device, "user": (bound != 0).then_some(bound)},
+                "channel_id": device.to_string(),
+                "sender": {
+                    "device": device.to_string(),
+                    "user": (!identity::is_anonymous(bound)).then(|| bound.to_string()),
+                },
                 "args": data,
             });
             gw.emit(&event, envelope).await;
@@ -376,8 +395,8 @@ async fn dispatch(
 async fn turn(
     gw: &Arc<Gateway>,
     id: u64,
-    user: &Arc<AtomicU64>,
-    device: u64,
+    user: &crate::AuthField,
+    device: identity::DeviceId,
     event: &str,
     data: Value,
 ) {
@@ -387,7 +406,7 @@ async fn turn(
     }
     // The turn type declares `turn` user-gated — the same declaration face as everything
     // else on this leg. A renderer may connect anonymously; it may not spend a model call.
-    if user.load(Ordering::Relaxed) == 0 {
+    if identity::is_anonymous(crate::auth_get(user)) {
         eprintln!("prism: /channel turn refused: authentication required");
         say(&gw, device, NOTICE_EVENT, json!({"detail": "a turn requires a bound user"})).await;
         return;
@@ -498,16 +517,30 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 /// `{device, user}`) and `notice` (what failed: `{detail}`).
 /// Same path, for a batch of OPERATIONS (the init layout): an action list is drawn, so this is
 /// the one shape that skips the vals plane on its way to the page.
-async fn say_ops(gw: &Gateway, device: u64, fact: &str, ops: Vec<Content<Value>>) {
+async fn say_ops(gw: &Gateway, device: identity::DeviceId, fact: &str, ops: Vec<Content<Value>>) {
     let event = format!("{VIEW_PREFIX}{fact}");
-    let envelope = json!({ "name": event, "channel_id": device, "data": ops });
+    let envelope = json!({ "name": event, "channel_id": device.to_string(), "data": ops });
     gw.emit(&event, envelope).await;
 }
 
-async fn say(gw: &Gateway, device: u64, fact: &str, data: Value) {
+async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) {
     let event = format!("{VIEW_PREFIX}{fact}");
-    let envelope = json!({ "name": event, "channel_id": device, "data": data });
+    let envelope = json!({ "name": event, "channel_id": device.to_string(), "data": data });
     gw.emit(&event, envelope).await;
+}
+
+/// The identity fact: who this connection is, and the credential that keeps saying so. Ids travel
+/// as text; an anonymous connection says so with `null` rather than a nil uuid.
+fn identity_fact(
+    device: identity::DeviceId,
+    user: identity::UserId,
+    token: identity::TokenId,
+) -> Value {
+    json!({
+        "device": device.to_string(),
+        "user": (!identity::is_anonymous(user)).then(|| user.to_string()),
+        "token": token.to_string(),
+    })
 }
 
 /// One `inject` into a named slot. Every way this leg speaks goes through here, so the shape of

@@ -82,3 +82,66 @@ Deferred gates:
 
 - Multi-tenant auth (keys/accounts): single-user first; add auth layers only with the first external consumer.
 - HTTP/SSE secondary endpoint: rejected by design (protocol unification); revisit only with a hard client constraint that cannot do WS.
+
+## Identity: a token is the credential, a device is a name (landed)
+
+The number prism used to hand out on connect was called a device, and it was neither: it was a
+random per-connection value that could be revoked and expired — a TOKEN — and it doubled as the
+only credential, so guessing one inherited a login. The two are now separate, and both are ids
+in the okm sense (16 bytes, never text; `okm_core::Uuid7` / `Uuid4`).
+
+| collection | ns | key | payload |
+|---|---|---|---|
+| `Account` | 50 | `Uuid7` | `username`, `nickname`, `password_hash` |
+| `Device` | 51 | `Uuid7` | `user`, `alias`, `first_seen`, `last_seen`, `revoked` |
+| `Token` | 53 | `Uuid4` | `device`, `user`, `issued_at`, `expires_at`, `revoked_at` |
+
+- **No id mirror in any payload.** `scan`/`get`/`scan_keys` hand the key back, so a row does not
+  repeat its own name; `HighWater` reduces retire with the watermarked ids.
+- **The key is the id.** No `DeviceKey { id }` wrapper struct — `Collection<S, Uuid7, Device>`.
+- **Device ids are server-issued** (`Uuid7`), never fingerprinted in the client: a browser cannot
+  see hardware, and a canvas hash can collide. The user renames the device (`alias`); the UI
+  always shows the alias, falling back to the id's text form.
+- **The token is the only credential.** `?token=<uuid4>` resolves to `(device, user)`, slides its
+  expiry on use (default 30 days, `PRISM_TOKEN_TTL`); login/signup ROTATE it (old tokens of that
+  device are stamped revoked); logout revokes them all; `/admin/revoke` revokes by token, the
+  device-level revocation keeps its meaning. `?device=` stops being a credential.
+- **Anonymous connections still get a token**, or a refresh would lose the room they were in.
+- **Text appears in exactly four places**: `username`, `nickname`, `alias`, `password_hash`.
+- **Transport**: 16 raw bytes on the wire in CBOR; base64uuid text in a JSON codec — a 128-bit id
+  as a JSON number loses precision in the browser (f64), so text is the only portable spelling.
+
+### What leaves prism with this change
+
+`turn.submit` / `turn.cancel` are not prism's verbs. gravity is a booth: it declares
+`view:turn.submit` and `view:turn.cancel` itself. Everything that came with the verbs goes too —
+`turns.rs`, `TurnConfig`, the turn executor registration, and the `say.<n>` region naming (slot
+names belong to whoever writes the layout, and the caller states them in the request payload).
+
+Local verbs after this: `login`, `signup`, `logout`. Anything else is `view:<dest>`.
+
+(`Token` takes ns **53**: `nodes.rs`, the effector node registry, already owns 52. Two collections
+on one ns is not a compile error, so check `#[ok_ns(…)]` across the crate before claiming a number.)
+
+### State
+
+Landed in `identity.rs`, `lib.rs`, `ui.rs`, `admin.rs` and `tests/identity_e2e.rs`:
+
+- the three tables are uuid-keyed, with `by_name` / `by_user` / `by_device` indexes, and no payload
+  mirror; `devices_of(user)` is the "my devices" list (uuid7 order = first-seen order);
+- `Gateway::identify` is the only place that decides an identity: a live token names `(device,
+  user)` and slides; anything else is a fresh anonymous device that still gets a token, so the
+  client always leaves with something to present;
+- the auth field of a connection is `Arc<Mutex<UserId>>` (a 16-byte id does not fit an atomic);
+- ids are TEXT on the wire and in JSON payloads (`channel_id`, `sender`, `connected`), and the
+  `connected` answer now carries `token`;
+- `login`/`signup` rotate and report the new token; `logout` revokes the set and issues a fresh
+  anonymous one, because the old one just died.
+
+Verified: `--lib identity` 4/4, `--test identity_e2e` 9/9 (rewritten to the token semantics: a
+token restores the binding, a device id restores nothing, a revoked device's token is dead).
+
+Still red, and why: `ui_leg` (2/12) and `echo_e2e` (4/8) read the identity fact with the old shape
+— their helpers want a numeric `device`/`user` (`ui_leg.rs:55`, `echo_e2e.rs:77`). Fixture work,
+not design. The turn verbs (`turns.rs`, `TurnConfig`, executor registration, `say.<n>`) are still
+in the tree; they come out after those two go green.

@@ -79,8 +79,26 @@ use tokio_tungstenite::tungstenite::Message;
 /// broadcast pass reads it.
 struct Conn {
     tx: mpsc::UnboundedSender<Frame>,
-    user: Arc<AtomicU64>,
-    device: u64,
+    /// §3: the auth field is PER CONNECTION — a login writes it, fan-out filters on it. It holds a
+    /// uuid now, so it is a mutex rather than an atomic; the write points are the same two.
+    user: AuthField,
+    device: identity::DeviceId,
+}
+
+/// One connection's live auth state: an `identity::UserId`, anonymous until a token or a login
+/// fills it.
+pub(crate) type AuthField = Arc<std::sync::Mutex<identity::UserId>>;
+
+fn auth_field(user: identity::UserId) -> AuthField {
+    Arc::new(std::sync::Mutex::new(user))
+}
+
+pub(crate) fn auth_get(field: &AuthField) -> identity::UserId {
+    *field.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn auth_set(field: &AuthField, user: identity::UserId) {
+    *field.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = user;
 }
 
 /// The venue's optional faces: the renderer's static bundle and the `init` answer's
@@ -138,7 +156,8 @@ pub struct Gateway {
 #[derive(Clone)]
 struct Handshake {
     codec: Codec,
-    device: Option<u64>,
+    /// The credential. `?device=` authenticates nothing now, so there is no device field here.
+    token: Option<identity::TokenId>,
     /// Which leg this connection belongs to (ADR-0017 §8): `/ui` = the renderer's wire.
     ui: bool,
 }
@@ -187,11 +206,11 @@ impl Gateway {
     pub(crate) fn register_ui(
         &self,
         tx: mpsc::UnboundedSender<Vec<content::Content<serde_json::Value>>>,
-        device: u64,
-        user0: u64,
-    ) -> (u64, Arc<AtomicU64>) {
+        device: identity::DeviceId,
+        user0: identity::UserId,
+    ) -> (u64, AuthField) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let user = Arc::new(AtomicU64::new(user0));
+        let user = auth_field(user0);
         self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id,
             ui::UiConn { tx, device, user: Arc::clone(&user), turns: 0 },
@@ -236,6 +255,25 @@ impl Gateway {
     /// The account/device facts (the same registry the peer leg uses — identity has one home).
     pub(crate) fn registry(&self) -> &identity::Registry {
         &self.registry
+    }
+
+    /// Resolve a connection's identity. A LIVE TOKEN names the (device, user) and slides its
+    /// expiry; with no usable token the connection is a FRESH anonymous device that gets a token of
+    /// its own, so the client always leaves with something to present next time. An id — device,
+    /// session, anything the client can guess — authenticates nothing (ADR-0018 / the token split).
+    fn identify(
+        &self,
+        token: Option<identity::TokenId>,
+    ) -> anyhow::Result<(identity::DeviceId, identity::UserId, identity::TokenId)> {
+        if let Some(t) = token {
+            if let Some((device, user)) = self.registry.resolve_token(t)? {
+                return Ok((device, user, t));
+            }
+        }
+        let device = self.registry.new_device()?;
+        let user = identity::anonymous();
+        let token = self.registry.issue_token(device, user)?;
+        Ok((device, user, token))
     }
 
     /// The `init` source, if this deployment declared one (`PRISM_INIT`).
@@ -374,7 +412,8 @@ impl Gateway {
             let codec_q = query_param(query, "protocol").or_else(|| query_param(query, "codec"));
             *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Handshake {
                 codec: Codec::from_query(codec_q),
-                device: query_param(query, "device").and_then(|v| v.parse().ok()),
+                token: query_param(query, "token")
+                    .and_then(|v| v.parse::<identity::TokenId>().ok()),
                 ui: req.uri().path() == ui::UI_PATH,
             });
             Ok(resp)
@@ -383,28 +422,19 @@ impl Gateway {
 
         // The callback ran during the handshake; `unwrap_or` only
         // guards a handshake that never reached `accept`.
-        let Handshake { codec, device, ui } =
-            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Cbor, device: None, ui: false });
+        let Handshake { codec, token, ui } =
+            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Cbor, token: None, ui: false });
+        let (device, user0, token) = self.identify(token)?;
 
         // The renderer's leg (ADR-0017 §8): its own wire, its own writer. It is routed
         // BEFORE the peer leg's connection table: a renderer is not a caller, and its
         // identity/questions land here, not on the booth plane.
         if ui {
-            // The renderer's device anchor restores the BINDING, not just the number: the same
-            // rule the peer leg follows. A page that reloads keeps its login; a connection whose
-            // anchor is a number the registry has never bound starts anonymous either way.
-            let (device, user0) = match device {
-                Some(d) => match self.registry.device_user(d)? {
-                    Some(u) => (d, u),
-                    None => (self.registry.new_device()?, 0),
-                },
-                None => (self.registry.new_device()?, 0),
-            };
             let cc = content::codec::ActiveCodec::new(match codec {
                 Codec::Json => content::codec::CodecType::Json,
                 Codec::Cbor => content::codec::CodecType::Cbor,
             });
-            return ui::serve(Arc::clone(&self), ws, cc, device, user0).await;
+            return ui::serve(Arc::clone(&self), ws, cc, device, user0, token).await;
         }
 
         let (mut write, mut read) = ws.split();
@@ -412,20 +442,7 @@ impl Gateway {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel::<Frame>();
 
-        // §2 identity mount: a real echoed device restores its binding;
-        // anything else (absent, unknown, unparseable) is a fresh
-        // connect — a guessed id mints a NEW row, gaining nothing.
-        // One lookup feeds the decision and the value: filtering on
-        // `is_some()` and then unwrapping re-asks a question whose answer
-        // was already in hand.
-        let (device, user0) = match device {
-            Some(d) => match self.registry.device_user(d)? {
-                Some(u) => (d, u),
-                None => (self.registry.new_device()?, 0),
-            },
-            None => (self.registry.new_device()?, 0),
-        };
-        let user = Arc::new(AtomicU64::new(user0));
+        let user = auth_field(user0);
         self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
             id,
             Conn { tx: tx.clone(), user: Arc::clone(&user), device },
@@ -440,7 +457,14 @@ impl Gateway {
         // the channel and the pump sees the shutdown.
         tx.send(Frame::new(
             "connected",
-            serde_json::json!({"device_id": device, "user_id": (user0 != 0).then_some(user0)}),
+            // The connect answer: the device, the binding (null = anonymous) and the TOKEN — the
+            // one thing the client must keep. Ids travel as text (a uuid is 16 bytes; JSON numbers
+            // are f64 in the browser).
+            serde_json::json!({
+                "device_id": device.to_string(),
+                "user_id": (!identity::is_anonymous(user0)).then(|| user0.to_string()),
+                "token": token.to_string(),
+            }),
         ))
         .ok();
         drop(tx);
@@ -526,7 +550,7 @@ impl Gateway {
                 match self.registry.logout(device) {
                     Ok(()) => {
                         if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
-                            conn.user.store(0, Ordering::Relaxed);
+                            auth_set(&conn.user, identity::anonymous());
                         }
                         self.send_to(id, Frame::new("logout.result", serde_json::json!({"ok": true})));
                     }
@@ -566,7 +590,7 @@ impl Gateway {
         // call so the event never reaches the booth from an anonymous
         // sender, and answers with the same `error` VALUE shape as
         // any other failure (the socket stays up).
-        if user == 0 && self.handler_requires_auth(&ev).await {
+        if identity::is_anonymous(user) && self.handler_requires_auth(&ev).await {
             self.send_to(
                 id,
                 Frame::new(
@@ -581,7 +605,10 @@ impl Gateway {
         // results now carry the envelope (the ADR's shape, not a
         // compatibility surface).
         let envelope = serde_json::json!({
-            "sender": {"device": device, "user": (user != 0).then_some(user)},
+            "sender": {
+                "device": device.to_string(),
+                "user": (!identity::is_anonymous(user)).then(|| user.to_string()),
+            },
             "args": args,
         });
         let target = InstanceId { booth_type: ev.clone(), key: InstanceKey::Named("ws".into()) };
@@ -611,17 +638,20 @@ impl Gateway {
     /// socket itself (closed with a `revoked` frame — the client
     /// learns WHY it was disconnected). Returns the number of live
     /// connections kicked.
-    pub fn revoke_device(&self, device_id: u64) -> anyhow::Result<usize> {
+    pub fn revoke_device(&self, device_id: identity::DeviceId) -> anyhow::Result<usize> {
         self.registry.revoke_device(device_id)?;
         let mut kicked = 0;
         let mut dead = Vec::new();
         let mut conns = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for (id, c) in conns.iter() {
             if c.device == device_id {
-                c.user.store(0, Ordering::Relaxed);
+                auth_set(&c.user, identity::anonymous());
                 let _ = c.tx.send(Frame::new(
                     "revoked",
-                    serde_json::json!({"device_id": device_id, "reason": "revoked by server"}),
+                    serde_json::json!({
+                        "device_id": device_id.to_string(),
+                        "reason": "revoked by server",
+                    }),
                 ));
                 dead.push(*id);
                 kicked += 1;
@@ -643,7 +673,7 @@ impl Gateway {
         let mut ui_dead = Vec::new();
         for (id, c) in ui.iter() {
             if c.device == device_id {
-                c.user.store(0, Ordering::Relaxed);
+                auth_set(&c.user, identity::anonymous());
                 ui_dead.push(*id);
                 kicked += 1;
             }
@@ -676,7 +706,9 @@ impl Gateway {
             return;
         }
         let (_, user) = self.identities(id);
-        if user == 0 && self.type_handler_requires_auth(turns::EXECUTOR_TYPE, "turn").await {
+        if identity::is_anonymous(user)
+            && self.type_handler_requires_auth(turns::EXECUTOR_TYPE, "turn").await
+        {
             self.send_to(
                 id,
                 Frame::new(
@@ -783,11 +815,20 @@ impl Gateway {
             self.registry.login(&username, &password, device)
         };
         match outcome {
-            Ok(user_id) => {
+            Ok((user_id, token)) => {
                 if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
-                    conn.user.store(user_id, Ordering::Relaxed);
+                    auth_set(&conn.user, user_id);
                 }
-                self.send_to(id, Frame::new(format!("{ev}.result"), serde_json::json!({"user_id": user_id})));
+                self.send_to(
+                    id,
+                    Frame::new(
+                        format!("{ev}.result"),
+                        serde_json::json!({
+                            "user_id": user_id.to_string(),
+                            "token": token.to_string(),
+                        }),
+                    ),
+                );
             }
             Err(e) => {
                 self.send_to(id, Frame::new("error", serde_json::json!({"ev": ev, "message": e.to_string()})))
@@ -833,11 +874,11 @@ impl Gateway {
             .unwrap_or(false)
     }
 
-    fn identities(&self, id: u64) -> (u64, u64) {
+    fn identities(&self, id: u64) -> (identity::DeviceId, identity::UserId) {
         let guard = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.get(&id) {
-            Some(c) => (c.device, c.user.load(Ordering::Relaxed)),
-            None => (0, 0),
+            Some(c) => (c.device, auth_get(&c.user)),
+            None => (identity::DeviceId::default(), identity::anonymous()),
         }
     }
 
@@ -851,7 +892,7 @@ impl Gateway {
             // senders. (Conflating them evicted anonymous connections
             // on the first auth-only fan-out.)
             for (_, c) in conns.iter() {
-                if !auth_only || c.user.load(Ordering::Relaxed) != 0 {
+                if !auth_only || !identity::is_anonymous(auth_get(&c.user)) {
                     let _ = c.tx.send(frame.clone());
                 }
             }

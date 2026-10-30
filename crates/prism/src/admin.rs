@@ -135,11 +135,17 @@ pub(crate) async fn serve_revoke(
         Ok(v) => v,
         Err(e) => return Some(plain(400, &format!("body must be JSON: {e}"))),
     };
-    let Some(device_id) = v.get("device_id").and_then(|x| x.as_u64()) else {
-        return Some(plain(400, "`device_id` (u64) is required"));
+    // The device id is a uuid, so it arrives as its text spelling — the only form a JSON body can
+    // carry without losing the low bits.
+    let Some(device_id) = v
+        .get("device_id")
+        .and_then(|x| x.as_str())
+        .and_then(|s| s.parse::<crate::identity::DeviceId>().ok())
+    else {
+        return Some(plain(400, "`device_id` (uuid text) is required"));
     };
     match gw.revoke_device(device_id) {
-        Ok(n) => Some(json_response(200, &json!({"device_id": device_id, "kicked": n}))),
+        Ok(n) => Some(json_response(200, &json!({"device_id": device_id.to_string(), "kicked": n}))),
         Err(e) => Some(plain(409, &e.to_string())),
     }
 }
