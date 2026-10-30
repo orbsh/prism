@@ -200,3 +200,50 @@ async fn ws_and_fallthrough_coexist() {
         }
     }
 }
+
+/// A delivery that reaches its queue and cannot CALL its body is visible over HTTP. The ring is
+/// the interface — the log line alone is something only whoever runs the process can see, and the
+/// silent version of this (a subscription that never runs, nothing said) is what ADR-0045 records
+/// as the defect. The booth here declares an entry its code does not define.
+#[tokio::test]
+async fn a_failed_delivery_is_readable_over_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(&dir.into_path()).unwrap();
+    let nodes = registry.nodes();
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    Gateway::with_echoes(&engine).await.unwrap();
+    engine
+        .register(aura_booth::BoothType::script(
+            "missing_entry",
+            "steel",
+            r#"(define (interface_schema args)
+  (hash "receives" (hash "view:missing" (hash "entry" "no_such_fn"))))"#,
+        ))
+        .await
+        .expect("register");
+    let realm = std::sync::Arc::clone(&engine.realm);
+    let gw = Gateway::new(engine, registry, Posture::Open);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { gw.serve(listener).await.unwrap() });
+
+    aura_realm::Realm::emit(&realm, None, "view:missing", json!({"who": "tester"}))
+        .await
+        .expect("emit");
+    // The consumer drains on its own poll: give the pass room before asking.
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let (_, _, rows) = request(addr, "GET", "/admin/dead", None).await;
+        let rows = rows.as_array().cloned().unwrap_or_default();
+        if let Some(row) = rows
+            .iter()
+            .find(|r| r["reason"] == "delivery-failed" && r["event"] == "view:missing")
+        {
+            assert_eq!(row["data"]["entry"], "no_such_fn", "{row}");
+            assert!(row["data"]["error"].as_str().is_some_and(|e| !e.is_empty()), "{row}");
+            return;
+        }
+    }
+    let (_, body, _) = request(addr, "GET", "/admin/dead", None).await;
+    panic!("no delivery-failed record in the ring: {body}");
+}

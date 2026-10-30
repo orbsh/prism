@@ -6,6 +6,9 @@
 //! ```text
 //! POST   /admin/nodes                    {alias, public_key}  → 201 pending record
 //! GET    /admin/nodes                                            → [{alias, public_key, status, created_at}]
+//! GET    /admin/dead                                             → [{event, reason, data}]
+//!   The engine's dead ring: events that reached nobody, and deliveries that reached a queue but
+//!   could not call the body (`delivery-failed`, which carries the entry name and the error).
 //! POST   /admin/nodes/{alias}/approve    {public_key?}        → 200 approved record
 //! DELETE /admin/nodes/{alias}            {public_key?}        → 200 {revoked: n}
 //! ```
@@ -27,6 +30,31 @@
 use crate::code_export::plain;
 use crate::nodes::NodeStore;
 use serde_json::json;
+
+/// `GET /admin/dead` — the dead ring behind an HTTP read. Async because the ring lives behind the
+/// realm lock; every other `/admin` route is a plain store read. Ask this BEFORE `serve_admin`:
+/// that one claims the whole prefix and answers 404 for what it does not know.
+pub(crate) async fn serve_dead(
+    gw: &crate::Gateway,
+    method: &str,
+    path: &str,
+) -> Option<Vec<u8>> {
+    if (method, path) != ("GET", "/admin/dead") {
+        return None;
+    }
+    let rows = {
+        let realm = gw.engine.realm.lock().await;
+        realm
+            .dead_events
+            .detailed()
+            .iter()
+            .map(|(event, data, reason)| {
+                json!({ "event": event, "reason": reason.to_string(), "data": data })
+            })
+            .collect::<Vec<_>>()
+    };
+    Some(json_response(200, &json!(rows)))
+}
 
 /// Route an `/admin/...` request. Returns the full response bytes for
 /// any path under the prefix (the connection closes after), and None

@@ -47,7 +47,6 @@ use crate::Gateway;
 pub const UI_PATH: &str = "/channel";
 
 /// The instance key every application event on this leg lands on.
-const UI_INSTANCE: &str = "channel";
 
 /// The slots THIS venue declares for a turn: the rack the conversation appends to, and the
 /// region the answer streams into. They are prism's to name (it serves `layout/venue.yaml`);
@@ -123,6 +122,7 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns) {
             // named `view:` that nothing ever publishes to — the route matches, the delivery
             // silently never happens.
             event: format!("{VIEW_PREFIX}*"),
+            entry: None,
             resolution: aura_booth::RouteResolution::Singleton,
             wildcard: true,
         }],
@@ -349,41 +349,22 @@ async fn dispatch(
                 say(&gw, device, NOTICE_EVENT, json!({"detail": format!("`{other}` requires a bound user")})).await;
                 return;
             }
-            // THE UPLINK IS AN INVOKE *FOR NOW*. The ruling is that it becomes an emit of
-            // `view:<dest>`, but the marker cannot work until the dispatcher stops handing the
-            // body the marked name as its handler name — a script booth's handler is looked up
-            // BY that name, and `view:echo_frame` is not a function any script can define (and
-            // the miss is silent). See docs/PLAN.md; this is the one place the wire rule waits.
+            // THE PAGE SENDS A BARE `dest`; THE VENUE PUTS IT ON THE PLANE AS `view:<dest>`.
+            // The marker is the venue's, not the client's: fluxen's uplink stays `Outflow
+            // {dest, id?, data}` (different consumers of a renderer make different sense of a
+            // bare name), and everything UI-facing on the plane is `view:`-prefixed.
+            //
+            // The sender is THIS socket's own identity — a page has no field with which to
+            // claim another. Identity is looked up here, once, and travel in the envelope like
+            // any other routing fact.
+            let event = format!("{VIEW_PREFIX}{other}");
             let envelope = json!({
+                "name": event,
+                "channel_id": device,
                 "sender": {"device": device, "user": (bound != 0).then_some(bound)},
                 "args": data,
             });
-            let target = aura_booth::InstanceId {
-                booth_type: other.to_string(),
-                key: aura_booth::InstanceKey::Named(UI_INSTANCE.to_string()),
-            };
-            match gw.engine.call(target, other, envelope).await {
-                Ok(aura_booth::call::Waited::Done(Ok(v))) => {
-                    // An answer that is not an operation draws nothing, and the venue does not
-                    // invent a name for it — a booth that wants the page to see something emits
-                    // `view:<name>`. Left here is the diagnostic that says so.
-                    let ops = ops_of(vec![v], other);
-                    if ops.is_empty() {
-                        eprintln!(
-                            "prism: /channel event `{other}` answered data, not operations — nothing to draw"
-                        );
-                    } else {
-                        gw.send_ui(id, ops);
-                    }
-                }
-                Ok(aura_booth::call::Waited::Done(Err(e))) | Err(e) => {
-                    eprintln!("prism: /channel event `{other}` answered an error: {e}");
-                    say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
-                }
-                Ok(aura_booth::call::Waited::Pending(_)) => {
-                    say(&gw, device, NOTICE_EVENT, json!({"detail": "cold path not available here"})).await;
-                }
-            }
+            gw.emit(&event, envelope).await;
         }
     }
 }

@@ -331,6 +331,11 @@ impl Gateway {
             let _ = stream.shutdown().await;
             return Ok(());
         }
+        if let Some(response) = admin::serve_dead(self.as_ref(), &head.method, &head.path).await {
+            let _ = stream.write_all(&response).await;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
         if let Some(response) = admin::serve_admin(&self.nodes(), &head.method, &head.path, &head.body) {
             let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;

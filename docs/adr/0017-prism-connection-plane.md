@@ -177,7 +177,20 @@ says `view:identity` (`{device, user}`), `view:notice` (`{detail}`), `view:turn.
 action list) — ordering between facts is then the queue's, not two writers' racing. The
 `identity`/`notice` SLOT constants are gone; those two names survive only as conventions a layout
 may bind. Facts lose their per-verb sub-name (`connected`, `signup.result`): a page that binds
-`identity` always sees who it is, which is what it actually wanted. **Still open:** the UPLINK is
-an `invoke`, not yet an emit of `view:<dest>` — the marker collides with handler dispatch (a
-script booth resolves its handler BY the event name, and `view:echo_frame` is not something a
-script can define; the miss is silent), so the framework needs a rule first.
+`identity` always sees who it is, which is what it actually wanted.
+
+**The uplink is an emit, and the page never sends a marked name.** The renderer's wire stays
+`Outflow {dest, id?, data}` — a bare `dest`, because different consumers of a renderer make
+different sense of a name and none of them should have to learn this venue's marker. prism puts it
+on the plane as `view:<dest>` with `{name, channel_id, sender, args}`; the sender is filled from
+the socket's own identity, so a page still has no field with which to claim another.
+
+That needed one framework rule, which landed with it: **a declaration may name the body's entry
+point separately from the event it subscribes to** (`aura_booth::ReceiveDecl.entry`, declared as
+`receives: {view:add-to-cart: {entry: add_to_cart}}`). Without it, the event name IS the handler
+name, and a marked event asks a script for a function called `view:add_to_cart` — unnameable — and
+the delivery is dropped with nothing logged. A booth that declares the marked subscription and
+keeps its plain name is the whole cost of the marker.
+
+**A booth never answers into the page** — which is why the venue's test booths now EMIT their
+answer rather than return it. A delivery discards a return value; the page is reached by an event.
