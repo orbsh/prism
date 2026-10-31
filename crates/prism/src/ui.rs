@@ -15,7 +15,7 @@
 //! Which means prism's own verbs are NOT frames any more. They are `inject` operations (fluxen
 //! ADR 0011): a remote write into the page's vals plane that is indistinguishable from an
 //! in-page emit, so the layout binds it with `kind: local` like any other event. Two slots
-//! carry them — `view:identity` (who am I: device, user) and `view:notice` (what failed) —
+//! carry them — `ui:identity` (who am I: device, user) and `ui:notice` (what failed) —
 //! because the venue is just another emitter on this wire, not a third vocabulary.
 //! Everything else is an ordinary application event, dispatched to the booth NAMED BY THE
 //! EVENT (the peer leg's rule: type == handler == `event`), and its answer is a frame list —
@@ -46,8 +46,6 @@ use crate::Gateway;
 /// bundle needs no configuration and no page of prism's own.
 pub const UI_PATH: &str = "/channel";
 
-/// The instance key every application event on this leg lands on.
-
 /// Where this leg puts facts about the CONNECTION: `{device, user}` after connect, a `logout`,
 /// a `login.result`. A layout binds it with `bind: {value: {kind: local, slot: identity}}`;
 /// the event name inside the inject carries which verb it was, so a subscriber that cares can
@@ -62,8 +60,11 @@ pub const NOTICE_EVENT: &str = "notice";
 
 /// What the venue says when a connection is established: a FACT about the device, named as it
 /// happened. Whoever declared it answers with the layout — the application decides what a fresh
-/// device is shown, and there is nothing for a deployment to configure.
-pub const CONNECT_EVENT: &str = "view:connect";
+/// device is shown, and there is nothing for a deployment to configure. The `ui:` marker is
+/// [`say`]'s job (this is the bare name, like `identity` and `notice`): the venue's own speech
+/// goes onto the plane as an envelope, so the prefix route carries it back down and the page can
+/// bind the fact that produced the layout.
+pub const CONNECT_EVENT: &str = "connect";
 
 /// The renderer connection table: id → connection. The venue owns it, the forwarding booth
 /// writes into it, and the peer-plane acts (revocation) reach it.
@@ -73,8 +74,8 @@ pub(crate) type UiConns = Arc<std::sync::Mutex<std::collections::HashMap<u64, Ui
 pub const RENDERER_BOOTH: &str = "renderer";
 
 /// The marker on every UI-facing name, both directions (ADR 0023's rule applied here): a page
-/// may only ever address, and be addressed by, `view:<name>`. Anything else is internal.
-pub(crate) const VIEW_PREFIX: &str = "view:";
+/// may only ever address, and be addressed by, `ui:<name>`. Anything else is internal.
+pub(crate) const UI_PREFIX: &str = "ui:";
 
 /// One renderer connection: its writer channel and the auth field a `login` writes. The
 /// table lives on [`Gateway`] so the acts that must reach every leg (revocation) see it.
@@ -112,22 +113,22 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers:
         hooks: std::collections::BTreeMap::new(),
         // Singleton: the venue is one process, not one per client. A view event names the
         // renderer in its payload when it cares (`device`), and the fan-out happens here.
-        // ONE PREFIX ROUTE. Every UI-facing emit is `view:<name>` — the marker is what stops a
+        // ONE PREFIX ROUTE. Every UI-facing emit is `ui:<name>` — the marker is what stops a
         // page (or any transport) from forging an internal event — so the venue subscribes to
         // the prefix, not to a list of names it would have to know in advance.
         receives: vec![aura_booth::ReceiveDecl {
             // WITH the star: aura's consumer decides "wildcard" by `event.ends_with('*')`
             // (`realm/src/instance.rs`), and a declaration without it would bind an exact queue
-            // named `view:` that nothing ever publishes to — the route matches, the delivery
+            // named `ui:` that nothing ever publishes to — the route matches, the delivery
             // silently never happens.
-            event: format!("{VIEW_PREFIX}*"),
+            event: format!("{UI_PREFIX}*"),
             entry: None,
             resolution: aura_booth::RouteResolution::Singleton,
             wildcard: true,
         }],
     };
     match engine.register(booth).await {
-        Ok(()) => println!("prism: `{VIEW_PREFIX}<name>` reaches renderers (booth `{RENDERER_BOOTH}`, prefix route)"),
+        Ok(()) => println!("prism: `{UI_PREFIX}<name>` reaches renderers (booth `{RENDERER_BOOTH}`, prefix route)"),
         Err(e) => eprintln!("prism: the renderer booth did not register: {e} — the UI will not update"),
     }
 }
@@ -139,13 +140,13 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers:
 pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
     // name is consumed by the dispatcher), so the emitter states it: `name` is the recipient
-    // event, marked with the same `view:` prefix as the emit itself. The venue strips the
+    // event, marked with the same `ui:` prefix as the emit itself. The venue strips the
     // marker — the page is not a party to this vocabulary — and forwards the payload.
     let Some(name) = payload.get("name").and_then(Value::as_str) else {
         eprintln!("prism: view event without a `name`: nothing to deliver — {payload}");
         return;
     };
-    let name = name.strip_prefix(VIEW_PREFIX).unwrap_or(name).to_string();
+    let name = name.strip_prefix(UI_PREFIX).unwrap_or(name).to_string();
     // Who it is for: the channel, or a single device. `sender` is excluded from the fan-out —
     // a page does not hear its own input echoed back.
     // Addresses arrive as TEXT: a uuid is 16 bytes, and a JSON number cannot carry them (JS
@@ -247,11 +248,13 @@ pub(crate) async fn serve(
     eprintln!("prism: renderer leg: device {device} connected (conn {id})");
 
     // THE CONNECTION IS A FACT, AND THE LAYOUT IS THE APPLICATION'S ANSWER TO IT. The venue says
-    // `view:connect {device}` on the plane; whichever booth declared it answers with frames, and
+    // `ui:connect {device}` on the plane; whichever booth declared it answers with frames, and
     // the page draws whatever arrives. Nothing is configured here: a deployment has no layout
     // source to name, and a venue with no such booth draws nothing while the connection stays up.
-    eprintln!("prism: renderer leg: device {device} connect -> emit `{CONNECT_EVENT}`");
-    gw.emit(CONNECT_EVENT, json!({ "device": device.to_string() })).await;
+    // Said through `say` like the identity fact, so the envelope names the recipient event: a bare
+    // payload is dropped by `forward` (this venue's one speech path).
+    eprintln!("prism: renderer leg: device {device} connect -> emit `{UI_PREFIX}{CONNECT_EVENT}`");
+    say(&gw, device, CONNECT_EVENT, json!({ "device": device.to_string() })).await;
 
     while let Some(msg) = read.next().await {
         let bytes = match msg? {
@@ -344,20 +347,20 @@ async fn dispatch(
             // reached by someone it did not agree to serve — the check stays on this side of
             // delivery, not inside every booth.
             let bound = crate::auth_get(user);
-            if identity::is_anonymous(bound) && gw.event_requires_auth(&format!("{VIEW_PREFIX}{other}")).await {
+            if identity::is_anonymous(bound) && gw.event_requires_auth(&format!("{UI_PREFIX}{other}")).await {
                 eprintln!("prism: /channel event `{other}` refused: authentication required");
                 say(&gw, device, NOTICE_EVENT, json!({"detail": format!("`{other}` requires a bound user")})).await;
                 return;
             }
-            // THE PAGE SENDS A BARE `dest`; THE VENUE PUTS IT ON THE PLANE AS `view:<dest>`.
+            // THE PAGE SENDS A BARE `dest`; THE VENUE PUTS IT ON THE PLANE AS `ui:<dest>`.
             // The marker is the venue's, not the client's: fluxen's uplink stays `Outflow
             // {dest, id?, data}` (different consumers of a renderer make different sense of a
-            // bare name), and everything UI-facing on the plane is `view:`-prefixed.
+            // bare name), and everything UI-facing on the plane is `ui:`-prefixed.
             //
             // The sender is THIS socket's own identity — a page has no field with which to
             // claim another. Identity is looked up here, once, and travel in the envelope like
             // any other routing fact.
-            let event = format!("{VIEW_PREFIX}{other}");
+            let event = format!("{UI_PREFIX}{other}");
             let envelope = json!({
                 "name": event,
                 // The ADDRESS is a device (ADR-0018: a channel is an application's business) and
@@ -393,11 +396,11 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 }
 
 /// THE VENUE SAYS THINGS AS EVENTS. It is an emitter on this wire like any other: a fact it
-/// wants a page to hold is `view:<fact>`, forwarded by its own renderer booth and landing in the
+/// wants a page to hold is `ui:<fact>`, forwarded by its own renderer booth and landing in the
 /// vals slot named by the fact. Two names are conventions, not law: `identity` (who am I:
 /// `{device, user}`) and `notice` (what failed: `{detail}`).
 async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) {
-    let event = format!("{VIEW_PREFIX}{fact}");
+    let event = format!("{UI_PREFIX}{fact}");
     let envelope = json!({ "name": event, "device": device.to_string(), "data": data });
     gw.emit(&event, envelope).await;
 }

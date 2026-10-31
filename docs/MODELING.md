@@ -17,12 +17,12 @@ The model of the plane in one place: who the participants are, what crosses the 
 
 ## The wire
 
-One vocabulary, marked. Everything that crosses the renderer leg is named `view:<name>`; the marker is what stops a page from forging an internal event, and it is the venue's to add and strip — a page never writes it and never sees it.
+One vocabulary, marked. Everything that crosses the renderer leg is named `ui:<name>`; the marker is what stops a page from forging an internal event, and it is the venue's to add and strip — a page never writes it and never sees it.
 
 | direction | the participant writes | what lands on the plane | what the recipient sees |
 |-----------|-----------------------|-------------------------|-------------------------|
-| uplink | `Outflow {dest, id?, data}` — a BARE name | `view:<dest>`, payload `{device, sender, data}` | the booth is called by its own declared entry |
-| downlink | `view:<name>`, payload `{name, device, sender?, data}` | the same event | the page gets the payload with the marker stripped |
+| uplink | `Outflow {dest, id?, data}` — a BARE name | `ui:<dest>`, payload `{device, sender, data}` | the booth is called by its own declared entry |
+| downlink | `ui:<name>`, payload `{name, device, sender?, data}` | the same event | the page gets the payload with the marker stripped |
 
 Two payload shapes are legal downstream, and the recipient decides what it can do with them:
 
@@ -42,7 +42,7 @@ A **device** is the address; a **user** may be reached through the devices bound
 An application's WHOLE surface — what it shows and how it is configured — is the same two things: layouts and events. Nothing about management is a different kind of thing.
 
 - **The initial layout is pushed, not requested.** A client cannot know when it is ready; the venue states what it has on connect and the client draws whatever arrives.
-- **It is an EVENT that produces that layout, not a file and not a call.** The trigger is the connection notice described below (`view:connect`); whichever booth declared it answers with frames. There is NO deployment-side layout configuration: the file form is gone (a layout with no logic is still an answer its carrier can produce, so a file only means the application is not answering), and the event name is fixed (`view:connect`), so there is nothing left to name in an environment.
+- **It is an EVENT that produces that layout, not a file and not a call.** The trigger is the connection notice described below (`ui:connect`); whichever booth declared it answers with frames. There is NO deployment-side layout configuration: the file form is gone (a layout with no logic is still an answer its carrier can produce, so a file only means the application is not answering), and the event name is fixed (`ui:connect`), so there is nothing left to name in an environment.
 - **Why an event and not `invoke`.** `invoke` is CALL semantics: one named target, one answer the caller waits for — right for special cases, wrong for composition. Several booths own different parts of one application, so the trigger has to be something every interested booth can receive, each answering with its own frames.
 - **Later layouts are ordinary traffic.** An application emits frames at any moment: `create`, `set`, `append`, `patch` against slots it declared earlier.
 - **Expansion is a control and an event.** A layout names a control whose `dest` is an application event (a button "manage models", say); the event reaches the booth; the booth emits the frames that create or append that section; its controls emit further events. The venue cannot tell a management section from a chat rack and is never asked to.
@@ -56,16 +56,18 @@ The venue reports what happened to a connection as events on the plane, and an a
 
 | event | when | payload | typically answered by |
 |-------|------|---------|-----------------------|
-| `view:connect` | a device's connection is established | `{device}` | the orchestration booth, with the shell layout |
-| `view:login` | that device binds to a user (signup included) | `{device, user}` | whatever presents the account |
-| `view:logout` | the binding ends | `{device}` | the same |
-| `view:disconnect` | the connection is gone | `{device}` | cleanup; nothing is drawn from it |
+| `ui:connect` | a device's connection is established | `{device}` | the orchestration booth, with the shell layout |
+| `ui:login` | that device binds to a user (signup included) | `{device, user}` | whatever presents the account |
+| `ui:logout` | the binding ends | `{device}` | the same |
+| `ui:disconnect` | the connection is gone | `{device}` | cleanup; nothing is drawn from it |
 
-`view:init` is the name this replaces: it described the venue's own act rather than the fact the application cares about.
+`ui:init` is the name this replaces: it described the venue's own act rather than the fact the application cares about.
+
+**A notice reaches the PAGE too, not only the application.** The venue is an emitter on this wire like anyone else, so the fact it states lands in the vals slot named after it — today `identity` (who this connection is) and `connect` (that it opened), and a layout binding those learns what happened without asking. The two are SEPARATE emits, so the plane promises no order between them: a page binds both and assumes no sequence.
 
 **The token never rides the plane.** It is the page's credential, and the venue states it to the page on its own connection (the `identity` inject); an application that must act on the user's behalf addresses the DEVICE that is logged in, and the venue's auth gate is what actually holds the permission.
 
-**Facts are named as they happened; requests are imperative.** `view:connect` and `view:login` are things the venue OBSERVED, so the application only has to know about them; `view:turn.submit` is a thing a client WANTS, so it is named as an act. The difference is a word on the wire, and it is why a lifecycle notice never reads like a command an application might refuse.
+**Facts are named as they happened; requests are imperative.** `ui:connect` and `ui:login` are things the venue OBSERVED, so the application only has to know about them; `ui:turn.submit` is a thing a client WANTS, so it is named as an act. The difference is a word on the wire, and it is why a lifecycle notice never reads like a command an application might refuse.
 
 ## Islands: one application, several booths
 
@@ -97,7 +99,7 @@ So there is no separate "front-end microservice" problem left to solve: an appli
 
 ## Two renderings of one application
 
-The same application may speak to a renderer and to a program. The difference is the OUTPUT SHAPE, not a second implementation: frames for a surface that only draws, raw deltas for a client that reads. The shape is the caller's choice on the way in, the names inside it are the caller's declaration, and both travel the one wire — the venue strips the `view:` marker either way, so a program sees the plain names it already speaks.
+The same application may speak to a renderer and to a program. The difference is the OUTPUT SHAPE, not a second implementation: frames for a surface that only draws, raw deltas for a client that reads. The shape is the caller's choice on the way in, the names inside it are the caller's declaration, and both travel the one wire — the venue strips the `ui:` marker either way, so a program sees the plain names it already speaks.
 
 ## What this model refuses
 

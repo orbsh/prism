@@ -75,18 +75,18 @@ pub fn echo_booths() -> Vec<Echo> {
     v.push(Echo {
         type_name: "echo_frame",
         language: "steel",
-        // The renderer leg delivers `view:<dest>`, so the subscription carries the marker and the
+        // The renderer leg delivers `ui:<dest>`, so the subscription carries the marker and the
         // body keeps its plain name — the declaration names the entry point separately. The body
         // EMITS its answer: a delivery discards a booth's return value, and the page is reached by
         // an event, never by an answer.
         source: r#"(define (interface_schema args)
-  (hash "receives" (hash "view:echo_frame" (hash "entry" "echo_frame"))))
+  (hash "receives" (hash "ui:echo_frame" (hash "entry" "echo_frame"))))
 (define (echo_frame args)
   (ctx.emit
-    (hash "event" "view:echo_frame.out"
-          "data" (hash "name" "view:echo_frame.out"
-                       "channel_id" (hash-ref (hash-ref args "sender") "device")
-                       "data" (list (hash-ref args "args")))))
+    (hash "event" "ui:echo_frame.out"
+          "data" (hash "name" "ui:echo_frame.out"
+                       "device" (hash-ref (hash-ref args "sender") "device")
+                       "data" (list (hash-ref args "data")))))
   "emitted")"#
             .into(),
     });
@@ -98,13 +98,13 @@ pub fn echo_booths() -> Vec<Echo> {
         language: "steel",
         source: r#"(define (interface_schema args)
   (hash "auth" (hash "echo_gate" "required")
-        "receives" (hash "view:echo_gate" (hash "entry" "echo_gate"))))
+        "receives" (hash "ui:echo_gate" (hash "entry" "echo_gate"))))
 (define (echo_gate args)
   (ctx.emit
-    (hash "event" "view:echo_gate.out"
-          "data" (hash "name" "view:echo_gate.out"
-                       "channel_id" (hash-ref (hash-ref args "sender") "device")
-                       "data" (list (hash-ref args "args")))))
+    (hash "event" "ui:echo_gate.out"
+          "data" (hash "name" "ui:echo_gate.out"
+                       "device" (hash-ref (hash-ref args "sender") "device")
+                       "data" (list (hash-ref args "data")))))
   "emitted")"#
             .into(),
     });

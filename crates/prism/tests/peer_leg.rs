@@ -1,7 +1,7 @@
 //! THE PEER LEG SPEAKS THE VIEW VOCABULARY (the turn's exit from this repo).
 //!
 //! A program is a client like any other: it connects to `/ws`, gets a device, and puts an
-//! application event on the plane by naming it with the marker (`view:turn.submit`). The venue
+//! application event on the plane by naming it with the marker (`ui:turn.submit`). The venue
 //! adds nothing and invents no verb; delivery comes back on the same socket as the DATA shape —
 //! `{ev: "<stripped name>", args: <payload>}` — because a program reads text, not operations
 //! (gravity ADR-0009's two renderings).
@@ -24,8 +24,8 @@ use tokio_tungstenite::tungstenite::Message as Ws;
 type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// A stub application: it answers `view:turn.submit` with two `view:turn.delta` events and one
-/// `view:turn.done`, addressed to the device that asked — the shape gravity's turn emits, without
+/// A stub application: it answers `ui:turn.submit` with two `ui:turn.delta` events and one
+/// `ui:turn.done`, addressed to the device that asked — the shape gravity's turn emits, without
 /// a model or a store behind it.
 async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
@@ -42,7 +42,7 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
                 "steel",
                 r#"(define (interface_schema args)
   (hash "auth" (hash "turn_gate" "required")
-        "receives" (hash "view:turn.submit" (hash "entry" "turn_gate"))))
+        "receives" (hash "ui:turn.submit" (hash "entry" "turn_gate"))))
 (define (turn_gate args) "gated")"#,
             ))
             .await
@@ -58,17 +58,17 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
                     .and_then(Value::as_str)
                     .map(str::to_string);
                 for word in ["hel", "lo"] {
-                    let mut envelope = json!({ "name": "view:turn.delta", "data": {"delta": word} });
+                    let mut envelope = json!({ "name": "ui:turn.delta", "data": {"delta": word} });
                     if let Some(device) = &device {
                         envelope["device"] = json!(device);
                     }
-                    ctx.emit("view:turn.delta", envelope).await?;
+                    ctx.emit("ui:turn.delta", envelope).await?;
                 }
-                let mut done = json!({ "name": "view:turn.done", "data": {"reply": "hello"} });
+                let mut done = json!({ "name": "ui:turn.done", "data": {"reply": "hello"} });
                 if let Some(device) = &device {
                     done["device"] = json!(device);
                 }
-                ctx.emit("view:turn.done", done).await?;
+                ctx.emit("ui:turn.done", done).await?;
                 Ok(Value::Null)
             })
         })),
@@ -76,7 +76,7 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
         max_exec: None,
         hooks: std::collections::BTreeMap::new(),
         receives: vec![ReceiveDecl {
-            event: "view:turn.submit".into(),
+            event: "ui:turn.submit".into(),
             entry: None,
             resolution: RouteResolution::Singleton,
             wildcard: false,
@@ -114,7 +114,7 @@ async fn send_json(ws: &mut WsClient, v: Value) {
     ws.send(Ws::Text(v.to_string().into())).await.expect("send");
 }
 
-/// A program's `view:<name>` event reaches the booth that declared it, and the booth's answer
+/// A program's `ui:<name>` event reaches the booth that declared it, and the booth's answer
 /// comes back as the same event name minus the marker — the CLI's whole contract in one test.
 #[tokio::test]
 async fn a_program_submits_a_view_event_and_reads_the_answer_back() {
@@ -126,7 +126,7 @@ async fn a_program_submits_a_view_event_and_reads_the_answer_back() {
 
     send_json(
         &mut ws,
-        json!({"ev": "view:turn.submit", "args": {"content": "hi", "channel_id": 1, "member_id": 1}}),
+        json!({"ev": "ui:turn.submit", "args": {"content": "hi", "channel_id": 1, "member_id": 1}}),
     )
     .await;
 
@@ -159,7 +159,7 @@ async fn an_anonymous_program_cannot_put_a_gated_event_on_the_plane() {
     let (addr, _gw) = boot("gated").await;
     let mut ws = open_peer(addr).await;
     let _ = recv_json(&mut ws).await;
-    send_json(&mut ws, json!({"ev": "view:turn.submit", "args": {"content": "hi"}})).await;
+    send_json(&mut ws, json!({"ev": "ui:turn.submit", "args": {"content": "hi"}})).await;
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(&mut ws))
         .await
         .expect("a refusal is an answer, not a silence");
@@ -171,7 +171,10 @@ async fn an_anonymous_program_cannot_put_a_gated_event_on_the_plane() {
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(&mut ws))
         .await
         .expect("the echo answers");
-    assert_eq!(frame["ev"], "echo_steel", "{frame}");
+    // A bare `ev` is a CALL to the booth it names, and this leg answers `<ev>.result` (login and
+    // signup do the same). A view event a booth EMITS comes back under its own bare name — the
+    // two faces differ because one is a call and the other is an announcement.
+    assert_eq!(frame["ev"], "echo_steel.result", "{frame}");
 }
 
 /// `echo_self` sanity: the stub's own registration did not eat the echo booths' routes.
@@ -184,5 +187,8 @@ async fn the_peer_leg_still_dispatches_a_booth_named_by_the_event() {
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(&mut ws))
         .await
         .expect("echo answers");
-    assert_eq!(frame["ev"], "echo_steel", "{frame}");
+    // A bare `ev` is a CALL to the booth it names, and this leg answers `<ev>.result` (login and
+    // signup do the same). A view event a booth EMITS comes back under its own bare name — the
+    // two faces differ because one is a call and the other is an announcement.
+    assert_eq!(frame["ev"], "echo_steel.result", "{frame}");
 }

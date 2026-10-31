@@ -217,7 +217,7 @@ async fn a_failed_delivery_is_readable_over_http() {
             "missing_entry",
             "steel",
             r#"(define (interface_schema args)
-  (hash "receives" (hash "view:missing" (hash "entry" "no_such_fn"))))"#,
+  (hash "receives" (hash "ui:missing" (hash "entry" "no_such_fn"))))"#,
         ))
         .await
         .expect("register");
@@ -227,7 +227,7 @@ async fn a_failed_delivery_is_readable_over_http() {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });
 
-    aura_realm::Realm::emit(&realm, None, "view:missing", json!({"who": "tester"}))
+    aura_realm::Realm::emit(&realm, None, "ui:missing", json!({"who": "tester"}))
         .await
         .expect("emit");
     // The consumer drains on its own poll: give the pass room before asking.
@@ -237,7 +237,7 @@ async fn a_failed_delivery_is_readable_over_http() {
         let rows = rows.as_array().cloned().unwrap_or_default();
         if let Some(row) = rows
             .iter()
-            .find(|r| r["reason"] == "delivery-failed" && r["event"] == "view:missing")
+            .find(|r| r["reason"] == "delivery-failed" && r["event"] == "ui:missing")
         {
             assert_eq!(row["data"]["entry"], "no_such_fn", "{row}");
             assert!(row["data"]["error"].as_str().is_some_and(|e| !e.is_empty()), "{row}");

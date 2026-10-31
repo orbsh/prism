@@ -38,7 +38,7 @@
 //! renderer's faces (ADR-0017 §8): `/assets/<rel>` (the static bundle,
 //! `assets.rs`) and `/ui` (the renderer's leg, `ui.rs` — fluxen's
 //! `Message`/`Outflow` wire; the layout is the APPLICATION's answer to the
-//! `view:connect` event, not a deployment fact). ONE SHAPE PER LEG: `/ws` is
+//! `ui:connect` event, not a deployment fact). ONE SHAPE PER LEG: `/ws` is
 //! the programmatic leg and keeps
 //! `{ev, args}`; `/ui` carries the renderer's vocabulary. Booth upload is
 //! the rest of ADR-0017 — deliberately not here; README states the gap so
@@ -103,7 +103,7 @@ pub(crate) fn auth_set(field: &AuthField, user: identity::UserId) {
 /// The venue's optional face: the renderer's static bundle. A DEPLOYMENT FACT with a legal
 /// absence — an install that serves identity/turns/peers and no UI is a real deployment, and
 /// it says so at boot. The LAYOUT is not here: it is the application's answer to
-/// `view:connect`, so there is nothing for a deployment to configure.
+/// `ui:connect`, so there is nothing for a deployment to configure.
 #[derive(Default)]
 pub struct Deployment {
     pub assets: Option<assets::AssetRoot>,
@@ -217,12 +217,6 @@ impl Gateway {
             eprintln!("prism: emit `{event}` failed: {e}");
         }
     }
-
-    /// Queue one frame to a renderer connection. The TABLE owns the sender: a removed
-    /// entry closes the channel, and that is what actually ends the writer (the peer leg's
-    /// discipline — a local sender kept across the read loop makes revocation unable to
-    /// close anything).
-
 
     pub(crate) fn unregister_ui(&self, id: u64) {
         self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
@@ -565,7 +559,7 @@ impl Gateway {
         // not a booth name — the venue adds nothing to it, and the recipient is the calling
         // device. A bare `ev` keeps the dispatch rule (`ev` names the booth type), so which one a
         // client means stays explicit instead of guessed.
-        if ev.starts_with(ui::VIEW_PREFIX) {
+        if ev.starts_with(ui::UI_PREFIX) {
             let (device, user) = self.identities(id);
             if identity::is_anonymous(user) && self.event_requires_auth(&ev).await {
                 self.send_to(
@@ -759,7 +753,7 @@ impl Gateway {
     }
 
     /// Does the event require a bound user? The ROUTE is what names the booth now that an event
-    /// no longer names a type (a page's `turn.submit` becomes `view:turn.submit`, routed to
+    /// no longer names a type (a page's `turn.submit` becomes `ui:turn.submit`, routed to
     /// whichever booth declared it): every type routed for the event is asked, and a type whose
     /// persisted `interface_schema` declares ANY `auth` block gates its events. The declaration
     /// face is unchanged; only the lookup follows the plane instead of the event name.

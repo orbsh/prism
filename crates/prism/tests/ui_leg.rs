@@ -4,8 +4,9 @@
 //! renderer refuses a map outright: "frame is an envelope, not an action list".
 //!
 //! That refusal is why these tests never assert `frame["ev"]`: the leg has no verbs any more.
-//! The venue's speech is `inject` into `identity` (who am I) or `notice` (what failed, a turn
-//! ended); everything else is the application's own operations.
+//! The venue's speech is `inject` into a slot named after the fact it states — `identity` (who am
+//! I), `connect` (a connection opened, which the application answers with its layout) or `notice`
+//! (what failed); everything else is the application's own operations.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
 
 use aura_engine::Engine;
@@ -33,24 +34,38 @@ async fn boot(deployment: Deployment) -> (SocketAddr, std::sync::Arc<Gateway>) {
     (addr, gw)
 }
 
-/// The connect answer: the `identity` fact, carrying the device the venue assigned. The fact is
-/// said as an EVENT like any other (`view:identity`), so the page sees a slot named after it —
-/// there is no per-verb `connected`/`signup.result` name to learn.
+/// The two facts the venue says to a connection that just opened: `identity` (who this is, and the
+/// token the page must keep) and `connect` (the fact an application answers with its layout). Both
+/// are EVENTS on the plane like any other, so the page sees a slot named after the fact — there is
+/// no per-verb `connected`/`signup.result` name to learn. They are two emits, and the plane promises
+/// no order between them: a page binds both, and neither assumes the other arrived first.
 async fn read_connected(ws: &mut WsClient) -> String {
-    let (slot, name, data) = recv_speech(ws).await;
-    assert_eq!(slot, "identity", "connect answers identity");
-    assert_eq!(name, "identity", "{name}");
-    // The device id is a uuid: TEXT on this wire (a 128-bit id is not a JSON number), and the same
-    // fact also carries the token the page must keep.
-    assert!(data["token"].as_str().is_some_and(|t| t.len() == 36), "{data}");
-    let device = data["device"].as_str().expect("device id in identity").to_string();
-
-    // The CONNECTION fact follows: whoever declared `view:connect` answers it, and the fact
-    // itself reaches the page on the vals plane (a layout that does not bind it ignores it).
-    let (slot, name, data) = recv_speech(ws).await;
-    assert_eq!(slot, "connect", "the connect fact lands in the slot named after it");
-    assert_eq!(name, "connect", "{name}");
-    assert_eq!(data["device"].as_str(), Some(device.as_str()), "{data}");
+    let mut identity_device: Option<String> = None;
+    let mut connect_device: Option<String> = None;
+    for _ in 0..2 {
+        let (slot, name, data) = recv_speech(ws).await;
+        assert_eq!(slot, name, "the slot is named after the fact: {name}");
+        match name.as_str() {
+            // The device id is a uuid: TEXT on this wire (a 128-bit id is not a JSON number), and
+            // the same fact also carries the token the page must keep.
+            "identity" => {
+                assert!(data["token"].as_str().is_some_and(|t| t.len() == 36), "{data}");
+                identity_device =
+                    Some(data["device"].as_str().expect("device id in identity").to_string());
+            }
+            "connect" => {
+                connect_device =
+                    Some(data["device"].as_str().expect("the fact names the device").to_string());
+            }
+            other => panic!("unexpected venue speech on connect: `{other}`"),
+        }
+    }
+    let device = identity_device.expect("the venue says who this connection is");
+    assert_eq!(
+        connect_device.as_deref(),
+        Some(device.as_str()),
+        "the connect fact names this device"
+    );
     device
 }
 
@@ -161,7 +176,7 @@ async fn assets_are_plain_downloads_on_the_shared_loop() {
 }
 
 /// The connection is a FACT on the plane, not a configured layout: the venue emits
-/// `view:connect {device}` and whoever declared it answers with frames. This is what lets one
+/// `ui:connect {device}` and whoever declared it answers with frames. This is what lets one
 /// application be assembled from several booths — and why `PRISM_INIT` is gone.
 #[tokio::test]
 async fn connect_is_an_event_and_the_application_answers_it() {
@@ -182,7 +197,7 @@ async fn connect_is_an_event_and_the_application_answers_it() {
             max_exec: None,
             hooks: std::collections::BTreeMap::new(),
             receives: vec![aura_booth::ReceiveDecl {
-                event: "view:connect".into(),
+                event: "ui:connect".into(),
                 entry: None,
                 resolution: aura_booth::RouteResolution::Singleton,
                 wildcard: false,
@@ -203,21 +218,21 @@ async fn connect_is_an_event_and_the_application_answers_it() {
             break;
         }
     }
-    let fact = fact.expect("view:connect reached the plane");
+    let fact = fact.expect("ui:connect reached the plane");
     assert_eq!(fact["device"].as_str(), Some(device.as_str()), "the fact names the device: {fact}");
 
     // The application's answer: frames the venue forwards AS the message (one action list).
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
-        "view:layout",
-        json!({"name": "view:layout", "device": device, "data": [
+        "ui:layout",
+        json!({"name": "ui:layout", "device": device, "data": [
             {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["from-event"]}}},
             {"action": "set", "slot": "graph", "data": {"type": "case"}},
         ]}),
     )
     .await
-    .expect("emit view:layout");
+    .expect("emit ui:layout");
 
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops.len(), 2, "both frames in one list: {ops:?}");
@@ -257,7 +272,7 @@ async fn an_uplink_dispatches_to_the_booth_named_by_the_event() {
     read_connected(&mut ws).await;
     // The booth's answer IS the operation the caller sent: an answer that is not an operation
     // is data, and data has no path down this leg — a booth that wants the page to see
-    // something emits `view:<name>`. So the drawn frame here proves the dispatch happened.
+    // something emits `ui:<name>`. So the drawn frame here proves the dispatch happened.
     let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["echoed"]}}});
     send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
@@ -339,7 +354,7 @@ async fn revocation_kicks_the_renderer_leg_too() {
     assert!(closed, "a revoked renderer connection must be closed");
 }
 
-/// DATA on the downlink: a `view:<name>` whose payload is not an operation list goes into the
+/// DATA on the downlink: a `ui:<name>` whose payload is not an operation list goes into the
 /// VALS plane under that name, exactly as if the page had emitted it — the operation list shape
 /// (the test above) and the data shape are both legal, and which one applies is the emitter's
 /// choice, not a second protocol.
@@ -351,17 +366,17 @@ async fn a_view_event_carries_data_into_the_slot_named_by_it() {
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
-        "view:identity",
-        json!({"name": "view:identity", "device": device, "data": {"device": device, "user": null}}),
+        "ui:identity",
+        json!({"name": "ui:identity", "device": device, "data": {"device": device, "user": null}}),
     )
     .await
-    .expect("emit view:identity");
+    .expect("emit ui:identity");
 
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops.len(), 1, "{ops:?}");
     assert_eq!(ops[0]["action"], "inject");
     // The marker is stripped: the page's slot is `identity`, and the name it sees is the same
-    // name — nothing on the page knows what `view:` means.
+    // name — nothing on the page knows what `ui:` means.
     assert_eq!(ops[0]["slot"], "identity");
     assert_eq!(ops[0]["name"], "identity");
     assert_eq!(ops[0]["data"]["device"].as_str(), Some(device.as_str()), "{ops:?}");
@@ -376,11 +391,11 @@ async fn a_view_event_does_not_echo_back_to_its_sender() {
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
-        "view:chat",
-        json!({"name": "view:chat", "device": device, "sender": {"device": device}, "data": {"echo": true}}),
+        "ui:chat",
+        json!({"name": "ui:chat", "device": device, "sender": {"device": device}, "data": {"echo": true}}),
     )
     .await
-    .expect("emit view:chat");
+    .expect("emit ui:chat");
     // Nothing comes back, so the next message on this socket is the answer to our own uplink.
     let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
     send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
@@ -400,10 +415,10 @@ async fn a_view_event_for_another_device_is_not_drawn_here() {
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
-        "view:graph",
+        "ui:graph",
         // Another device's address: any id that is not ours. Ids are opaque text, so "another
         // device" is simply another uuid — nothing about it is arithmetic.
-        json!({"name": "view:graph", "device": okm_core::Uuid7::now().to_string(), "data": {"mark": "theirs"}}),
+        json!({"name": "ui:graph", "device": okm_core::Uuid7::now().to_string(), "data": {"mark": "theirs"}}),
     )
     .await
     .expect("emit view");

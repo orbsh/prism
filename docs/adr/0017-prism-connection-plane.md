@@ -194,3 +194,14 @@ keeps its plain name is the whole cost of the marker.
 
 **A booth never answers into the page** — which is why the venue's test booths now EMIT their
 answer rather than return it. A delivery discards a return value; the page is reached by an event.
+
+## Update — 2026-10-31: the marker is `ui:`
+
+The UI-facing marker was `view:` and is now `ui:`. Nothing about the RULE changed: an event that
+crosses to a renderer is still marked in both directions, the page still sends a bare `dest`, and
+the venue still subscribes to the prefix (`ui:*`, wildcard) and strips the marker on the way down.
+The word changed because `view` had been carrying three meanings in this stack already —
+krystallizer's session projection (`mem_core::view`), fluxen's `forcegraph::View`, and this
+marker — while the marker's own job is narrower than any of them: **this event has a user
+interface on the other end.** Everything written before this date that spells `view:<name>` — this
+ADR's body, both PLANs, gravity's ADRs — reads `ui:<name>`.
