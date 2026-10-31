@@ -100,6 +100,57 @@ async fn mem_server() -> String {
     format!("http://{addr}")
 }
 
+/// THE DEPLOYMENT FACTS ARE ROWS (gravity ADR-0007): the store URL, the memory scope and the model
+/// recipe live in the turn type's own namespace, so a venue keeps no model vocabulary and this test
+/// writes what a deployment's management face writes. The type must be REGISTERED first —
+/// registration persists the schema and allocates the ns, which is also what proves the guest's
+/// `storage` block reaches the realm as a plan.
+fn seed_turn_rows(engine: &aura_engine::Engine, store_url: &str, endpoint: &str) {
+    let (store, plan) = {
+        let realm = engine.realm.try_lock().expect("realm");
+        (
+            realm.mq.clone(),
+            realm
+                .plan_of(gravity_booth::TURN_TYPE)
+                .cloned()
+                .expect("the turn declares `settings` + `models`"),
+        )
+    };
+    let put = |collection: &str, key: Value, doc: Value| {
+        aura_realm::store_exec::execute(
+            &store,
+            &plan,
+            &aura_booth::StoreOp {
+                collection: collection.to_string(),
+                op: aura_booth::StoreOpKind::PutDocument { key, doc },
+            },
+        )
+        .expect("seed")
+    };
+    put(
+        "models",
+        json!({ "kind": 2, "id": 1 }),
+        json!({
+            "alias": "default",
+            "endpoint": endpoint,
+            "model": "test-model",
+            "key_env": "GRAVITY_TEST_KEY",
+            "weight": 1,
+            "enabled": 1,
+        }),
+    );
+    put(
+        "settings",
+        json!({ "kind": 1, "id": 1 }),
+        json!({
+            "store_url": store_url,
+            "memory_scope": 37,
+            "memory_format": "plaintext",
+            "default_model": 1,
+        }),
+    );
+}
+
 /// The model, as a stub. Round 0 walks step 0; round 1 REFUSES to serve unless
 /// step 0's value came back, then walks step 1; round 2 REFUSES unless step 1's
 /// value came back, then answers. Two different code rows in one turn is also
@@ -343,27 +394,11 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
         .unwrap();
     let skill_id = skill["node_id"].as_u64().unwrap();
 
-    // The turn's deployment facts, including the mount table: the same JSON
-    // prism's own boot reads (TurnConfig::from_env → mounts), so this test
-    // exercises the production path rather than a hand-made args document.
+    // The turn's deployment facts are ROWS in its own namespace now (gravity ADR-0007); only the
+    // two spawn specs are environment, because they are where the binary lives.
     let (endpoint, seen) = sse_server(skill_id, PRODUCED, PRODUCED_2).await;
-    std::env::set_var("GRAVITY_STORE_URL", &store_url);
-    std::env::set_var("GRAVITY_ENDPOINT", &endpoint);
-    std::env::set_var("GRAVITY_MODEL", "test-model");
-    std::env::set_var("GRAVITY_KEY_ENV", "GRAVITY_TEST_KEY");
+    seed_turn_rows(&engine, &store_url, &endpoint);
     std::env::set_var("GRAVITY_TEST_KEY", "test-key");
-    std::env::set_var("GRAVITY_MEMORY_SCOPE", "37");
-    std::env::set_var(
-        "PRISM_MOUNTS",
-        json!([{
-            "type": "runner_py",
-            "alias": "skill-node",
-            "carrier": "exec",
-            "language": "python",
-            "runner": py_spec,
-        }])
-        .to_string(),
-    );
 
     let mut ws = connect(addr).await;
     send(
@@ -377,11 +412,21 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
     let f = recv(&mut ws).await;
     assert_eq!(f.ev, "signup.result");
 
+    // The venue's own word for "run a turn": a page's bare `dest` becomes `ui:turn.submit` on the
+    // plane, and gravity's booth declares that event. Everything the page knows rides the payload —
+    // the conversation, the text, the mount table its manifest declares (ADR-0001 §7), and the
+    // event its chunks are spoken as.
     send(
         &mut ws,
         &prism_protocol::Frame::new(
-            "turn.submit",
-            json!({ "session_id": "1", "text": "add three to four" }),
+            "ui:turn.submit",
+            json!({
+                "channel_id": 7,
+                "member_id": 1,
+                "user_message": "add three to four",
+                "event": "ui:turn.delta",
+                "mounts": [{"language": "python", "type": "runner_py"}],
+            }),
         ),
     )
     .await;
