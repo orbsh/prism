@@ -225,3 +225,42 @@ or `logout` learns the fact without asking:
 `tests/ui_leg.rs` holds all three: the gate test reads `login` after signing up and `logout` after
 logging out, and `a_disconnect_is_a_fact_for_the_application` registers a probe, opens a renderer,
 drops it, and asserts the plane carried the device.
+
+## Update — 2026-10-31: one clock, and the fact that carries the credential
+
+Three corrections to §2/§3 above, all of them the same question asked three ways: where does a fact
+live?
+
+**The token has no expiry.** §2 described a token slid on use, with a TTL. The window is now the
+DEVICE's: `Activity` (ns 54, one `at` per device) is written on the message path and read at connect
+and at every uplink. A device silent past `PRISM_IDLE_WINDOW` (default 30 days) is not authenticated
+any more, and the token — which is still alive — buys nothing. Two clocks for one question is two
+answers waiting to disagree, so `Token.expires_at` and `Device.last_seen` are gone, and `Activity`
+is the only one.
+
+`Activity` is a table of its own rather than a field on the row it describes because the message path
+would otherwise be a read-modify-write of the device row per message, racing the alias and the
+binding. The device row keeps what changes rarely; the clock keeps what changes constantly.
+
+**The device survives its own timeout.** `resolve_token` names the device; whether that name carries
+permission is `idle(device)`'s answer. A silent device therefore connects as anonymous while keeping
+its id and alias, is told why (`notice` with `reason: idle`), and re-earns the trust with a login on
+the same connection. The auth verbs are not gated by the window — refusing the message that
+re-earns the trust leaves a page with no way back. A socket that crosses the window stays up: it
+loses the uplinks, not the connection, which is why `disconnect` needs no bookkeeping.
+
+**`identity` becomes `token`, and nothing carries the user.** §4's `identity {device, user, token}`
+said three things to three different consumers. The user belongs to the venue — it resolves the
+device at every uplink, and the connection's auth field is the only live copy (§3) — so a page told
+the user is a second home for a fact that already has one, with no computation that needs it. What
+the page genuinely cannot derive is the credential: it must present the token on its next connect,
+and a login rotates it, killing the old one. So the fact is `token {device, token}`, said when
+minted or rotated, and the user leaves this wire entirely.
+
+Two tests hold it on the wire: `a_silent_connection_crosses_the_window_and_a_login_reopens_it`
+(short window, refused uplink, notice with its reason, login on the same device) and the gate test,
+which now reads `token`/`login` BY NAME rather than in arrival order — the plane promises none.
+
+The tables changed shape (`Device.last_seen` and `Token.expires_at` removed, ns 54 added), and rows
+written before this do not decode. prism's instance is deployed nowhere with accounts worth keeping,
+so there is no migration: the store is rebuilt.

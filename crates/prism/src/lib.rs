@@ -231,19 +231,27 @@ impl Gateway {
     /// expiry; with no usable token the connection is a FRESH anonymous device that gets a token of
     /// its own, so the client always leaves with something to present next time. An id — device,
     /// session, anything the client can guess — authenticates nothing (ADR-0018 / the token split).
-    fn identify(
-        &self,
-        token: Option<identity::TokenId>,
-    ) -> anyhow::Result<(identity::DeviceId, identity::UserId, identity::TokenId)> {
+    /// What this connect resolves to. A presented token names its device; whether that name still
+    /// carries permission is the ACTIVITY CLOCK's answer, not the token's — a device silent past the
+    /// window connects as anonymous even though the token is alive, and keeps its id (so its alias
+    /// survives a timeout). An unknown token mints a new device, which is the only way to get one.
+    fn identify(&self, token: Option<identity::TokenId>) -> anyhow::Result<identity::Identified> {
+        let now = identity::now_ms();
         if let Some(t) = token {
             if let Some((device, user)) = self.registry.resolve_token(t)? {
-                return Ok((device, user, t));
+                let idle = !identity::is_anonymous(user) && self.registry.idle(device, now)?;
+                return Ok(identity::Identified {
+                    device,
+                    user: if idle { identity::anonymous() } else { user },
+                    token: t,
+                    idle,
+                });
             }
         }
         let device = self.registry.new_device()?;
         let user = identity::anonymous();
         let token = self.registry.issue_token(device, user)?;
-        Ok((device, user, token))
+        Ok(identity::Identified { device, user, token, idle: false })
     }
 
     /// Register the language echo booths (steel / python / nushell
@@ -405,7 +413,8 @@ impl Gateway {
         // guards a handshake that never reached `accept`.
         let Handshake { codec, token, ui } =
             hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Cbor, token: None, ui: false });
-        let (device, user0, token) = self.identify(token)?;
+        let identified = self.identify(token)?;
+        let (device, user0, token) = (identified.device, identified.user, identified.token);
 
         // The renderer's leg (ADR-0017 §8): its own wire, its own writer. It is routed
         // BEFORE the peer leg's connection table: a renderer is not a caller, and its
@@ -415,7 +424,7 @@ impl Gateway {
                 Codec::Json => content::codec::CodecType::Json,
                 Codec::Cbor => content::codec::CodecType::Cbor,
             });
-            return ui::serve(Arc::clone(&self), ws, cc, device, user0, token).await;
+            return ui::serve(Arc::clone(&self), ws, cc, identified).await;
         }
 
         let (mut write, mut read) = ws.split();

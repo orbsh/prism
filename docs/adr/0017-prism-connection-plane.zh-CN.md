@@ -209,3 +209,33 @@ Rust 摊位的函数体拿不到触发它的事件名（具体名字被派发层
 
 `tests/ui_leg.rs` 三条都钉住了：鉴权用例在注册后读 `login`、登出后读 `logout`；
 `a_disconnect_is_a_fact_for_the_application` 注册一个探针、开一个渲染器、丢掉它，断言平面收到了那个设备。
+
+## Update — 2026-10-31：一只时钟，以及那条携带凭据的事实
+
+对上文 §2/§3 的三处更正，都是同一个问题的三种问法：一个事实住在哪里？
+
+**token 没有过期时间。** §2 写的是用一次就滑动、带 TTL 的 token。窗口现在是**设备**的：`Activity`
+（ns 54，每设备一个 `at`）在消息路径上写、在连接处与每个上行处读。沉默超过 `PRISM_IDLE_WINDOW`
+（默认 30 天）的设备不再是被鉴权的，而 token 即使还活着也不换来任何权限。同一个问题两只时钟就是两个
+迟早要打架的答案，所以 `Token.expires_at` 与 `Device.last_seen` 都删了，只剩 `Activity`。
+
+`Activity` 单独成表而不是它描述的那一行上的字段，因为否则消息路径就是每消息一次设备行的
+read-modify-write，会和 alias、绑定互相丢更新。设备行装少变的东西，时钟装常变的东西。
+
+**设备熬过自己的超时。** `resolve_token` 只说出设备；那个名字是否还带权限由 `idle(device)` 回答。
+所以沉默的设备以匿名连接、但保住 id 与 alias，被告知原因（`notice` 带 `reason: idle`），并在同一条
+连接上以一次登录重新挣得信任。鉴权动词不受窗口门控——拒绝那条重新挣得信任的消息，等于让页面无路可回。
+跨过窗口的 socket 不断：它失去的是上行，不是连接，这正是 `disconnect` 不需要记账的原因。
+
+**`identity` 变成 `token`，并且没有任何事实携带 user。** §4 的 `identity {device, user, token}` 对三个
+不同的消费者说了三件事。user 属于场馆——它在每个上行处解析设备，连接上的鉴权字段是唯一活着的副本
+（§3）——所以被告知 user 的页面成了已有答案的第二个家，而没有任何计算需要它。页面真正推导不出的是
+凭据：它必须在下一次连接时出示 token，而登录会轮换、旧的当场死。所以事实是 `token {device, token}`，
+在签发与轮换时说，user 从这条线上彻底离开。
+
+两条测试在线上钉住它：`a_silent_connection_crosses_the_window_and_a_login_reopens_it`（短窗口、上行被拒、
+带原因的 notice、同一设备上重新登录），以及鉴权用例——后者现在**按名字**读 `token`/`login`，而不是按
+到达顺序（平面不承诺顺序）。
+
+表结构变了（删 `Device.last_seen`、`Token.expires_at`，新增 ns 54），此前写入的行不再能解码。prism 的实例
+没有部署在任何有真实账户的地方，所以不做迁移：库直接重建。

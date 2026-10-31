@@ -50,7 +50,11 @@ pub const UI_PATH: &str = "/channel";
 /// a `login.result`. A layout binds it with `bind: {value: {kind: local, slot: identity}}`;
 /// the event name inside the inject carries which verb it was, so a subscriber that cares can
 /// distinguish and one that does not reads the same fields either way.
-pub const IDENTITY_EVENT: &str = "identity";
+/// The credential, said when it is issued or rotated. Not "identity": the user is the venue's own
+/// answer at every uplink (`resolve` at connect, the connection's auth field after a login), and a
+/// page that was told a user would be a second home for a fact that already has one. The token is
+/// what the page cannot derive and must keep.
+pub const TOKEN_EVENT: &str = "token";
 
 /// Where the venue talks about the CONNECTION's work: refusals, failures, and a turn's end
 /// (`{event, detail?}`). One slot for all of it because they are all "things the venue has to
@@ -221,13 +225,29 @@ pub(crate) async fn serve(
     gw: Arc<Gateway>,
     ws: WebSocketStream<Prefixed>,
     codec: ActiveCodec,
-    device: identity::DeviceId,
-    user0: identity::UserId,
-    token: identity::TokenId,
+    identified: identity::Identified,
 ) -> anyhow::Result<()> {
+    let identity::Identified { device, user: user0, token, idle } = identified;
     let (mut write, mut read) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Content<Value>>>();
     let (id, user) = gw.register_ui(tx, device, user0);
+
+    // The connection starts the clock. A device that was silent past the window is told so on the
+    // wire (a notice with a reason, not silence): its token still NAMED it — that is how its alias
+    // survives — but the name carried no permission until a login re-earned it, and the page has to
+    // know that or it will keep presenting a credential that buys nothing.
+    if let Err(e) = gw.registry().touch(device) {
+        eprintln!("prism: /channel could not stamp activity: {e}");
+    }
+    if idle {
+        say(&gw, device, NOTICE_EVENT, json!({
+            "detail": "this device was silent past the idle window; log in again",
+            "reason": "idle",
+        }))
+        .await;
+    }
+    let mut spoke_at = identity::now_ms();
+    let mut persisted_at = spoke_at;
 
     // The single writer: replies, verbs and a revocation's kick all go through this channel,
     // so the socket has exactly one owner (the peer leg's discipline, on this leg's frames).
@@ -248,9 +268,11 @@ pub(crate) async fn serve(
         let _ = write.send(Ws::Close(None)).await;
     });
 
-    // The connect answer: identity on the wire, in the renderer's shape. `ev != "draw"`, so
-    // a renderer ignores it; a client that cares (a login form, a test) reads `sender`.
-    say(&gw, device, IDENTITY_EVENT, identity_fact(device, identity::anonymous(), token)).await;
+    // The connect answer: the CREDENTIAL, in the renderer's shape. This is the only fact carrying
+    // it — the page keeps the token and presents it on its next connect, which is how the same
+    // device (and its alias) comes back. Who it is, nobody needs to say: the venue resolves the
+    // device to a user at every uplink, so the user is a server-side answer, not a page-side one.
+    say(&gw, device, TOKEN_EVENT, token_fact(device, token)).await;
     eprintln!("prism: renderer leg: device {device} connected (conn {id})");
 
     // THE CONNECTION IS A FACT, AND THE LAYOUT IS THE APPLICATION'S ANSWER TO IT. The venue says
@@ -283,12 +305,42 @@ pub(crate) async fn serve(
                 continue;
             }
         };
+        // THE WINDOW IS CHECKED PER MESSAGE, not per connection: a socket can live for days, and a
+        // connection nobody has used for longer than the window is not authenticated any more. The
+        // page stays connected — it is told to log in, which is cheaper than a reconnect and is the
+        // reason `disconnect` needs no bookkeeping. The auth verbs are NOT gated: refusing the very
+        // message that re-earns the trust would leave the page with no way back.
+        let verb = matches!(uplink.dest.as_str(), "login" | "signup" | "logout");
+        let now = identity::now_ms();
+        if !verb && now.saturating_sub(spoke_at) > gw.registry().idle_ms() {
+            crate::auth_set(&user, identity::anonymous());
+            said_too_late(&gw, device).await;
+            continue;
+        }
+        // The clock is persisted on a THROTTLE: the live decision reads `spoke_at` in memory, and
+        // the row only has to be accurate enough for the NEXT connect — so a busy connection does
+        // not write per message. The cap is an hour: a tenth of a 30-day window would let the stored
+        // value lag three days behind reality, and the next connect would then judge a device idle
+        // that had been talking the whole time.
+        spoke_at = now;
+        let throttle = (gw.registry().idle_ms() / 10).min(60 * 60 * 1000);
+        if now.saturating_sub(persisted_at) >= throttle {
+            persisted_at = now;
+            if let Err(e) = gw.registry().touch(device) {
+                eprintln!("prism: /channel could not stamp activity: {e}");
+            }
+        }
         dispatch(&gw, &user, device, token, uplink).await;
     }
 
     // THE LAST FACT OF A CONNECTION: said BEFORE the table forgets the device, so a booth holding
     // a conversation for it hears that it is over. The page itself is gone (this is the read half
     // ending), which is why the ruling calls this a fact for applications and not a notice.
+    // One last stamp on the way out: the throttle above can leave the row up to an hour behind, and
+    // a connection's end is exactly when the insight "this device is idle from here" becomes true.
+    if let Err(e) = gw.registry().touch(device) {
+        eprintln!("prism: /channel could not stamp the last activity: {e}");
+    }
     say(&gw, device, DISCONNECT_EVENT, json!({ "device": device.to_string() })).await;
     gw.unregister_ui(id);
     let _ = pump.await;
@@ -322,10 +374,10 @@ async fn dispatch(
             match outcome {
                 Ok((user_id, fresh)) => {
                     crate::auth_set(user, user_id);
-                    // Two speeches, both facts: `identity` carries what only it can (the ROTATED
-                    // token the page must keep), and `login` is the lifecycle event an application
-                    // binds to — the same shape `connect` has.
-                    say(&gw, device, IDENTITY_EVENT, identity_fact(device, user_id, fresh)).await;
+                    // Two speeches, both facts: `token` carries what only it can (the ROTATED
+                    // credential the page must keep — the old one is dead the moment this is
+                    // issued), and `login` is the lifecycle event an application binds to.
+                    say(&gw, device, TOKEN_EVENT, token_fact(device, fresh)).await;
                     say(&gw, device, LOGIN_EVENT, json!({
                         "device": device.to_string(),
                         "user": user_id.to_string(),
@@ -350,7 +402,7 @@ async fn dispatch(
                         token
                     }
                 };
-                say(&gw, device, IDENTITY_EVENT, identity_fact(device, identity::anonymous(), fresh)).await;
+                say(&gw, device, TOKEN_EVENT, token_fact(device, fresh)).await;
                 say(&gw, device, LOGOUT_EVENT, json!({ "device": device.to_string() })).await;
             }
             Err(e) => {
@@ -424,16 +476,19 @@ async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) 
 
 /// The identity fact: who this connection is, and the credential that keeps saying so. Ids travel
 /// as text; an anonymous connection says so with `null` rather than a nil uuid.
-fn identity_fact(
-    device: identity::DeviceId,
-    user: identity::UserId,
-    token: identity::TokenId,
-) -> Value {
-    json!({
-        "device": device.to_string(),
-        "user": (!identity::is_anonymous(user)).then(|| user.to_string()),
-        "token": token.to_string(),
-    })
+fn token_fact(device: identity::DeviceId, token: identity::TokenId) -> Value {
+    json!({ "device": device.to_string(), "token": token.to_string() })
+}
+
+/// The same notice the connect path says, said when a LIVE connection crosses the window: the socket
+/// stays, the uplinks stop being accepted, and a login is what starts them again.
+async fn said_too_late(gw: &Gateway, device: identity::DeviceId) {
+    eprintln!("prism: /channel device {device} crossed the idle window; asking for a login");
+    say(gw, device, NOTICE_EVENT, json!({
+        "detail": "this device was silent past the idle window; log in again",
+        "reason": "idle",
+    }))
+    .await;
 }
 
 /// One `inject` into a named slot. Every way this leg speaks goes through here, so the shape of

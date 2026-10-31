@@ -121,10 +121,12 @@ in the okm sense (16 bytes, never text; `okm_core::Uuid7` / `Uuid4`).
 - **Device ids are server-issued** (`Uuid7`), never fingerprinted in the client: a browser cannot
   see hardware, and a canvas hash can collide. The user renames the device (`alias`); the UI
   always shows the alias, falling back to the id's text form.
-- **The token is the only credential.** `?token=<uuid4>` resolves to `(device, user)`, slides its
-  expiry on use (default 30 days, `PRISM_TOKEN_TTL`); login/signup ROTATE it (old tokens of that
+- **The token is the only credential, and it has no expiry.** `?token=<uuid4>` resolves to
+  `(device, user)`; freshness is the DEVICE's clock (`Activity`, ns 54, `PRISM_IDLE_WINDOW`, default
+  30 days) read at connect and at every uplink; login/signup ROTATE the token (old tokens of that
   device are stamped revoked); logout revokes them all; `/admin/revoke` revokes by token, the
-  device-level revocation keeps its meaning. `?device=` stops being a credential.
+  device-level revocation keeps its meaning. `?device=` stops being a credential. The fact the page
+  receives is `token {device, token}` — no fact carries the user, the venue resolves it per uplink.
 - **Anonymous connections still get a token**, or a refresh would lose the room they were in.
 - **Text appears in exactly four places**: `username`, `nickname`, `alias`, `password_hash`.
 - **Transport**: 16 raw bytes on the wire in CBOR; base64uuid text in a JSON codec — a 128-bit id
@@ -166,3 +168,4 @@ not design. The turn verbs (`turns.rs`, `TurnConfig`, executor registration, `sa
 in the tree; they come out after those two go green.
 THE LIFECYCLE'S OTHER THREE FACTS, AND THE ADDRESS IS A DEVICE 2026-10-31 (the two 10-30 rulings that had not reached the code): MODELING named four lifecycle facts and `ui.rs` said one. `ui:login {device, user}` now rides beside `ui:identity` on signup and login (the identity fact stays because only it carries the rotated token), `ui:logout {device}` when the binding ends, and `ui:disconnect {device}` BEFORE the connection table forgets the device — the page's socket is gone by then, which is why it is a fact for applications rather than a notice. The other ruling was `channel_id`: gravity's side had stopped emitting it, but `forward` still read it first and fell back to `device`; the fallback is gone, so the retired field now reaches no renderer instead of reaching one by luck. `ui_leg` grew `a_disconnect_is_a_fact_for_the_application` (probe + open + drop + assert on the plane) and the gate test now reads `login`/`logout` where it used to read only `identity`.
 
+ONE CLOCK, AND THE FACT THAT CARRIES THE CREDENTIAL 2026-10-31 (the identity plane rewritten to the shape a page can actually use): `identity {device, user, token}` said three things to three consumers and only one of them was needed — the credential. The venue resolves the device to a user at every uplink and the connection's auth field is the only live copy, so the page receives `token {device, token}` and no user anywhere. Freshness moved off the token entirely: `Activity` (ns 54, one timestamp per device, written on the message path, throttled to a tenth of the window) is the only clock, `Token.expires_at` and `Device.last_seen` are gone, and `PRISM_IDLE_WINDOW` (default 30 days) replaces `PRISM_TOKEN_TTL`. A device silent past the window connects as anonymous but KEEPS its id and alias, is told `notice {reason: idle}`, and a login on the same connection restores it — refusing the auth verbs at the gate would have left the page no way back. The socket is not dropped when the window is crossed: the uplinks stop, which is why `disconnect` needs no bookkeeping. Tables changed shape, so no migration: the store is rebuilt, and prism's instance holds no accounts worth keeping. Tests: `ui_leg` 11/11, including `a_silent_connection_crosses_the_window_and_a_login_reopens_it` and a `recv_named` helper (the two speeches of one landing arrive in either order — MODELING promises none).

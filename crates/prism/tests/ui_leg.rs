@@ -22,8 +22,20 @@ type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn boot(deployment: Deployment) -> (SocketAddr, std::sync::Arc<Gateway>) {
+    boot_with_idle(None, deployment).await
+}
+
+/// The same venue with the idle window spelled out: 30 days is the deployment's answer, and a test
+/// cannot wait for it.
+async fn boot_with_idle(
+    idle_ms: Option<u64>,
+    deployment: Deployment,
+) -> (std::net::SocketAddr, std::sync::Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
-    let registry = Registry::open(&dir.keep()).unwrap();
+    let registry = match idle_ms {
+        Some(ms) => Registry::open_with_idle(&dir.keep(), ms).unwrap(),
+        None => Registry::open(&dir.keep()).unwrap(),
+    };
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::with_deployment(engine, registry, prism::nodes::Posture::Open, deployment);
@@ -34,8 +46,26 @@ async fn boot(deployment: Deployment) -> (SocketAddr, std::sync::Arc<Gateway>) {
     (addr, gw)
 }
 
-/// The two facts the venue says to a connection that just opened: `identity` (who this is, and the
-/// token the page must keep) and `connect` (the fact an application answers with its layout). Both
+/// The venue's two speeches for one landing are two emits, and the plane promises no order between
+/// them (MODELING): a test that reads "the first speech" is reading its own luck. Collect both by
+/// name and hand them back by name.
+async fn recv_named(
+    ws: &mut WsClient,
+    wanted: [&str; 2],
+) -> std::collections::BTreeMap<String, Value> {
+    let mut got = std::collections::BTreeMap::new();
+    while got.len() < wanted.len() {
+        let (slot, name, data) = recv_speech(ws).await;
+        assert_eq!(slot, name, "the slot is named after the fact: {name}");
+        assert!(wanted.contains(&name.as_str()), "unexpected fact `{name}`");
+        got.insert(name, data);
+    }
+    got
+}
+
+/// The two facts the venue says to a connection that just opened: `token` (the credential the page
+/// must keep — the one thing it cannot derive) and `connect` (the fact an application answers with
+/// its layout). Both
 /// are EVENTS on the plane like any other, so the page sees a slot named after the fact — there is
 /// no per-verb `connected`/`signup.result` name to learn. They are two emits, and the plane promises
 /// no order between them: a page binds both, and neither assumes the other arrived first.
@@ -46,12 +76,13 @@ async fn read_connected(ws: &mut WsClient) -> String {
         let (slot, name, data) = recv_speech(ws).await;
         assert_eq!(slot, name, "the slot is named after the fact: {name}");
         match name.as_str() {
-            // The device id is a uuid: TEXT on this wire (a 128-bit id is not a JSON number), and
-            // the same fact also carries the token the page must keep.
-            "identity" => {
+            // The device id is a uuid: TEXT on this wire (a 128-bit id is not a JSON number) —
+            // and the credential rides beside it, because a page that loses the token has to log
+            // in again, while a page that loses the device id has lost nothing.
+            "token" => {
                 assert!(data["token"].as_str().is_some_and(|t| t.len() == 36), "{data}");
                 identity_device =
-                    Some(data["device"].as_str().expect("device id in identity").to_string());
+                    Some(data["device"].as_str().expect("device id in the token fact").to_string());
             }
             "connect" => {
                 connect_device =
@@ -241,6 +272,46 @@ async fn connect_is_an_event_and_the_application_answers_it() {
     assert_eq!(ops[1]["slot"], "graph");
 }
 
+/// The window, on the wire. A connection that nobody has used for longer than the window stops being
+/// authenticated — the SOCKET stays (a reconnect is not the answer), the page is told why, and a
+/// login on that same connection is what starts the uplinks again. The device keeps its id across
+/// the timeout, which is the whole reason a page does not have to be renamed every time.
+#[tokio::test]
+async fn a_silent_connection_crosses_the_window_and_a_login_reopens_it() {
+    let (addr, _gw) = boot_with_idle(Some(150), Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let device = read_connected(&mut ws).await;
+
+    // Bind the device so the connection carries a user worth losing.
+    send_uplink(
+        &mut ws,
+        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let landed = recv_named(&mut ws, ["token", "login"]).await;
+    assert_eq!(landed["login"]["device"].as_str(), Some(device.as_str()));
+
+    // Silence past the window, then one uplink: it is refused with a reason.
+    tokio::time::sleep(std::time::Duration::from_millis(320)).await;
+    send_uplink(&mut ws, json!({"dest": "echo_steel", "data": {"text": "late"}})).await;
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
+    assert_eq!(data["reason"].as_str(), Some("idle"), "the page must know WHY: {data}");
+
+    // The auth verb is not gated: a login on the same connection names the SAME device.
+    send_uplink(
+        &mut ws,
+        json!({"dest": "login", "data": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let again = recv_named(&mut ws, ["token", "login"]).await;
+    assert_eq!(
+        again["login"]["device"].as_str(),
+        Some(device.as_str()),
+        "the device survives the timeout — that is what keeps its name"
+    );
+}
+
 /// The other end of a connection is a fact too. `ui:disconnect {device}` is said BEFORE the table
 /// forgets the device, so an application holding a conversation for it hears that it is over — and
 /// the page's own socket is gone by then, which is why this is a fact for applications, not a
@@ -350,24 +421,27 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"), "anonymous sender must be refused");
     assert!(data["detail"].as_str().is_some_and(|d| d.contains("echo_gate")), "{data}");
 
-    // signup on the leg: the account is prism's, and the answer is identity, not a verb.
+    // signup on the leg: the account is prism's, and the answer is a fact, not a verb.
     send_uplink(
         &mut ws,
         json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
     )
     .await;
-    let (slot, name, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("identity", "identity"));
+    let landed = recv_named(&mut ws, ["token", "login"]).await;
+    let token = &landed["token"];
     assert!(
-        data["user"].as_str().is_some_and(|u| u.len() == 36),
-        "identity carries the bound user as uuid text: {data}"
+        token["token"].as_str().is_some_and(|t| t.len() == 36),
+        "the rotated credential is what only this fact can carry: {token}"
     );
-    // AND THE LIFECYCLE SAYS IT TOO (MODELING: facts are named as they happened). `identity` is
-    // what only it can carry — the rotated token; `login` is the fact an application binds.
-    let (slot, name, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("login", "login"));
-    assert!(data["user"].as_str().is_some_and(|u| u.len() == 36), "{data}");
-    assert!(data["device"].as_str().is_some(), "{data}");
+    assert!(
+        token.get("user").is_none(),
+        "the user is the venue's answer, not the page's: {token}"
+    );
+    // AND THE LIFECYCLE SAYS IT TOO (MODELING: facts are named as they happened) — `login` is the
+    // fact an application binds, and it carries who bound.
+    let login = &landed["login"];
+    assert!(login["user"].as_str().is_some_and(|u| u.len() == 36), "{login}");
+    assert!(login["device"].as_str().is_some(), "{login}");
 
     // Bound now: the same declared-auth event reaches the booth and its answer is DRAWN. The
     // gate is not merely a boolean on a log line — the frame proves the call ran.
@@ -379,12 +453,8 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     // After logout the same event is refused again — the field, not the account row, is what
     // the gate reads, and it is cleared on the same socket.
     send_uplink(&mut ws, json!({"dest": "logout", "data": null})).await;
-    let (slot, name, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("identity", "identity"));
-    assert!(data["user"].is_null(), "logout clears the user: {data}");
-    let (slot, name, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("logout", "logout"));
-    assert!(data["device"].as_str().is_some(), "{data}");
+    let gone = recv_named(&mut ws, ["token", "logout"]).await;
+    assert!(gone["logout"]["device"].as_str().is_some(), "{:?}", gone["logout"]);
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
     let (slot, name, _) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
@@ -400,8 +470,7 @@ async fn revocation_kicks_the_renderer_leg_too() {
 
     // Bind an account so this connection carries an auth field worth clearing.
     send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "grace", "password": "p"}})).await;
-    let (_, name, _) = recv_speech(&mut ws).await;
-    assert_eq!(name, "identity");
+    recv_named(&mut ws, ["token", "login"]).await;
 
     let resp = post_json(addr, "/admin/revoke", json!({"device_id": device})).await;
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
@@ -429,19 +498,19 @@ async fn a_view_event_carries_data_into_the_slot_named_by_it() {
     aura_realm::Realm::emit(
         &gw.engine.realm,
         None,
-        "ui:identity",
-        json!({"name": "ui:identity", "device": device, "data": {"device": device, "user": null}}),
+        "ui:token",
+        json!({"name": "ui:token", "device": device, "data": {"device": device, "token": "t"}}),
     )
     .await
-    .expect("emit ui:identity");
+    .expect("emit ui:token");
 
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops.len(), 1, "{ops:?}");
     assert_eq!(ops[0]["action"], "inject");
-    // The marker is stripped: the page's slot is `identity`, and the name it sees is the same
+    // The marker is stripped: the page's slot is `token`, and the name it sees is the same
     // name — nothing on the page knows what `ui:` means.
-    assert_eq!(ops[0]["slot"], "identity");
-    assert_eq!(ops[0]["name"], "identity");
+    assert_eq!(ops[0]["slot"], "token");
+    assert_eq!(ops[0]["name"], "token");
     assert_eq!(ops[0]["data"]["device"].as_str(), Some(device.as_str()), "{ops:?}");
 }
 

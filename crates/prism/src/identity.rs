@@ -6,8 +6,9 @@
 //! | ns | key | payload |
 //! |---|---|---|
 //! | 50 `Account` | `Uuid7` | username, nickname, argon2id PHC hash |
-//! | 51 `Device`  | `Uuid7` | user, alias, first_seen, last_seen, revoked |
-//! | 53 `Token`   | `Uuid4` | device, user, issued_at, expires_at, revoked_at |
+//! | 51 `Device`  | `Uuid7` | user, alias, first_seen, revoked |
+//! | 53 `Token`   | `Uuid4` | device, user, issued_at, revoked_at |
+//! | 54 `Activity`| `Uuid7` | at — the clock the idle window reads |
 //!
 //! (ns 52 is the effector node registry — see `nodes.rs`.)
 //!
@@ -25,8 +26,11 @@
 //! - a **device** is a stable server-issued id plus a user-editable ALIAS; the UI shows the alias.
 //!   It is never fingerprinted on the client — a browser cannot see hardware, and a canvas hash
 //!   collides, which is a broken identity rather than a duplicate row.
-//! - a **token** is what authenticates: server-issued, revocable, TTL'd, slid on use. `?device=`
-//!   alone no longer restores anything, which is the hole this split closes.
+//! - a **token** is what authenticates: server-issued, revocable, and it names its device. `?device=`
+//!   alone restores nothing, which is the hole this split closes. It has no expiry of its own: the
+//!   clock is the device's last activity (ns 54), so a credential whose device has been idle past
+//!   the window restores nothing either — and the device is still named, which is what lets a login
+//!   keep its alias instead of minting a new device every timeout.
 //! - an **account** is a unique username + password hash; one user, many devices.
 //!
 //! Live auth state stays where it was (§3): a per-connection field in the gateway, never a second
@@ -86,7 +90,6 @@ pub struct Device {
     /// the `DeviceId`/`UserId` aliases are for signatures and read better there.)
     pub alias: String,
     pub first_seen: u64,
-    pub last_seen: u64,
     pub revoked: u64,
 }
 
@@ -103,31 +106,60 @@ pub struct Token {
     pub device: Uuid7,
     pub user: Uuid7,
     pub issued_at: u64,
-    pub expires_at: u64,
     /// Rotation, logout and revocation all write here; 0 = live.
     pub revoked_at: u64,
 }
 
 use __OkmIndex_Token_by_device as TokenByDevice;
 
-/// Default lifetime of a token: 30 days, slid on every use. `PRISM_TOKEN_TTL` (seconds) overrides.
-const DEFAULT_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+/// The activity table (prism instance, ns 54): the clock, one scalar per device. It is a table of
+/// its own because it is written on the MESSAGE path — a read-modify-write of the device row per
+/// message would race the alias and the binding (two writers, one row, one lost update). The device
+/// row keeps what changes rarely; this keeps what changes constantly.
+#[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
+#[ok_ref(Uuid7)]
+#[ok_ns(54)]
+pub struct Activity {
+    pub at: u64,
+}
+
+/// What one connect resolved to: the device it addresses, the user it may act as, the credential the
+/// page keeps, and whether the device had been silent past the window. When `idle` is true the
+/// connection is NOT authenticated — the device is still named (its alias survives a timeout), and a
+/// login on this same connection is what re-earns the trust.
+pub struct Identified {
+    pub device: DeviceId,
+    pub user: UserId,
+    pub token: TokenId,
+    pub idle: bool,
+}
+
+/// How long a device may stay silent before its connection stops being authenticated: 30 days.
+/// `PRISM_IDLE_WINDOW` (seconds) overrides. One clock for the whole identity plane — the token has
+/// no expiry, because two clocks for one question is two answers waiting to disagree.
+const DEFAULT_IDLE_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// prism's own okm keyspace. `FjallStore` clones are shared handles, so assembly per operation is
 /// cheap and concurrent — the same shape aura's meta plane runs.
 #[derive(Clone)]
 pub struct Registry {
     store: okm_core::FjallStore,
-    ttl_secs: u64,
+    idle_ms: u64,
 }
 
 impl Registry {
     /// Persistent instance: one okm keyspace inside a fjall database at `dir` (fjall locks the
     /// directory per process — one open, ever).
     pub fn open(dir: &std::path::Path) -> anyhow::Result<Self> {
+        Self::open_with_idle(dir, idle_from_env())
+    }
+
+    /// The same instance with the window spelled out — one deployment can want a week and a test a
+    /// hundred milliseconds, and neither should have to set an environment variable to say so.
+    pub fn open_with_idle(dir: &std::path::Path, idle_ms: u64) -> anyhow::Result<Self> {
         let store = okm_core::FjallStore::open(dir, "prism")
             .map_err(|e| anyhow!("prism registry open {dir:?}: {e}"))?;
-        Ok(Self { store, ttl_secs: ttl_from_env() })
+        Ok(Self { store, idle_ms })
     }
 
     /// The node registry view of the SAME instance (ns 52, ADR-0015 Phase 1.8): one directory, one
@@ -148,10 +180,10 @@ impl Registry {
                 user: anonymous(),
                 alias: String::new(),
                 first_seen: now,
-                last_seen: now,
                 revoked: 0,
             },
         )?;
+        self.touch_at(id, now)?;
         Ok(id)
     }
 
@@ -178,8 +210,8 @@ impl Registry {
             return Err(anyhow!("unknown device {}", id));
         };
         d.alias = alias.to_string();
-        d.last_seen = now_ms();
         t.put(&id, &d)?;
+        self.touch(id)?;
         Ok(())
     }
 
@@ -266,23 +298,21 @@ impl Registry {
                 device,
                 user,
                 issued_at: now,
-                expires_at: now.saturating_add(self.ttl_secs.saturating_mul(1000)),
                 revoked_at: 0,
             },
         )?;
         Ok(id)
     }
 
-    /// Resolve a presented token: `Some((device, user))` when it is live, and the expiry slides
-    /// forward on the way out (a session in use does not expire; an idle one does). A revoked or
-    /// expired row reads None and is left alone.
+    /// Resolve a presented token: `Some((device, user))` when it is live. Freshness is NOT decided
+    /// here — the credential names who, [`Registry::idle`] decides whether that name still carries
+    /// permission. A revoked row reads None and is left alone.
     pub fn resolve_token(&self, token: TokenId) -> anyhow::Result<Option<(DeviceId, UserId)>> {
         let t = Collection::<_, TokenId, Token>::new(self.store.clone());
-        let Some(mut row) = t.get(&token)? else {
+        let Some(row) = t.get(&token)? else {
             return Ok(None);
         };
-        let now = now_ms();
-        if row.revoked_at != 0 || row.expires_at <= now {
+        if row.revoked_at != 0 {
             return Ok(None);
         }
         // The device must still agree: a revoked device invalidates its tokens without touching
@@ -290,8 +320,6 @@ impl Registry {
         if !self.device_user(row.device)?.is_some_and(|u| u == row.user) {
             return Ok(None);
         }
-        row.expires_at = now.saturating_add(self.ttl_secs.saturating_mul(1000));
-        t.put(&token, &row)?;
         Ok(Some((row.device, row.user)))
     }
 
@@ -356,7 +384,6 @@ impl Registry {
         let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
         if let Some(mut d) = t.get(&device)? {
             d.user = user;
-            d.last_seen = now_ms();
             // A fresh authentication re-earns the device's trust: the revocation stamp clears with
             // the successful bind (the credentials were just proven — the only path back).
             if !is_anonymous(user) {
@@ -364,16 +391,49 @@ impl Registry {
             }
             t.put(&device, &d)?;
         }
+        self.touch(device)?;
         Ok(())
+    }
+
+    /// The clock: when this device last spoke. `None` when no row exists — a device nobody has heard
+    /// from is idle, which is the safe direction (the alternative would be to trust silence).
+    pub fn activity(&self, device: DeviceId) -> anyhow::Result<Option<u64>> {
+        let t = Collection::<_, DeviceId, Activity>::new(self.store.clone());
+        Ok(t.get(&device)?.map(|a| a.at))
+    }
+
+    /// Record that the device spoke: one scalar row, no read-modify-write of the device.
+    pub fn touch(&self, device: DeviceId) -> anyhow::Result<()> {
+        self.touch_at(device, now_ms())
+    }
+
+    fn touch_at(&self, device: DeviceId, at: u64) -> anyhow::Result<()> {
+        let t = Collection::<_, DeviceId, Activity>::new(self.store.clone());
+        t.put(&device, &Activity { at })?;
+        Ok(())
+    }
+
+    /// Has this device been silent past the window? This is the only place the question is asked, so
+    /// there is only one answer: the token does not have a second opinion.
+    pub fn idle(&self, device: DeviceId, now: u64) -> anyhow::Result<bool> {
+        Ok(match self.activity(device)? {
+            None => true,
+            Some(at) => now.saturating_sub(at) > self.idle_ms,
+        })
+    }
+
+    /// The window, for a caller that has to judge several messages against it.
+    pub fn idle_ms(&self) -> u64 {
+        self.idle_ms
     }
 }
 
-fn ttl_from_env() -> u64 {
-    std::env::var("PRISM_TOKEN_TTL")
+fn idle_from_env() -> u64 {
+    std::env::var("PRISM_IDLE_WINDOW")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|secs| *secs > 0)
-        .unwrap_or(DEFAULT_TTL_SECS)
+        .unwrap_or(DEFAULT_IDLE_SECS)
 }
 
 fn hash_password(password: &str) -> anyhow::Result<String> {
@@ -392,7 +452,9 @@ fn verify_password(password: &str, hash: &str) -> anyhow::Result<()> {
 }
 
 /// Unix milliseconds. Prism's own clock: the value is this venue's, not an ordering authority.
-fn now_ms() -> u64 {
+/// The clock every table in this module stamps with. Public because the venue judges a connection's
+/// idleness against the same milliseconds the rows carry.
+pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         // Diagnostic stamp only: a pre-1970 clock reads as the epoch.
@@ -484,17 +546,32 @@ mod tests {
         assert!(r.set_alias(Uuid7::now(), "x").is_err(), "unknown device is a refusal");
     }
 
-    /// An expired token does not resolve, and the TTL comes from the environment.
+    /// Freshness is the DEVICE's clock, not the token's: a token that is still live keeps naming its
+    /// device after the window has passed — permission is what it loses, and the name is exactly what
+    /// a login needs to restore the same device (and its alias) instead of minting a new one.
     #[test]
-    fn an_expired_token_is_not_a_credential() {
+    fn a_silent_device_is_idle_but_its_token_still_names_it() {
         let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("PRISM_TOKEN_TTL", "1");
-        let r = Registry::open(&dir.into_path()).unwrap();
-        std::env::remove_var("PRISM_TOKEN_TTL");
+        let r = Registry::open_with_idle(&dir.into_path(), 1).unwrap();
         let device = r.new_device().unwrap();
         let (_, token) = r.signup("alice", "Ali", "pw-a", device).unwrap();
-        assert!(r.resolve_token(token).unwrap().is_some(), "fresh");
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert_eq!(r.resolve_token(token).unwrap(), None, "a second later it is stale");
+        r.set_alias(device, "laptop").unwrap();
+        assert!(!r.idle(device, now_ms()).unwrap(), "a device that just spoke is not idle");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(r.idle(device, now_ms()).unwrap(), "a window of 1ms has passed");
+        assert_eq!(
+            r.resolve_token(token).unwrap().map(|(d, _)| d),
+            Some(device),
+            "the credential still says WHICH device"
+        );
+        // Speaking again ends the idleness, and the alias a login restores is the one it had.
+        r.touch(device).unwrap();
+        assert!(!r.idle(device, now_ms()).unwrap());
+        assert_eq!(r.device(device).unwrap().unwrap().alias, "laptop", "a timeout renames nothing");
+        // Logout keeps the id and the name and drops the binding — the page is not re-created.
+        r.logout(device).unwrap();
+        let row = r.device(device).unwrap().unwrap();
+        assert!(is_anonymous(row.user), "logout unbinds");
+        assert_eq!(row.alias, "laptop", "logout does not clear the name");
     }
 }
