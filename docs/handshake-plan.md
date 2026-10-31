@@ -16,16 +16,38 @@ Nothing else blocks it. The work is the approved plan below, unchanged.
 - **aura's local gateway LANDED**: sends the challenge, verifies the signature, no registry
   (`alias_takeover` + `remote_effector` green — the latter drives the REAL effector runtime, so
   the whole sign/verify path is proven against a host).
-- **prism's mount WRITTEN, NOT VERIFIED**: `effectors.rs` sends the nonce, verifies in both
-  postures (`open` = no registry, never no proof, and it logs that), and gates `required` on
-  `NodeStore::verdict` with a stated `Refused` for `pending`/`conflict`. It does not compile
-  right now — and not because of this change: fluxen's in-progress envelope removal deleted
-  `content::Message`, which `/channel` still uses. Verify the mount once that settles, then add
-  the three e2e (`required` accept, wrong signature, `open` regression).
+- **prism's mount LANDED AND VERIFIED** (2026-10-29, re-measured 2026-10-31): `effectors.rs` sends
+  the nonce, verifies in both postures (`open` = no registry, never no proof, and it logs that), and
+  gates `required` on `NodeStore::verdict` with a stated `Refused` for `pending`/`conflict`.
+  `tests/effector_handshake.rs` is SIX cases — required admits an approved key, refuses an
+  unapproved one, refuses a different key for an enrolled alias, refuses a forged signature in BOTH
+  postures, `open` admits a key no registry knows, and a frame claiming another alias closes
+  without `Registered`; `tests/admin_nodes.rs` is the approval HTTP face, 4 cases. Do not report the
+  handshake as done until those pass: `cargo test -p prism --test effector_handshake --test
+  admin_nodes -- --test-threads=1`.
+
+  The 2026-10-29 entry above said the crate did not compile — that was fluxen's `content::Message`
+  removal, long since landed. The 2026-10-31 re-run hit a SECOND, unrelated staleness: prism's
+  `Cargo.lock` (gitignored here) pinned okm `ca827287` while aura's own lock had moved to
+  `c4961c85` and aura's source adapted to it (`AccessMethod` lost `version`), so `aura-realm` failed
+  to compile inside prism's build. `cargo update -p okm-core -p okm-derive -p okm-dynamic -p
+  okm-entry -p okm-wire` fixes it locally; nothing in either repo is at fault and no lock is
+  committed.
 
 ## Done already (prism f5837d2)
 
 `/effector/<alias>` mount LANDED: `crates/prism/src/effectors.rs` serves the mounted gateway (Register handshake, Result correlation, ctx-bridge via `aura_engine::host_wire`, presence guard). Path segment = alias claim, Register frame must repeat it, mismatch closes. Trust posture NOT consulted yet — that is this work. Aura keeps `serve_effectors` (independent port) for local mode; aura remote_effector/alias_takeover tests green.
+
+## What is actually left: step ③, and it is deferred on purpose
+
+Phase 1.8 had three steps. Step 1 (the registry + verdict + posture + curl-first admin face) and
+step 2 (this handshake, both ends) are landed and verified. Step ③ — **node records under the
+ACCOUNT**, so enrolment/approval/revocation ride Phase 1's auth session instead of an operator's
+curl — is the only piece left, and `docs/PLAN.md`'s "Multi-tenant auth (keys/accounts): single-user
+first; add auth layers only with the first external consumer" is the standing reason not to build it
+yet. The wire consequence to keep in mind when it is taken: a node's identity stays (alias,
+public_key) — the handshake never learns a user, so ownership can only govern WHO MAY ENROL, never
+the verdict's shape.
 
 ## Approved plan
 
