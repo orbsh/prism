@@ -105,9 +105,10 @@ async fn mem_server() -> String {
 /// writes what a deployment's management face writes. The type must be REGISTERED first —
 /// registration persists the schema and allocates the ns, which is also what proves the guest's
 /// `storage` block reaches the realm as a plan.
-fn seed_turn_rows(engine: &aura_engine::Engine, store_url: &str, endpoint: &str) {
+async fn seed_turn_rows(engine: &aura_engine::Engine, store_url: &str, endpoint: &str) {
     let (store, plan) = {
-        let realm = engine.realm.try_lock().expect("realm");
+        // AWAIT the realm, never `try_lock` it: the engine's boot tasks hold it for a moment.
+        let realm = engine.realm.lock().await;
         (
             realm.mq.clone(),
             realm
@@ -397,7 +398,7 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
     // The turn's deployment facts are ROWS in its own namespace now (gravity ADR-0007); only the
     // two spawn specs are environment, because they are where the binary lives.
     let (endpoint, seen) = sse_server(skill_id, PRODUCED, PRODUCED_2).await;
-    seed_turn_rows(&engine, &store_url, &endpoint);
+    seed_turn_rows(&engine, &store_url, &endpoint).await;
     std::env::set_var("GRAVITY_TEST_KEY", "test-key");
 
     let mut ws = connect(addr).await;
