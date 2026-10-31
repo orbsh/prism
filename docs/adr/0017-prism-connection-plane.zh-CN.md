@@ -193,3 +193,19 @@ Rust 摊位的函数体拿不到触发它的事件名（具体名字被派发层
 里已经背了三个意思——krystallizer 的会话投影（`mem_core::view`）、fluxen 的 `forcegraph::View`、
 以及这个标记——而标记自己的职责比它们都窄：**这个事件在另一端有一张用户界面。**本日期之前写作
 `view:<name>` 的地方（本 ADR 正文、两份 PLAN、gravity 的各 ADR）一律读作 `ui:<name>`。
+
+## Update — 2026-10-31：生命周期的另外三个事实
+
+连接的生命被裁定为一条普通事件流（MODELING：`ui:connect`、`ui:login`、`ui:logout`、
+`ui:disconnect`），而过去只有 `connect` 被说出来。另外三个现在也在它们发生的时刻说出，走同一条
+`say` 路径——于是每一个都是线上的信封，前缀路由把它带回同名的槽位，绑定 `login` 或 `logout` 的布局
+不用问就知道：
+
+- `ui:login {device, user}`，在注册与登录时。`ui:identity` 仍然同时在说，因为 token 是只有它能携带的
+  东西（页面必须留住的轮换凭据）；`login` 是应用可绑定的生命周期事实。
+- `ui:logout {device}`，绑定结束时。
+- `ui:disconnect {device}`，连接消失时，且在连接表忘掉该设备**之前**说出——此刻页面自己的 socket 已经
+  没了，这正是它是对应用的事实、而不是场馆给浏览器的一条 notice 的原因。
+
+`tests/ui_leg.rs` 三条都钉住了：鉴权用例在注册后读 `login`、登出后读 `logout`；
+`a_disconnect_is_a_fact_for_the_application` 注册一个探针、开一个渲染器、丢掉它，断言平面收到了那个设备。

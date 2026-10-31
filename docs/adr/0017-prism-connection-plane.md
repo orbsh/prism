@@ -205,3 +205,23 @@ krystallizer's session projection (`mem_core::view`), fluxen's `forcegraph::View
 marker — while the marker's own job is narrower than any of them: **this event has a user
 interface on the other end.** Everything written before this date that spells `view:<name>` — this
 ADR's body, both PLANs, gravity's ADRs — reads `ui:<name>`.
+
+## Update — 2026-10-31: the lifecycle's other three facts
+
+The connection's life was ruled a stream of ordinary events (MODELING: `ui:connect`, `ui:login`,
+`ui:logout`, `ui:disconnect`), and only `connect` was ever said. The other three are said now, at
+the moments they happen and by the same `say` path — so each one is an envelope on the plane that
+the prefix route carries back down into the slot named after it, and a layout that binds `login`
+or `logout` learns the fact without asking:
+
+- `ui:login {device, user}` on signup and on login. `ui:identity` is still said beside it, because
+  the token is a thing only it can carry (the rotated credential the page must keep); `login` is
+  the lifecycle fact an application binds.
+- `ui:logout {device}` when the binding ends.
+- `ui:disconnect {device}` when the connection goes away, said BEFORE the connection table forgets
+  the device — the page's own socket is already gone at that moment, which is why this is a fact
+  for applications and not a notice the venue puts on the wire for a browser.
+
+`tests/ui_leg.rs` holds all three: the gate test reads `login` after signing up and `logout` after
+logging out, and `a_disconnect_is_a_fact_for_the_application` registers a probe, opens a renderer,
+drops it, and asserts the plane carried the device.

@@ -66,6 +66,13 @@ pub const NOTICE_EVENT: &str = "notice";
 /// bind the fact that produced the layout.
 pub const CONNECT_EVENT: &str = "connect";
 
+/// The rest of the connection's life, said the same way `connect` is (MODELING's rule: a FACT is
+/// named as it happened, a REQUEST is imperative). `login` is the device binding to an account
+/// (signup included), `logout` the binding ending, `disconnect` the connection going away.
+pub const LOGIN_EVENT: &str = "login";
+pub const LOGOUT_EVENT: &str = "logout";
+pub const DISCONNECT_EVENT: &str = "disconnect";
+
 /// The renderer connection table: id → connection. The venue owns it, the forwarding booth
 /// writes into it, and the peer-plane acts (revocation) reach it.
 pub(crate) type UiConns = Arc<std::sync::Mutex<std::collections::HashMap<u64, UiConn>>>;
@@ -152,8 +159,7 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     // Addresses arrive as TEXT: a uuid is 16 bytes, and a JSON number cannot carry them (JS
     // Number is f64, so anything past 2^53 loses its tail). The spelling is the codec's business.
     let target = payload
-        .get("channel_id")
-        .or_else(|| payload.get("device"))
+        .get("device")
         .and_then(Value::as_str)
         .map(str::to_string);
     let sender = payload
@@ -173,7 +179,7 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     let body = payload.get("data").cloned().unwrap_or_else(|| {
         let mut rest = payload.clone();
         if let Some(o) = rest.as_object_mut() {
-            for k in ["name", "channel_id", "device", "sender"] {
+            for k in ["name", "device", "sender"] {
                 o.remove(k);
             }
         }
@@ -280,6 +286,10 @@ pub(crate) async fn serve(
         dispatch(&gw, &user, device, token, uplink).await;
     }
 
+    // THE LAST FACT OF A CONNECTION: said BEFORE the table forgets the device, so a booth holding
+    // a conversation for it hears that it is over. The page itself is gone (this is the read half
+    // ending), which is why the ruling calls this a fact for applications and not a notice.
+    say(&gw, device, DISCONNECT_EVENT, json!({ "device": device.to_string() })).await;
     gw.unregister_ui(id);
     let _ = pump.await;
     Ok(())
@@ -312,9 +322,15 @@ async fn dispatch(
             match outcome {
                 Ok((user_id, fresh)) => {
                     crate::auth_set(user, user_id);
-                    // The SAME fact a connect wrote: a page that binds `identity` always sees who
-                    // it is — and the ROTATED token, which the page must keep (the old one died).
+                    // Two speeches, both facts: `identity` carries what only it can (the ROTATED
+                    // token the page must keep), and `login` is the lifecycle event an application
+                    // binds to — the same shape `connect` has.
                     say(&gw, device, IDENTITY_EVENT, identity_fact(device, user_id, fresh)).await;
+                    say(&gw, device, LOGIN_EVENT, json!({
+                        "device": device.to_string(),
+                        "user": user_id.to_string(),
+                    }))
+                    .await;
                 }
                 Err(e) => {
                     eprintln!("prism: /channel {asked} refused: {e}");
@@ -335,6 +351,7 @@ async fn dispatch(
                     }
                 };
                 say(&gw, device, IDENTITY_EVENT, identity_fact(device, identity::anonymous(), fresh)).await;
+                say(&gw, device, LOGOUT_EVENT, json!({ "device": device.to_string() })).await;
             }
             Err(e) => {
                 eprintln!("prism: /channel logout refused: {e}");

@@ -62,3 +62,13 @@ and answered on that same connection.
 - Read literally, today's wire is wrong in a way that fails quietly: a booth obeying this ADR and
   emitting `channel_id: 7` reaches no renderer, because 7 is compared against device ids. That
   is the defect this ADR removes rather than documents.
+
+## Update — 2026-10-31: the word leaves the wire it was read from
+
+The ADR ruled `channel_id` away and the sending half followed at once (gravity's turn emits
+`{name, device, data}` with no sender of its own); the RECEIVING half kept the old spelling alive:
+`forward` looked for `channel_id` first and fell back to `device`. Both readings are gone — the
+downlink addresses `device` and nothing else — so a booth that emits the retired field now reaches
+no renderer instead of reaching one by luck. The silent-failure defect this ADR was written about
+("a booth emitting `channel_id: 7` reaches no renderer") is now the ONLY behaviour, which is what
+makes it safe to say the field is gone rather than deprecated.

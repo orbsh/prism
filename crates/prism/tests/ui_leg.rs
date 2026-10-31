@@ -241,6 +241,60 @@ async fn connect_is_an_event_and_the_application_answers_it() {
     assert_eq!(ops[1]["slot"], "graph");
 }
 
+/// The other end of a connection is a fact too. `ui:disconnect {device}` is said BEFORE the table
+/// forgets the device, so an application holding a conversation for it hears that it is over — and
+/// the page's own socket is gone by then, which is why this is a fact for applications, not a
+/// notice the venue puts on the wire for a browser.
+#[tokio::test]
+async fn a_disconnect_is_a_fact_for_the_application() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let collector = std::sync::Arc::clone(&seen);
+    gw.engine
+        .register(aura_booth::BoothType {
+            name: "gone_probe".into(),
+            body: aura_booth::Body::Rust(std::sync::Arc::new(move |_ctx, args| {
+                let collector = std::sync::Arc::clone(&collector);
+                Box::pin(async move {
+                    collector.lock().unwrap().push(args);
+                    Ok(Value::Null)
+                })
+            })),
+            idle_ttl: None,
+            max_exec: None,
+            hooks: std::collections::BTreeMap::new(),
+            receives: vec![aura_booth::ReceiveDecl {
+                event: "ui:disconnect".into(),
+                entry: None,
+                resolution: aura_booth::RouteResolution::Singleton,
+                wildcard: false,
+            }],
+        })
+        .await
+        .expect("register the disconnect probe");
+
+    let mut ws = open_ui(addr).await;
+    let device = read_connected(&mut ws).await;
+    // An explicit Close, not a drop: the server's read half learns of a drop only when the OS gets
+    // around to the FIN, which is not something a test should wait on.
+    ws.close(None).await.expect("close the renderer socket");
+
+    let mut fact = None;
+    for _ in 0..200 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if let Some(first) = seen.lock().unwrap().first() {
+            fact = Some(first.clone());
+            break;
+        }
+    }
+    let fact = fact.expect("ui:disconnect reached the plane");
+    assert_eq!(
+        fact["device"].as_str(),
+        Some(device.as_str()),
+        "the fact names the device that went away: {fact}"
+    );
+}
+
 /// Two legs, two shapes: `/ws` keeps `{ev, args}` while `/channel` speaks the renderer's wire.
 #[tokio::test]
 async fn the_peer_leg_keeps_its_own_shape() {
@@ -308,6 +362,12 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
         data["user"].as_str().is_some_and(|u| u.len() == 36),
         "identity carries the bound user as uuid text: {data}"
     );
+    // AND THE LIFECYCLE SAYS IT TOO (MODELING: facts are named as they happened). `identity` is
+    // what only it can carry — the rotated token; `login` is the fact an application binds.
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("login", "login"));
+    assert!(data["user"].as_str().is_some_and(|u| u.len() == 36), "{data}");
+    assert!(data["device"].as_str().is_some(), "{data}");
 
     // Bound now: the same declared-auth event reaches the booth and its answer is DRAWN. The
     // gate is not merely a boolean on a log line — the frame proves the call ran.
@@ -322,6 +382,9 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     let (slot, name, data) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), name.as_str()), ("identity", "identity"));
     assert!(data["user"].is_null(), "logout clears the user: {data}");
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("logout", "logout"));
+    assert!(data["device"].as_str().is_some(), "{data}");
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
     let (slot, name, _) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
