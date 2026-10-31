@@ -222,12 +222,6 @@ impl Gateway {
     /// entry closes the channel, and that is what actually ends the writer (the peer leg's
     /// discipline — a local sender kept across the read loop makes revocation unable to
     /// close anything).
-    /// One message = one ACTION LIST (the renderer's wire since fluxen 460d867: no envelope).
-    pub(crate) fn send_ui(&self, id: u64, ops: Vec<content::Content<serde_json::Value>>) {
-        if let Some(c) = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
-            let _ = c.tx.send(ops);
-        }
-    }
 
 
     pub(crate) fn unregister_ui(&self, id: u64) {

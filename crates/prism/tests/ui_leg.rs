@@ -43,7 +43,15 @@ async fn read_connected(ws: &mut WsClient) -> String {
     // The device id is a uuid: TEXT on this wire (a 128-bit id is not a JSON number), and the same
     // fact also carries the token the page must keep.
     assert!(data["token"].as_str().is_some_and(|t| t.len() == 36), "{data}");
-    data["device"].as_str().expect("device id in identity").to_string()
+    let device = data["device"].as_str().expect("device id in identity").to_string();
+
+    // The CONNECTION fact follows: whoever declared `view:connect` answers it, and the fact
+    // itself reaches the page on the vals plane (a layout that does not bind it ignores it).
+    let (slot, name, data) = recv_speech(ws).await;
+    assert_eq!(slot, "connect", "the connect fact lands in the slot named after it");
+    assert_eq!(name, "connect", "{name}");
+    assert_eq!(data["device"].as_str(), Some(device.as_str()), "{data}");
+    device
 }
 
 /// One raw HTTP GET, full response (the route closes the connection).
