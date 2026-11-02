@@ -367,7 +367,9 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
             "import json, os\nn = json.loads(os.environ['TOOLRUNNER_ARGS']).get('n', 0)\nprint(json.dumps({'total': n * 2 + 1}))\n",
         ),
     ] {
-        let code: Value = ureq::post(&format!("{store_url}/code"))
+        // A code row is scoped since k10r ADR-0024 (it is a vertex of that
+        // corpus's graph), so the door names the scope the turn runs in.
+        let code: Value = ureq::post(&format!("{store_url}/code/37"))
             .send_json(json!({
                 "language": "python",
                 "description": description,
@@ -394,6 +396,22 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
         .into_json()
         .unwrap();
     let skill_id = skill["node_id"].as_u64().unwrap();
+
+    // A task BOUND to the first step (gravity ADR-0003 §3): the binding is an
+    // ordinary fact (k10r ADR-0024 made the code row a vertex, so a fact can point
+    // at it), and the call that finishes that code row closes it — no `move_task`
+    // anywhere in this turn, and none asked for.
+    let opened: Value = ureq::post(&format!("{store_url}/tasks/37"))
+        .send_json(json!({
+            "name": "add three to four",
+            "next": "run the step",
+            "finishes_on": [code_ids[0]],
+            "ts_ms": 1_000,
+        }))
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let task_id = opened["node_id"].as_u64().unwrap();
 
     // The turn's deployment facts are ROWS in its own namespace now (gravity ADR-0007); only the
     // two spawn specs are environment, because they are where the binary lives.
@@ -463,6 +481,24 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
             .unwrap_or_default()
             .contains(PRODUCED),
         "the node's value reached the model: {tool_message}"
+    );
+
+    // The call site closed the work: the task bound to step 0 is `done`, and
+    // nobody had to say so.
+    let tasks: Value = ureq::get(&format!("{store_url}/tasks/37"))
+        .call()
+        .unwrap()
+        .into_json()
+        .unwrap();
+    let bound = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["node_id"].as_u64() == Some(task_id))
+        .expect("the task is still listed");
+    assert_eq!(
+        bound["state"], "done",
+        "the step that finished it closed it: {bound}"
     );
 
     // The write side of the loop (k10r ADR-0016): the turn walked two DIFFERENT
