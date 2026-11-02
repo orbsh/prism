@@ -248,7 +248,10 @@ impl NodeStore {
     /// connection-scale table, a full key scan is the cheap shape).
     pub fn list(&self) -> anyhow::Result<Vec<Node>> {
         let t = self.table();
-        let mut ids: Vec<u64> = t.scan_keys()?.into_iter().map(|k| k.id).collect();
+        let mut ids: Vec<u64> = t
+            .scan_keys(&okm_core::PrefixProbe::empty())
+            .map(|r| r.map(|k| k.id))
+            .collect::<Result<Vec<_>, _>>()?;
         ids.sort();
         let mut rows = Vec::with_capacity(ids.len());
         for id in ids {
