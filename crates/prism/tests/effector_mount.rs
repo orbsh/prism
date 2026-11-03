@@ -170,6 +170,7 @@ async fn effector_mount_remote_call_roundtrip() {
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: vec![],
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .unwrap();

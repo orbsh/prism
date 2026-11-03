@@ -81,6 +81,7 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
             resolution: RouteResolution::Singleton,
             wildcard: false,
         }],
+        concurrency: aura_booth::Concurrency::Queued,
     };
     engine.register(booth).await.unwrap();
     }

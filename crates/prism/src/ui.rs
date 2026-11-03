@@ -137,6 +137,7 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers:
             resolution: aura_booth::RouteResolution::Singleton,
             wildcard: true,
         }],
+        concurrency: aura_booth::Concurrency::Queued,
     };
     match engine.register(booth).await {
         Ok(()) => println!("prism: `{UI_PREFIX}<name>` reaches renderers (booth `{RENDERER_BOOTH}`, prefix route)"),

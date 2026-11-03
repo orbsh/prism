@@ -233,6 +233,7 @@ async fn connect_is_an_event_and_the_application_answers_it() {
                 resolution: aura_booth::RouteResolution::Singleton,
                 wildcard: false,
             }],
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .expect("register the connect probe");
@@ -340,6 +341,7 @@ async fn a_disconnect_is_a_fact_for_the_application() {
                 resolution: aura_booth::RouteResolution::Singleton,
                 wildcard: false,
             }],
+            concurrency: aura_booth::Concurrency::Queued,
         })
         .await
         .expect("register the disconnect probe");

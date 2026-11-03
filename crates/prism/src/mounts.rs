@@ -94,6 +94,7 @@ impl MountDecl {
             max_exec: None,
             hooks: BTreeMap::new(),
             receives: vec![],
+            concurrency: aura_booth::Concurrency::Queued,
         }
     }
 }
