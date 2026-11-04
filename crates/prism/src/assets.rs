@@ -26,6 +26,16 @@ use tokio::net::TcpStream;
 
 use crate::code_export::{plain, Head};
 
+/// THE VENUE'S OWN STYLESHEET (ADR-0017 §8): the page's layout is the application's decision,
+/// so it lives in prism's source and not in the renderer's bundle. Embedded rather than read from
+/// disk — a deployment that copied only the binary still draws a correct page, and there is no
+/// second path to keep in step with `PRISM_ASSETS`. Served at `/app.css`, linked into the entry
+/// document after the bundle's sheets so these rules win without `!important`.
+const APP_CSS: &str = include_str!("../assets/app.css");
+
+/// The path the stylesheet answers on. Reserved: the bundle cannot shadow it.
+const APP_CSS_PATH: &str = "/app.css";
+
 /// The mounted bundle directory (`PRISM_ASSETS`), canonicalized at boot.
 pub struct AssetRoot {
     root: PathBuf,
@@ -69,6 +79,14 @@ impl AssetRoot {
         if !head.is_get() || is_upgrade(head) {
             return false;
         }
+        // The venue's own sheet answers before the bundle is consulted: a file of that name
+        // inside a deployment's bundle is not this file, and must not shadow it.
+        if head.path == APP_CSS_PATH {
+            let body = response_200(APP_CSS.as_bytes(), "text/css; charset=utf-8", false);
+            let _ = stream.write_all(&body).await;
+            let _ = stream.shutdown().await;
+            return true;
+        }
         let Some(rel) = bundle_rel(&head.path) else {
             return false;
         };
@@ -97,6 +115,12 @@ impl AssetRoot {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
+        let mut bytes = bytes;
+        if rel.is_empty() {
+            // THE ENTRY DOCUMENT IS WHERE THE VENUE SPEAKS LAST: its own sheet is linked after
+            // the bundle's, so the page's layout wins by order rather than by specificity.
+            bytes = link_app_css(&bytes);
+        }
         Ok(Some((bytes, content_type(&path), immutable(&path))))
     }
 
@@ -134,6 +158,26 @@ fn bundle_rel(path: &str) -> Option<&str> {
 /// callback cannot answer early, and this branch runs before it.
 fn is_upgrade(head: &Head) -> bool {
     String::from_utf8_lossy(&head.bytes).to_ascii_lowercase().contains("upgrade: websocket")
+}
+
+/// Link the venue's stylesheet into an HTML document: before `</head>` when the document has
+/// one (the bundle's sheets are already linked there, and this must come after them), otherwise
+/// appended — a document with no head still gets the layout it is served with.
+fn link_app_css(html: &[u8]) -> Vec<u8> {
+    let tag = format!("<link rel=\"stylesheet\" href=\"{APP_CSS_PATH}\">");
+    let text = String::from_utf8_lossy(html);
+    let lowered = text.to_ascii_lowercase();
+    let out = match lowered.find("</head>") {
+        Some(at) => {
+            let mut s = String::with_capacity(text.len() + tag.len());
+            s.push_str(&text[..at]);
+            s.push_str(&tag);
+            s.push_str(&text[at..]);
+            s
+        }
+        None => format!("{text}{tag}"),
+    };
+    out.into_bytes()
 }
 
 fn response_200(bytes: &[u8], ctype: &str, immutable: bool) -> Vec<u8> {
@@ -181,6 +225,27 @@ fn immutable(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The venue's sheet is linked into the entry document AFTER the bundle's own sheets:
+    /// order is how the page's layout wins, not specificity.
+    #[test]
+    fn the_app_sheet_is_linked_into_the_entry_document() {
+        let html = b"<html><head><link rel=\"stylesheet\" href=\"/assets/main.css\"></head><body></body></html>";
+        let out = String::from_utf8(link_app_css(html)).expect("utf8");
+        assert!(
+            out.ends_with("</head><body></body></html>") || out.contains("</head><body>"),
+            "the link goes before </head>: {out}"
+        );
+        let ours = out.find("/app.css").expect("the link is there");
+        let bundle = out.find("/assets/main.css").expect("the bundle's sheet stays");
+        assert!(bundle < ours, "after the bundle's sheets: {out}");
+        assert_eq!(out.matches("/app.css").count(), 1, "linked once");
+
+        // A document with no head still gets the layout it is served with.
+        let bare = String::from_utf8(link_app_css(b"<p>hi</p>")).expect("utf8");
+        assert_eq!(bare, "<p>hi</p><link rel=\"stylesheet\" href=\"/app.css\">");
+    }
+
+
     use super::*;
 
     fn root(dir: &Path) -> AssetRoot {

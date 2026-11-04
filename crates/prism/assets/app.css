@@ -1,0 +1,36 @@
+/* The venue's own page CSS: the application's layout lives HERE, not in the renderer.
+ *
+ * The renderer ships a component vocabulary and a default look; the arrangement of a
+ * particular application's page — which column takes the pressure, what a panel does at
+ * a narrow width — is the application's decision, and prism is the application's host.
+ * prism serves this file at /app.css and links it into the entry document, after the
+ * bundle's own sheets so these rules win without !important.
+ */
+
+/* The split the deployment draws (gravity's home page, from the renderer's own example):
+ * the field on the left, the conversation on the right. The bundle already sets the two
+ * baselines (40% / 620px); what it leaves open is what happens once the graph has been
+ * pinned — at that point the two columns still refuse to shrink together and the page
+ * grows a horizontal scrollbar. So: the graph gives way first, the stream gives way next.
+ */
+@media (max-width: 1000px) {
+    .stage-graph {
+        flex: 0 0 240px;
+    }
+
+    .stage-stream {
+        flex-shrink: 1;
+    }
+}
+
+/* The field draws itself into whatever box it is given; an empty field is still a box.
+ * The renderer hides its host until the first payload arrives, which is right for a
+ * component and wrong for a page that reserved the space on purpose.
+ */
+/* Inline wins over a class rule, and the component sets its own `display` inline — so the
+ * page states this as `!important`: on THIS page the field has a reserved box whether or not
+ * a snapshot has arrived, and the component's own hiding is the thing being overridden.
+ */
+.stage-graph .fg-host {
+    display: block !important;
+}
