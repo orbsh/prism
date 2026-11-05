@@ -1,4 +1,4 @@
-//! The renderer's leg: `/channel` speaks fluxen's wire (ADR-0017 §4/§8 + its 2026-10-29 Update).
+//! The renderer's leg: `/channel` speaks fluxen's wire (ADR-0017 §4/§10).
 //!
 //! Two legs, two shapes, and this file is the second one:
 //!
@@ -14,9 +14,10 @@
 //!
 //! Which means prism's own verbs are NOT frames any more. They are `inject` operations (fluxen
 //! ADR 0011): a remote write into the page's vals plane that is indistinguishable from an
-//! in-page emit, so the layout binds it with `kind: local` like any other event. Two slots
-//! carry them — `ui:identity` (who am I: device, user) and `ui:notice` (what failed) —
-//! because the venue is just another emitter on this wire, not a third vocabulary.
+//! in-page emit, so the layout binds it with `kind: local` like any other event. The venue's own
+//! facts ride that same plane — `ui:token` (the credential to keep), `ui:notice` (what failed),
+//! `ui:connect` / `ui:login` / `ui:logout` / `ui:disconnect` — because the venue is just another
+//! emitter on this wire, not a third vocabulary.
 //! Everything else is an ordinary application event, dispatched to the booth NAMED BY THE
 //! EVENT (the peer leg's rule: type == handler == `event`), and its answer is a frame list —
 //! a handler may return a layout, one operation, or a list, and the renderer only draws.

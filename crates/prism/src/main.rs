@@ -26,9 +26,10 @@ async fn main() -> anyhow::Result<()> {
     let posture_raw = std::env::var("PRISM_IDENTITY")
         .map_err(|_| anyhow::anyhow!("PRISM_IDENTITY is required: `required` | `open`"))?;
     let posture = Posture::parse(&posture_raw)?;
-    // The front-end faces (ADR-0017 §1/§8): the renderer's bundle and the `init` answer's
-    // source. Both are deployment facts with a legal absence — a venue with no UI still
-    // serves identity, turns and the peer leg, and the boot log says which faces are live.
+    // The front-end face (ADR-0017 §10): the renderer's bundle. A deployment fact with a legal
+    // absence — a venue with no bundle still serves identity, turns and the peer leg, and the
+    // boot log says which faces are live. The layout itself is the application's answer to
+    // `ui:connect`, not something a deployment declares.
     let deployment = Deployment::from_env()?;
     for line in deployment.describe() {
         println!("{line}");

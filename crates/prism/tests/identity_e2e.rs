@@ -1,4 +1,4 @@
-//! Identity plane e2e (ADR-0017 §2/§3/§7 + the 2026-10-29 token split): device assignment,
+//! Identity plane e2e (ADR-0017 §2/§3/§9 + the 2026-10-29 token split): device assignment,
 //! signup/login as ordinary events, the binding across reconnects via `?token=`, the ONE
 //! connection set with its per-connection auth field driving `broadcast {to: "auth"}`, and the
 //! sender envelope reaching a booth. Registry on a real fjall directory (durability is the feature

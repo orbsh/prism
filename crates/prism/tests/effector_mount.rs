@@ -1,4 +1,4 @@
-//! Effector mount e2e (Phase 1.8 step 2, ADR-0017 §6): a REAL effector
+//! Effector mount e2e (Phase 1.8 step 2, ADR-0017 §8): a REAL effector
 //! dials prism at `/effector/<alias>` — the same URL the handshake will
 //! gate later — registers into the realm's effector table, and a remote
 //! booth call round-trips through the wire (the aura remote_effector

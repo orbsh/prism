@@ -35,12 +35,12 @@
 //!
 //! `/admin/nodes...` (the ADR-0015 approval surface) and the
 //! `/code/{sha256}` export (ADR-0027) ride the same accept loop, as do the
-//! renderer's faces (ADR-0017 §8): `/assets/<rel>` (the static bundle,
-//! `assets.rs`) and `/ui` (the renderer's leg, `ui.rs` — fluxen's
+//! renderer's faces (ADR-0017 §10): `/assets/<rel>` (the static bundle,
+//! `assets.rs`) and `/channel` (the renderer's leg, `ui.rs` — fluxen's
 //! `Message`/`Outflow` wire; the layout is the APPLICATION's answer to the
 //! `ui:connect` event, not a deployment fact). ONE SHAPE PER LEG: `/ws` is
 //! the programmatic leg and keeps
-//! `{ev, args}`; `/ui` carries the renderer's vocabulary. Booth upload is
+//! `{ev, args}`; `/channel` carries the renderer's vocabulary. Booth upload is
 //! the rest of ADR-0017 — deliberately not here; README states the gap so
 //! it reads as scope, not as drift.
 
@@ -136,7 +136,7 @@ pub struct Gateway {
     deployment: Deployment,
     conns: Arc<Mutex<HashMap<u64, Conn>>>,
     next_id: AtomicU64,
-    /// The renderer's connections (ADR-0017 §8). A separate table from `conns` because
+    /// The renderer's connections (ADR-0017 §10). A separate table from `conns` because
     /// the two legs write different frame types — but the SAME identity facts: a device,
     /// and the auth field a `login` writes. Keeping them apart is what lets one leg speak
     /// Accrete without teaching the peer leg about it.
@@ -150,7 +150,7 @@ struct Handshake {
     codec: Codec,
     /// The credential. `?device=` authenticates nothing now, so there is no device field here.
     token: Option<identity::TokenId>,
-    /// Which leg this connection belongs to (ADR-0017 §8): `/ui` = the renderer's wire.
+    /// Which leg this connection belongs to (ADR-0017 §4): `/channel` = the renderer's wire.
     ui: bool,
 }
 
@@ -163,7 +163,7 @@ impl Gateway {
         Self::with_deployment(engine, registry, posture, Deployment::default())
     }
 
-    /// Construct with the front-end faces declared (ADR-0017 §1/§8, PLAN Phase 1.10).
+    /// Construct with the front-end faces declared (ADR-0017 §1/§10, PLAN Phase 1.10).
     pub fn with_deployment(
         engine: Engine,
         registry: identity::Registry,
@@ -373,14 +373,14 @@ impl Gateway {
         if code_export::serve_code_export(&mq, &head, &mut stream).await {
             return Ok(());
         }
-        // The renderer's static face (ADR-0017 §8): plain downloads on the same accept
+        // The renderer's static face (ADR-0017 §10): plain downloads on the same accept
         // loop, no upgrade, no event semantics.
         if let Some(assets) = &self.deployment.assets {
             if assets.serve(&head, &mut stream).await {
                 return Ok(());
             }
         }
-        // Effector dial-in (ADR-0017 §6): `/effector/<alias>` mounts the
+        // Effector dial-in (ADR-0017 §8): `/effector/<alias>` mounts the
         // realm's remote-booth gateway on THIS accept loop. The head is
         // still raw here — the effector's WS carries no `?protocol=`
         // query, so it takes a bare accept over the prefixed stream
@@ -416,7 +416,7 @@ impl Gateway {
         let identified = self.identify(token)?;
         let (device, user0, token) = (identified.device, identified.user, identified.token);
 
-        // The renderer's leg (ADR-0017 §8): its own wire, its own writer. It is routed
+        // The renderer's leg (ADR-0017 §10): its own wire, its own writer. It is routed
         // BEFORE the peer leg's connection table: a renderer is not a caller, and its
         // identity/questions land here, not on the booth plane.
         if ui {

@@ -1,4 +1,4 @@
-//! identity — ADR-0017 §2/§3/§7 and the 2026-10-29 split: accounts, devices, and the token that
+//! identity — ADR-0017 §2/§3/§9 and the 2026-10-29 split: accounts, devices, and the token that
 //! is the ONLY credential.
 //!
 //! Three collections in prism's OWN okm instance (never aura's meta or data plane):

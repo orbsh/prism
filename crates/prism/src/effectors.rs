@@ -1,4 +1,4 @@
-//! Effector dial-in, mounted at `/effector/<alias>` (ADR-0017 §6): the
+//! Effector dial-in, mounted at `/effector/<alias>` (ADR-0017 §8): the
 //! effectors' OUTBOUND WS connections terminate here — prism is the
 //! connection plane — and register into the realm's effector table by
 //! node alias. Semantics are aura's dial-in gateway unchanged (the

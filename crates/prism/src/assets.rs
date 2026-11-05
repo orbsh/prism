@@ -1,4 +1,4 @@
-//! Static bundle serving (ADR-0017 §1/§8, PLAN Phase 1.10): the renderer's bundle is
+//! Static bundle serving (ADR-0017 §1/§10, PLAN Phase 1.10): the renderer's bundle is
 //! served as plain downloads on the SAME accept loop as `/ws` and `/code/` — no event
 //! semantics, no upgrade, no second protocol.
 //!
@@ -26,7 +26,7 @@ use tokio::net::TcpStream;
 
 use crate::code_export::{plain, Head};
 
-/// THE VENUE'S OWN STYLESHEET (ADR-0017 §8): the page's layout is the application's decision,
+/// THE VENUE'S OWN STYLESHEET (ADR-0017 §10): the page's layout is the application's decision,
 /// so it lives in prism's source and not in the renderer's bundle. Embedded rather than read from
 /// disk — a deployment that copied only the binary still draws a correct page, and there is no
 /// second path to keep in step with `PRISM_ASSETS`. Served at `/app.css`, linked into the entry

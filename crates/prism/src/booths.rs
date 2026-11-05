@@ -41,7 +41,7 @@ pub fn echo_booths() -> Vec<Echo> {
         language: "steel",
         source: "(define (echo_steel args) args)".into(),
     });
-    // The identity acceptance booth (ADR-0017 §7 amendment): the
+    // The identity acceptance booth (ADR-0017 §9 amendment): the
     // gateway delivers every handler an envelope {"sender": {device,
     // user}, "args": ...}; echo_sender answers with the sender half,
     // so the wire proves who the plane believes is talking. Its own

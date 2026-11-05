@@ -16,7 +16,7 @@
 //! Authorization is deliberately absent in this landing: the interim
 //! rule (§5, "curl-first until accounts exist") plus the deployment
 //! boundary the posture names (ADR-0015 §7 — `open` deployments live
-//! behind a network they trust). ADR-0017 §5's account folding (step ③,
+//! behind a network they trust). ADR-0017 §7's account folding (step ③,
 //! records hanging under the logged-in user) lands with the account
 //! session surface, not here — these endpoints are exactly where they
 //! will hang.

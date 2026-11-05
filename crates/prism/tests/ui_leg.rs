@@ -390,7 +390,7 @@ async fn the_peer_leg_keeps_its_own_shape() {
 
 /// Application uplinks reach the booth plane: the booth NAMED BY THE EVENT is called, and it is
 /// called with the venue's envelope — `{sender: {device, user}, args: <uplink data>}`. Identity
-/// rides the payload (ADR-0017 §7), never the instance id, so this is the only place a booth can
+/// rides the payload (ADR-0017 §9), never the instance id, so this is the only place a booth can
 /// learn who asked; `echo_steel` hands that envelope straight back, which makes it readable here.
 #[tokio::test]
 async fn an_uplink_dispatches_to_the_booth_named_by_the_event() {
