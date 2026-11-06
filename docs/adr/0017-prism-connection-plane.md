@@ -82,6 +82,22 @@ event through the router: every booth type routed for the event is asked, and a 
 and answers a required-auth event from an anonymous sender with a standard error value — the socket
 stays up. Commerce declares it on "place order"; chat may never.
 
+**Authentication is the venue's; PROVING a credential is a booth's.** The shape is SSO inside the
+platform, with prism as the identity provider. The verbs (`login`, `signup`, `logout`), the
+device↔user binding, the token and the clock are prism's and are not configurable: an application
+never authenticates anybody, never sees a password, a verifier or a token, and never holds a login
+flow — it declares that an event needs a user and receives `sender {device, user}`. What a deployment
+MAY replace is the proof and the surface: a booth of type `auth` answers ONE call (`verify` /
+`register`) with the user id a credential names, and the venue then binds the device and rotates the
+token. The seam is a CALL and never an event, because an emit is persisted as an MQ row (aura,
+`realm/src/events.rs`) and a payload that reaches no route is served by `/admin/dead` over plain
+HTTP (§7) — a password must not travel that way. The shipped booth keeps its credentials in this
+instance (§9) and a deployment that wants an external IdP, an LDAP bind or a redirect flow replaces
+that policy; the venue does not move. A venue with no `auth` booth is legal: it serves the anonymous
+plane and every login attempt answers the standard error naming the missing type. (OAuth2's redirect
+leg — leaving the page and coming back — is NOT built: the renderer has no "leave this page"
+operation and the venue reserves no callback prefix.)
+
 ### 3. One connection set; auth state is a per-connection field
 
 The gateway holds ONE set of connections. Each connection carries its own auth state as a field:
@@ -238,16 +254,25 @@ identity travels as `session = "<booth_type>/<key>"`. The URL segment IS the ali
 `Register` frame repeats it; the two must agree or the connection is refused, because a path that
 admitted any alias would make the URL a lie on every later frame.
 
-### 9. Account registry in okm, id-first access
+### 9. Identity and accounts in okm: id-first access, and no verifier in the venue's own rows
 
-Prism's own okm instance holds four tables. `Account` (ns 50): `Uuid7` key; username, nickname, an
-argon2id PHC hash; a `by_name` index on the username serving exactly one hot path — login-time exact
-lookup. `Device` (ns 51): `Uuid7` key; the binding, an alias, `first_seen`, and the revocation stamp;
-a `by_user` index for a "my devices" list, clock-ordered because the ids are `Uuid7`. `Token` (ns
-53): `Uuid4` key — a credential wants unpredictability, not order; device, user, `issued_at`,
-`revoked_at`; a `by_device` index so rotation, logout and revocation retire the set without a scan.
-`Activity` (ns 54): the clock of §2. Keys are 16 raw bytes and `get`/`scan` hand the key back, so no
-row repeats its own name and there is no key-versus-payload state for discipline to hold.
+Prism's own okm instance holds five tables across TWO owners. The venue's are `Device` (ns 51):
+`Uuid7` key; the binding, an alias, `first_seen`, and the revocation stamp; a `by_user` index for a
+"my devices" list, clock-ordered because the ids are `Uuid7`. `Token` (ns 53): `Uuid4` key — a
+credential wants unpredictability, not order; device, user, `issued_at`, `revoked_at`; a `by_device`
+index so rotation, logout and revocation retire the set without a scan. `Activity` (ns 54): the clock
+of §2. The auth booth's are `Account` (ns 50): `Uuid7` key; username, nickname; a `by_name` index
+serving exactly one hot path — login-time exact lookup. `Credential` (ns 55): `Uuid7` key = the user
+id; the argon2id PHC hash and nothing else.
+
+The last two are two tables because a verifier is not profile data: a listing, a dump or an export of
+accounts must not carry something that can be cracked offline. `Registry::bind_login` is the only
+place a device learns a user, and it takes the id the booth named — the venue cannot verify a
+password and never holds one. A swapped booth stores its own rows wherever it likes; the venue keeps
+only what it has always kept.
+
+Keys are 16 raw bytes and `get`/`scan` hand the key back, so no row repeats its own name and there is
+no key-versus-payload state for discipline to hold.
 
 Everything except the username lookup uses ids: sessions, message senders and authorization checks
 never touch a name. The nickname is value data; the framework never resolves a user by nickname. A
@@ -334,7 +359,13 @@ renderer stays generic and no slot name is compiled into a bundle. Recorded on t
   executor's and the test booths'.
 - ADR-0018 holds on the wire: no payload carries a channel, and a booth that emits a group name as an
   address reaches no renderer.
+- The auth seam is locked by `crates/prism/tests/auth_seam.rs`: a venue with NO `auth` booth answers
+  login and signup with the standard error and keeps serving the anonymous plane, and a SWAPPED booth
+  answers the same call — prism binds the user id it named, and the rotated token restores both the
+  user and the device. The shipped booth's two tables and its one-error-for-both-halves rule are
+  locked by `crates/prism/src/auth.rs`'s unit tests.
 - A deployment declares three facts: `PRISM_IDENTITY` (required, `required` or `open`),
   `PRISM_ASSETS` (optional; absent is a legal install that serves identity, turns and peers), and
-  `PRISM_IDLE_WINDOW` (optional, seconds, default 30 days). A store starts empty: `Account` (50),
-  `Device` (51), `Token` (53), `Activity` (54) are the shape, and no earlier row shape is read.
+  `PRISM_IDLE_WINDOW` (optional, seconds, default 30 days). A store starts empty: the venue's
+  `Device` (51), `Token` (53), `Activity` (54) and the shipped auth booth's `Account` (50),
+  `Credential` (55) are the shape, and no earlier row shape is read.

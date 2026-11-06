@@ -12,6 +12,7 @@ The model of the plane in one place: who the participants are, what crosses the 
 | **user** | the account a device is bound to; anonymous is a state, not a different device | the registry, at `login` |
 | **token** | the credential naming (device, user); the page carries it and nothing else claims identity | the registry |
 | **booth** | an application instance on the plane: declared by a name, told what happened by its own `@on` declarations | the application, at registration |
+| **auth booth** | the platform's own application: proves a credential and draws the login surface | prism ships one; a deployment may register its own `auth` type |
 | **renderer (page)** | draws what arrives, sends `Outflow {dest, id?, data}` upstream | the venue (it is the page's origin) |
 | **the venue (prism)** | forwards, adds and strips the marker, gates on declarations, fans out to devices | — |
 
@@ -72,6 +73,8 @@ The venue reports what happened to a connection as events on the plane, and an a
 
 **Facts are named as they happened; requests are imperative.** `ui:connect` and `ui:login` are things the venue OBSERVED, so the application only has to know about them; `ui:turn.submit` is a thing a client WANTS, so it is named as an act. The difference is a word on the wire, and it is why a lifecycle notice never reads like a command an application might refuse.
 
+**The proof is a booth's; the login is the venue's.** A login is one call: prism asks the `auth` booth whether a credential names a user (`verify`, or `register` for a new one), then binds the device and mints the token itself. The booth may check its own rows, prism's instance, or something else entirely — that choice is a deployment's and needs no venue change. A password never rides the plane: an emit is persisted as a queue row and a payload that reaches no route is served by `/admin/dead` on plain HTTP, so the ask is a call and the answer is a user id. An application never authenticates anybody; it declares that an event needs a user and reads `sender {device, user}`.
+
 ## Islands: one application, several booths
 
 The case this model exists for, spelled out.
@@ -95,7 +98,8 @@ So there is no separate "front-end microservice" problem left to solve: an appli
 
 | owner | what it owns | what it must never hold |
 |-------|--------------|--------------------------|
-| the venue | connections, devices, users, tokens, the routes it was told to serve | an application's vocabulary (a model, a rule, a setting) |
+| the venue | connections, devices, users, the tokens it mints, the routes it was told to serve | an application's vocabulary (a model, a rule, a setting); a password or a verifier |
+| the auth booth | credentials (wherever it likes), the login surface | the binding or the token: a login is the venue's act, once the proof is in |
 | the application | its rows (in its own namespace), its layouts, its event vocabulary | a copy of the venue's reachability facts |
 | the page | the token and what it was handed | anything durable: a page that stores truth is a second source of truth |
 | the platform (aura) | the field: types, routes, the embedded store an application declares | business policy for any application |

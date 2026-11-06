@@ -69,6 +69,8 @@ read-modify-write，会和 alias、绑定互相丢更新。设备行装少变的
 `auth` 块的类型都会门控它的事件。框架只保证"当前 sender 是 device 还是 user"可查询，并在"要求认证
 的 event 遇到匿名 sender"时回标准错误值——socket 保持。商城在"下单"上声明，chat 可以永不声明。
 
+**认证是场馆的；证明一份凭据是摊位的。** 形态是平台内部的 SSO，prism 就是身份提供方。三个动词（`login`、`signup`、`logout`）、device↔user 绑定、token 与那只时钟属于 prism，且不可配置：应用从不认证任何人，从不接触密码、校验值或 token，也从不持有登录流程——它只声明某个 event 需要用户，并收到 `sender {device, user}`。可被部署替换的是「证明」与「界面」：名为 `auth` 的摊位用一次 call（`verify` / `register`）回答「这份凭据指向哪个 user id」，场馆随后绑定设备并轮换 token。接缝是一次 CALL，绝不是事件：每次 emit 都会作为 MQ 行落盘（aura `realm/src/events.rs`），而投递不到任何路由的 payload 会被 `/admin/dead` 以纯 HTTP 原样吐出（§7）——密码不能走那条路。出厂摊位把凭据存在本实例里（§9）；想换成外部 IdP、LDAP 或重定向流程的部署替换的是这份策略，场馆不动。没有 `auth` 摊位的部署是合法的：它照常服务匿名平面，每次登录尝试回标准错误值并点名缺失的类型。（OAuth2 的重定向那一半——离开页面再回来——没有做：渲染器没有「离开本页」的动作，场馆也没有保留回调前缀。）
+
 ### 3. 一个连接集合；认证状态是连接的字段
 
 网关持有**单个**连接集合。每条连接自带认证状态字段：成功 `login` 或一个活着的 token 填入它之前是
@@ -200,15 +202,13 @@ effector 拨出，realm 按 alias 键控 `probes`，residency 身份以 `session
 传递。URL 段**就是** alias 声明，`Register` 帧会重复它；两者必须一致，否则连接被拒——一个放行任意
 alias 的路径会让 URL 在此后每一帧的日志里都成为谎言。
 
-### 9. okm 中的账户注册表，id 优先访问
+### 9. okm 中的身份与账户：id 优先访问，场馆自己的行里没有校验值
 
-prism 自己的 okm 实例持有四张表。`Account`（ns 50）：`Uuid7` key；用户名、昵称、argon2id PHC 哈希；
-用户名上的 `by_name` 索引只服务一条热路径——登录时的精确查找。`Device`（ns 51）：`Uuid7` key；绑定、
-alias、`first_seen` 与撤销标记；`by_user` 索引供"我的设备"列表用，因为 id 是 `Uuid7`，列表按首次
-出现的顺序到达。`Token`（ns 53）：`Uuid4` key——凭据要的是不可预测，不是顺序；device、user、
-`issued_at`、`revoked_at`；`by_device` 索引让轮换、登出与撤销不必扫描就能退役整组。`Activity`
-（ns 54）：§2 的那只时钟。key 是 16 字节原始值，`get`/`scan` 会把 key 一并交回，所以没有行重复自己
-的名字，也不存在只能靠纪律维持的 key-payload 一致。
+prism 自己的 okm 实例持有五张表，分属两个所有者。场馆的是 `Device`（ns 51）：`Uuid7` key；绑定、alias、`first_seen` 与撤销标记；`by_user` 索引供"我的设备"列表用，因为 id 是 `Uuid7`，列表按首次出现的顺序到达。`Token`（ns 53）：`Uuid4` key——凭据要的是不可预测，不是顺序；device、user、`issued_at`、`revoked_at`；`by_device` 索引让轮换、登出与撤销不必扫描就能退役整组。`Activity`（ns 54）：§2 的那只时钟。认证摊位的是 `Account`（ns 50）：`Uuid7` key；用户名、昵称；用户名上的 `by_name` 索引只服务一条热路径——登录时的精确查找。`Credential`（ns 55）：`Uuid7` key = user id；argon2id PHC 哈希，别无一物。
+
+后两张拆开是因为校验值不是资料：账户的列表、dump 或导出不该携带可离线爆破的东西。`Registry::bind_login` 是设备认识用户的唯一入口，它接受的是摊位说出的 id——场馆无法校验密码，也从不持有密码。换掉的摊位把行存在它自己选的地方；场馆只留它一直留着的那些。
+
+key 是 16 字节原始值，`get`/`scan` 会把 key 一并交回，所以没有行重复自己的名字，也不存在只能靠纪律维持的 key-payload 一致。
 
 除用户名查找之外，一切只用 id：会话、消息 sender、授权判断都不碰名字。昵称是 value 数据；框架永不
 按昵称解析用户。登录在铸造新 token 之前先撤销该设备旧的，所以泄漏的 token 活不过下一次登录；登出
@@ -273,6 +273,10 @@ delta，默认）或 `fluxen`（对同一次调用声明的 `slots` 做 `append`
   张表可以漂移——后续的 chat 或商城应用各自定义自己的按事件声明，框架出厂只带 turn executor 与测试
   摊位的那几份。
 - ADR-0018 在线上成立：没有任何载荷携带频道，把群名当地址 emit 的摊位到不了任何渲染器。
+- 认证接缝由 `crates/prism/tests/auth_seam.rs` 锁定：没有 `auth` 摊位的场馆把 login 与 signup 回成
+  标准错误值、并照常服务匿名平面；换一个摊位实现后，prism 绑定的是它说出的 user id，轮换后的 token
+  同时恢复用户与设备。出厂摊位的两张表与「两半失败同一个错误」由 `crates/prism/src/auth.rs` 的单测锁定。
 - 一次部署声明三件事：`PRISM_IDENTITY`（必需，`required` 或 `open`）、`PRISM_ASSETS`（可选；缺失
   是合法安装，照常服务身份、回合与对端）、`PRISM_IDLE_WINDOW`（可选，秒，默认 30 天）。库从空开始：
-  `Account`（50）、`Device`（51）、`Token`（53）、`Activity`（54）就是形状，不读任何更早的行格式。
+  场馆的 `Device`（51）、`Token`（53）、`Activity`（54）与出厂认证摊位的 `Account`（50）、
+  `Credential`（55）就是形状，不读任何更早的行格式。

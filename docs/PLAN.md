@@ -71,10 +71,14 @@ Do not guess the post-refactor shape in advance; the contract is fluxen's to sta
   so turn 2's `set` + patches rewrite the region that turn 1's bubble also binds (`kind: source`):
   each frame is individually correct and the history smears. Fix: a per-device turn counter, slot
   `say.<n>` declared per turn (the caller names slot), and a TWO-TURN e2e that fails today.
-- N2 — LOGIN AS A COMPONENT IN THE LAYOUT. `signup`/`login`/`logout` exist on the leg and answer
-  `<verb>.result`; the UI has no entry point, so a stranger can look but not ask (the turn type
-  declares `turn: true`). Add the form to `layout/venue.yaml` (input + button, `bind: kind: event`)
-  and let the leg's answers arrive as view frames.
+- N2 — THE LOGIN SURFACE IS THE AUTH BOOTH'S. The verbs (`signup`/`login`/`logout`) are the venue's
+  and answer `<verb>.result`; the SEAM is landed (the booth proves a credential, prism binds). What is
+  still missing is the surface: nothing emits a form, and no fact tells an application to ask for one.
+  Next: the `auth` booth creates its own container at the root (the slot name is its own — nobody has
+  to reserve one) and emits the form and the result screen; an application that hits a `turn: true`
+  event while anonymous emits a request fact; the form's submit is `dest: login`, so the credential
+  takes the venue's verb and never the plane. OAuth2's redirect leg is OUT of scope (it needs a
+  renderer "leave this page" operation and a callback prefix here — neither exists).
 - N3 — SESSIONS INSTEAD OF DEVICES. The leg partitions by device id today; sessions are the real
   key, and "connect and see the history" is the `event:ui_init` path already ruled (the venue emits,
   an application booth projects k10r's session into view frames). Needs the session concept first.
@@ -115,11 +119,13 @@ random per-connection value that could be revoked and expired — a TOKEN — an
 only credential, so guessing one inherited a login. The two are now separate, and both are ids
 in the okm sense (16 bytes, never text; `okm_core::Uuid7` / `Uuid4`).
 
-| collection | ns | key | payload |
-|---|---|---|---|
-| `Account` | 50 | `Uuid7` | `username`, `nickname`, `password_hash` |
-| `Device` | 51 | `Uuid7` | `user`, `alias`, `first_seen`, `last_seen`, `revoked` |
-| `Token` | 53 | `Uuid4` | `device`, `user`, `issued_at`, `expires_at`, `revoked_at` |
+| collection | ns | owner | key | payload |
+|---|---|---|---|---|
+| `Account` | 50 | the auth booth | `Uuid7` | `username`, `nickname` |
+| `Device` | 51 | the venue | `Uuid7` | `user`, `alias`, `first_seen`, `revoked` |
+| `Token` | 53 | the venue | `Uuid4` | `device`, `user`, `issued_at`, `revoked_at` |
+| `Activity` | 54 | the venue | `Uuid7` | `at` (the ONE clock) |
+| `Credential` | 55 | the auth booth | `Uuid7` (= user id) | `hash` |
 
 - **No id mirror in any payload.** `scan`/`get`/`scan_keys` hand the key back, so a row does not
   repeat its own name; `HighWater` reduces retire with the watermarked ids.
@@ -175,3 +181,5 @@ in the tree; they come out after those two go green.
 THE LIFECYCLE'S OTHER THREE FACTS, AND THE ADDRESS IS A DEVICE 2026-10-31 (the two 10-30 rulings that had not reached the code): MODELING named four lifecycle facts and `ui.rs` said one. `ui:login {device, user}` now rides beside `ui:identity` on signup and login (the identity fact stays because only it carries the rotated token), `ui:logout {device}` when the binding ends, and `ui:disconnect {device}` BEFORE the connection table forgets the device — the page's socket is gone by then, which is why it is a fact for applications rather than a notice. The other ruling was `channel_id`: gravity's side had stopped emitting it, but `forward` still read it first and fell back to `device`; the fallback is gone, so the retired field now reaches no renderer instead of reaching one by luck. `ui_leg` grew `a_disconnect_is_a_fact_for_the_application` (probe + open + drop + assert on the plane) and the gate test now reads `login`/`logout` where it used to read only `identity`.
 
 ONE CLOCK, AND THE FACT THAT CARRIES THE CREDENTIAL 2026-10-31 (the identity plane rewritten to the shape a page can actually use): `identity {device, user, token}` said three things to three consumers and only one of them was needed — the credential. The venue resolves the device to a user at every uplink and the connection's auth field is the only live copy, so the page receives `token {device, token}` and no user anywhere. Freshness moved off the token entirely: `Activity` (ns 54, one timestamp per device, written on the message path, throttled to a tenth of the window) is the only clock, `Token.expires_at` and `Device.last_seen` are gone, and `PRISM_IDLE_WINDOW` (default 30 days) replaces `PRISM_TOKEN_TTL`. A device silent past the window connects as anonymous but KEEPS its id and alias, is told `notice {reason: idle}`, and a login on the same connection restores it — refusing the auth verbs at the gate would have left the page no way back. The socket is not dropped when the window is crossed: the uplinks stop, which is why `disconnect` needs no bookkeeping. Tables changed shape, so no migration: the store is rebuilt, and prism's instance holds no accounts worth keeping. Tests: `ui_leg` 11/11, including `a_silent_connection_crosses_the_window_and_a_login_reopens_it` and a `recv_named` helper (the two speeches of one landing arrive in either order — MODELING promises none).
+
+THE LOGIN IS PRISM'S, THE PROOF IS A BOOTH'S 2026-11-06 (user ruling: authentication lives here, the customizable half in a booth; SSO inside the platform, prism as the identity provider; OAuth2 later): the three verbs, the device↔user binding, the token and the idle clock stay prism's and are NOT configurable — an application never authenticates, never sees a password or a token, and only declares that an event needs a user. What a deployment may swap is the proof and its surface: booth type `auth` (a fixed platform name, a replaceable implementation) answers ONE call, `verify` or `register`, with the user id a credential names, and prism then binds the device and rotates the token (`Registry::bind_login` is that single door). The seam is a CALL and never an event, on the evidence rather than the taste: every emit is persisted as an MQ row (aura `realm/src/events.rs:171`) and a payload that reaches no route is served by `/admin/dead` as plain JSON on an unauthenticated HTTP face — a password sent as an event would be written to disk and, on any routing fault, published. Consequence for the tables: `Account` (ns 50) carries `username`/`nickname` only, and the argon2id verifier moved to `Credential` (ns 55, key = user id) in the booth's own module — the earlier "password in a side table of the venue" idea is gone with the whole credential, and `identity.rs` no longer contains a hash, a login or a signup. A venue with no `auth` booth is LEGAL: it serves the anonymous plane and answers every login attempt with the standard error naming the missing type. OAuth2's redirect leg (leave the page, come back) is OUT of scope: it needs a renderer "leave this page" operation, which `content::Content` does not have, and a callback prefix the venue does not reserve. Gates, measured: lib 15/15, `auth_seam` 2/2 (no booth → error and the plane still serves; a swapped booth's user id is what prism binds, and the rotated token restores both user and device), identity_e2e 9/9, ui_leg 11/11, echo 8/8, peer_leg 3/3. Still open here: the login SURFACE (N2 — nothing emits a form yet), and user-addressed fan-out (MODELING says a user may be reached through its devices; `ui.rs::forward` still addresses one device).
