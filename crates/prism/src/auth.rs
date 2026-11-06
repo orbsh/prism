@@ -22,7 +22,7 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
-use aura_booth::{Body, BoothType, Concurrency};
+use aura_booth::{Body, BoothType, Concurrency, Ctx, ReceiveDecl, RouteResolution};
 use aura_engine::Engine;
 use okm_core::document::Collection;
 use okm_core::{DocumentEncode, FjallStore, Uuid7};
@@ -39,6 +39,18 @@ pub const AUTH_BOOTH: &str = "auth";
 /// envelope carries `name`.
 pub const OP_VERIFY: &str = "verify";
 pub const OP_REGISTER: &str = "register";
+
+/// The surface's words. SEEKING is an ordinary ui event (a page's control or an application's emit);
+/// the ANSWER is named differently so the booth never hears itself (`ui:auth.screen` is not in its
+/// own subscription list — that is the whole defence against a self-answer loop).
+pub const AUTH_REQUEST: &str = "ui:auth.request";
+pub const AUTH_SCREEN: &str = "ui:auth.screen";
+/// The ONE slot name the platform reserves: the shell declares a region bound to it and the booth
+/// draws into it. A booth cannot own the root — `create` REPLACES the whole page (fluxen
+/// `ui_core/src/ctx.rs`), so the login surface is a region inside the application's layout.
+pub const AUTH_REGION: &str = "auth";
+pub const LOGIN_FACT: &str = "ui:login";
+pub const LOGOUT_FACT: &str = "ui:logout";
 
 /// The account table (ns 50): who a user id IS, for display and for the login lookup. No verifier
 /// here — see `Credential`.
@@ -108,6 +120,15 @@ impl AuthStore {
         Ok(user)
     }
 
+    /// The name to show for a user: the nickname, else the username, else nothing (a booth swapped for
+    /// an external IdP may have no row here at all — the screen then says "you").
+    pub fn display_name(&self, user: UserId) -> anyhow::Result<Option<String>> {
+        let Some(account) = Collection::<_, UserId, Account>::new(self.store.clone()).get(&user)? else {
+            return Ok(None);
+        };
+        Ok(Some(if account.nickname.is_empty() { account.username } else { account.nickname }))
+    }
+
     /// Username → (id, row). The text lives in the index; the row verifies an exact match, because an
     /// index hit may be a prefix collision.
     pub fn find_account(&self, username: &str) -> anyhow::Result<Option<(UserId, Account)>> {
@@ -124,15 +145,44 @@ impl AuthStore {
 pub async fn install(engine: &Engine, store: FjallStore) -> anyhow::Result<()> {
     let booth = BoothType {
         name: AUTH_BOOTH.to_string(),
-        body: Body::Rust(Arc::new(move |_ctx, args| {
+        body: Body::Rust(Arc::new(move |ctx, args| {
             let store = store.clone();
-            Box::pin(async move { handle(store, args).await })
+            Box::pin(async move {
+                // ONE BODY, TWO ENTRY SHAPES: the venue CALLS it with `op` (the proof), and the plane
+                // DELIVERS events to it (the surface). A Rust body is told neither the handler nor the
+                // event, so the payload says which of the two this is.
+                if args.get("op").is_some() {
+                    handle(store, args).await
+                } else {
+                    answer(ctx, store, args).await
+                }
+            })
         })),
         idle_ttl: None,
         max_exec: None,
         hooks: std::collections::BTreeMap::new(),
-        // A call target needs no subscription: the venue is the only caller, and it calls.
-        receives: Vec::new(),
+        // Three exact subscriptions. The answer (`ui:auth.screen`) is deliberately NOT among them: a
+        // booth that hears its own screen re-answers it, and that loop is silent on the wire.
+        receives: vec![
+            ReceiveDecl {
+                event: AUTH_REQUEST.to_string(),
+                entry: None,
+                resolution: RouteResolution::Singleton,
+                wildcard: false,
+            },
+            ReceiveDecl {
+                event: LOGIN_FACT.to_string(),
+                entry: None,
+                resolution: RouteResolution::Singleton,
+                wildcard: false,
+            },
+            ReceiveDecl {
+                event: LOGOUT_FACT.to_string(),
+                entry: None,
+                resolution: RouteResolution::Singleton,
+                wildcard: false,
+            },
+        ],
         concurrency: Concurrency::Queued,
     };
     engine.register(booth).await
@@ -166,6 +216,106 @@ async fn handle(store: FjallStore, args: Value) -> anyhow::Result<Value> {
         }
         other => Err(anyhow!("unknown auth operation `{other}`")),
     }
+}
+
+/// The surface: what the booth DRAWS. A delivery carries the venue's envelope (`name`, `device`,
+/// `sender?`, `data`), so the body learns which fact it is being told from `name` — a Rust body is
+/// handed no event name of its own (aura dispatches `(ctx, args)`).
+async fn answer(ctx: &Ctx, store: FjallStore, envelope: Value) -> anyhow::Result<Value> {
+    let event = envelope.get("name").and_then(Value::as_str).unwrap_or("");
+    let device = envelope.get("device").and_then(Value::as_str).map(str::to_string);
+    let data = envelope.get("data").cloned().unwrap_or(Value::Null);
+    let (screen, what) = match event {
+        AUTH_REQUEST => {
+            let mode = data.get("mode").and_then(Value::as_str).unwrap_or("login");
+            (login_screen(mode), "request")
+        }
+        LOGIN_FACT => {
+            let who = data
+                .get("user")
+                .and_then(Value::as_str)
+                .and_then(|u| u.parse::<UserId>().ok())
+                .and_then(|u| AuthStore::new(store.clone()).display_name(u).ok().flatten())
+                .unwrap_or_else(|| "you".to_string());
+            (signed_in_screen(&who), "login")
+        }
+        LOGOUT_FACT => (login_screen("login"), "logout"),
+        other => {
+            eprintln!("prism: auth booth heard `{other}` and has no screen for it");
+            return Ok(Value::Null);
+        }
+    };
+    // No address, nobody to draw for. The screen is a `set` into the region the shell declares: `set`
+    // and not `append`, because the region holds ONE screen at a time and a second append would stack
+    // a second form under the first.
+    let Some(device) = device else {
+        return Ok(Value::Null);
+    };
+    let ops = vec![json!({ "action": "set", "slot": AUTH_REGION, "data": screen })];
+    ctx.emit(
+        AUTH_SCREEN,
+        json!({ "name": AUTH_SCREEN, "device": device, "data": ops }),
+    )
+    .await?;
+    println!("prism: auth screen `{what}` drawn for device {device}");
+    Ok(Value::Null)
+}
+
+/// A text node. fluxen reads `bind.value` as the value source; `default` is what it shows.
+fn text(value: &str) -> Value {
+    json!({ "type": "text", "bind": { "value": { "kind": "default", "default": value } } })
+}
+
+/// One form field. `kind` is the INPUT type (`text` | `password` | `number`) — a form's fields become
+/// the uplink payload, keyed by `field`.
+fn input(field: &str, kind: &str, hint: &str) -> Value {
+    json!({
+        "type": "input",
+        "bind": { "value": { "kind": "field", "field": field, "type": kind, "default": hint } },
+    })
+}
+
+/// The submit control. fluxen renders a bare button as nothing — a button IS a form's submit, which is
+/// why every screen here is wrapped in a form (a zero-field form submits `{}`).
+fn button(label: &str) -> Value {
+    json!({ "type": "button", "attrs": { "oneshot": true }, "bind": { "value": { "kind": "submit", "default": label } } })
+}
+
+/// One form. `dest` is the BARE event name the page submits to (prism adds the `ui:` marker on the
+/// way in) — `login` / `signup` / `logout` are the venue's verbs, which is what keeps a credential off
+/// the event plane.
+fn form(dest: &str, children: Vec<Value>) -> Value {
+    json!({
+        "type": "form",
+        "attrs": { "class": ["box", "border", "round", "shadow", "col"] },
+        "bind": { "value": { "kind": "dest", "dest": dest } },
+        "children": children,
+    })
+}
+
+/// The sign-in / sign-up screen. `mode` comes from the request (`{mode: "signup"}`), so one booth
+/// serves both and neither the venue nor the shell has to know which is wanted.
+fn login_screen(mode: &str) -> Value {
+    let signup = mode == "signup";
+    let mut children = vec![text(if signup { "create an account" } else { "sign in" })];
+    children.push(input("username", "text", "username"));
+    children.push(input("password", "password", "password"));
+    if signup {
+        children.push(input("nickname", "text", "how you are shown"));
+    }
+    children.push(button(if signup { "create" } else { "sign in" }));
+    form(if signup { "signup" } else { "login" }, children)
+}
+
+/// What a bound connection sees in the region: who it is, and the one control that ends it.
+fn signed_in_screen(who: &str) -> Value {
+    form(
+        "logout",
+        vec![
+            text(&format!("signed in as {who}")),
+            button("sign out"),
+        ],
+    )
 }
 
 fn hash_password(password: &str) -> anyhow::Result<String> {

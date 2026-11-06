@@ -34,3 +34,18 @@
 .stage-graph .fg-host {
     display: block !important;
 }
+/* The platform's own region: prism's auth booth draws the sign-in surface into the `auth` slot, so
+ * where that surface stands on the page is the PAGE's call, not the application's — the shell names
+ * the region (a `placeholder` bound to the slot) and says nothing about placement. Centred, above
+ * the conversation and below the notices (60), which is where a login belongs on a page that did not
+ * stop working while it asks.
+ */
+.float.auth {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 50;
+    width: max-content;
+    max-width: min(90vw, 24rem);
+}

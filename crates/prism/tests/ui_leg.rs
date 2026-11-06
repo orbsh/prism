@@ -160,17 +160,21 @@ async fn recv_ops(ws: &mut WsClient) -> Vec<Value> {
         .unwrap_or_else(|| panic!("not an action list: {frame}"))
 }
 
-/// The venue's own speech: one injected event into `identity` or `notice`.
+/// The venue's own speech: one injected event into the slot named after the fact. The leg ALSO
+/// carries application frames — the shipped auth booth answers `ui:login` with a screen, exactly as
+/// any booth may — so this reader SKIPS what is not the venue's speech instead of asserting on
+/// arrival order. A test that wants the booth's frames reads them directly.
 async fn recv_speech(ws: &mut WsClient) -> (String, String, Value) {
-    let ops = recv_ops(ws).await;
-    assert_eq!(ops.len(), 1, "venue speech is one operation: {ops:?}");
-    let op = &ops[0];
-    assert_eq!(op["action"], "inject", "expected venue speech: {op}");
-    (
-        op["slot"].as_str().unwrap().to_string(),
-        op["name"].as_str().unwrap().to_string(),
-        op["data"].clone(),
-    )
+    loop {
+        let ops = recv_ops(ws).await;
+        let [op] = ops.as_slice() else { continue };
+        if op["action"] != "inject" {
+            continue;
+        }
+        if let (Some(slot), Some(name)) = (op["slot"].as_str(), op["name"].as_str()) {
+            return (slot.to_string(), name.to_string(), op["data"].clone());
+        }
+    }
 }
 
 async fn send_uplink(ws: &mut WsClient, value: Value) {
@@ -450,7 +454,15 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     // Bound now: the same declared-auth event reaches the booth and its answer is DRAWN. The
     // gate is not merely a boolean on a log line — the frame proves the call ran.
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
-    let ops = recv_ops(&mut ws).await;
+    // The shipped auth booth answers the login with its own screen (any booth subscribed to `ui:login`
+    // may), so the drawing this test wants is the one whose slot is the gate's — skip the rest rather
+    // than reading whatever arrived first.
+    let ops = loop {
+        let ops = recv_ops(&mut ws).await;
+        if ops.iter().any(|o| o["slot"] == "secret") {
+            break ops;
+        }
+    };
     assert_eq!(ops.len(), 1, "{ops:?}");
     assert_eq!(ops[0]["slot"], "secret");
 

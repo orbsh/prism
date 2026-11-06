@@ -89,6 +89,23 @@ struct Conn {
 /// fills it.
 pub(crate) type AuthField = Arc<std::sync::Mutex<identity::UserId>>;
 
+/// A text argument from either kind of caller. A PROGRAM sends `{"username": "ada"}`; a PAGE sends the
+/// form's own envelope — fluxen builds every field as `{data, payload}` (`data` is the field's value,
+/// `payload` an optional declared one). One unwrap at the entry keeps that difference out of the login
+/// policy, exactly as gravity's `save` unwraps it for its own rows.
+fn text_field(args: &serde_json::Value, key: &str) -> Option<String> {
+    let value = args.get(key)?;
+    let inner = match value {
+        serde_json::Value::Object(field) => field.get("data").or_else(|| field.get("payload"))?,
+        other => other,
+    };
+    match inner {
+        serde_json::Value::String(s) => Some(s.clone()),
+        other if other.is_number() || other.is_boolean() => Some(other.to_string()),
+        _ => None,
+    }
+}
+
 fn auth_field(user: identity::UserId) -> AuthField {
     Arc::new(std::sync::Mutex::new(user))
 }
@@ -733,8 +750,8 @@ impl Gateway {
         let mut payload = serde_json::Map::new();
         payload.insert("op".into(), serde_json::Value::String(op.to_string()));
         for key in ["username", "password", "nickname"] {
-            if let Some(v) = args.get(key) {
-                payload.insert(key.into(), v.clone());
+            if let Some(v) = text_field(args, key) {
+                payload.insert(key.into(), serde_json::Value::String(v));
             }
         }
         let target = InstanceId {

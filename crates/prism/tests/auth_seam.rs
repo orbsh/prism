@@ -19,6 +19,112 @@ use tokio_tungstenite::tungstenite::Message;
 type WsClient =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Boot with the SHIPPED booth registered — the binary's boot path, which is what the surface test
+/// needs (the store and the subscriptions both live there).
+async fn boot_shipped() -> SocketAddr {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(&dir.keep()).unwrap();
+    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    Gateway::with_auth(&engine, &registry).await.unwrap();
+    Gateway::with_echoes(&engine).await.unwrap();
+    let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { gw.serve(listener).await.unwrap() });
+    addr
+}
+
+/// The renderer's leg: upstream `Outflow`, downstream an array of operations.
+async fn open_ui(addr: SocketAddr) -> WsClient {
+    let url = format!("ws://{addr}/channel?codec=json");
+    let (ws, _) = tokio_tungstenite::connect_async(url).await.expect("renderer handshake");
+    ws
+}
+
+async fn send_uplink(ws: &mut WsClient, value: serde_json::Value) {
+    ws.send(Message::Text(value.to_string())).await.unwrap();
+}
+
+/// One message = one action list. A map here is exactly what the real renderer refuses, so the helper
+/// panics on one instead of quietly matching a shape only this test speaks.
+async fn recv_ops(ws: &mut WsClient) -> Vec<serde_json::Value> {
+    loop {
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("the venue said nothing within 5s")
+            .expect("stream ended")
+            .expect("ws msg");
+        let bytes = match msg {
+            Message::Text(t) => t.into_bytes(),
+            Message::Binary(b) => b,
+            Message::Close(_) => panic!("server closed"),
+            _ => continue,
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("json frame");
+        match value {
+            serde_json::Value::Array(ops) => return ops,
+            other => panic!("the renderer leg carries an action list, not {other}"),
+        }
+    }
+}
+
+/// Read until a `set` into the auth region whose form submits to `dest` arrives. Everything else on
+/// the leg (the connect facts, the token, the login notice) is skipped by name, because the plane
+/// promises no order between two emits.
+async fn screen_into(ws: &mut WsClient, dest: &str) -> serde_json::Value {
+    for _ in 0..12 {
+        let ops = recv_ops(ws).await;
+        for op in ops {
+            if op["action"] != "set" || op["slot"] != prism::auth::AUTH_REGION {
+                continue;
+            }
+            let node = &op["data"];
+            if node["bind"]["value"]["dest"] == dest {
+                return node.clone();
+            }
+        }
+    }
+    panic!("no screen submitting to `{dest}` arrived");
+}
+
+/// THE SURFACE THE BOOTH OWES (N2): a request draws the form into the region, and the venue's own
+/// `ui:login` fact turns it into the signed-in line — the whole reason the proof and the login can
+/// live in different places.
+#[tokio::test]
+async fn the_booth_draws_the_login_screen_and_the_signed_in_line() {
+    let addr = boot_shipped().await;
+    let mut ws = open_ui(addr).await;
+
+    // The seeker is an ordinary uplink with the BARE name; the venue adds the marker.
+    send_uplink(&mut ws, serde_json::json!({"dest": "auth.request", "data": {"mode": "login"}})).await;
+    let login = screen_into(&mut ws, "login").await;
+    let kinds: Vec<&str> = login["children"]
+        .as_array()
+        .expect("a form has children")
+        .iter()
+        .filter_map(|c| c["type"].as_str())
+        .collect();
+    assert_eq!(kinds, vec!["text", "input", "input", "button"], "a heading, two fields, a submit");
+    assert_eq!(login["children"][2]["bind"]["value"]["type"], "password", "the secret is a password field");
+
+    // Signing up is the same screen with one more field, and the venue's answer lands as the
+    // signed-in line — the booth reads its own account row for the name. The payload is written the
+    // way a PAGE writes it: every field is `{data, payload}` (fluxen's form shape), not a bare string.
+    // A venue that read only the flat shape refused real pages with "needs `username`".
+    send_uplink(
+        &mut ws,
+        serde_json::json!({"dest": "signup", "data": {
+            "username": {"data": "ada", "payload": null},
+            "password": {"data": "pw-ada", "payload": null},
+            "nickname": {"data": "Ada", "payload": null},
+        }}),
+    )
+    .await;
+    let signed = screen_into(&mut ws, "logout").await;
+    assert_eq!(signed["children"][0]["bind"]["value"]["default"], "signed in as Ada");
+    assert_eq!(signed["children"][1]["type"], "button", "one control ends the binding");
+}
+
 /// Boot a venue that registers the echoes and NOTHING ELSE — no auth booth. Returns the address plus
 /// the engine, so a test can install a booth of its own afterwards (registration is before serve).
 async fn boot() -> (SocketAddr, Engine) {
