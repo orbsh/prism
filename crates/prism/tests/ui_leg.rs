@@ -37,6 +37,8 @@ async fn boot_with_idle(
         None => Registry::open(&dir.keep()).unwrap(),
     };
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    // The login verbs ask the auth booth (a call); the gate test signs up, so it must be live.
+    Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::with_deployment(engine, registry, prism::nodes::Posture::Open, deployment);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

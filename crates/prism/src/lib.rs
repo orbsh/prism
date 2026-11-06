@@ -3,13 +3,13 @@
 //!
 //! Wire shape (the reduced echo scope, documented in README):
 //! - `GET /ws`, `?protocol=json` selects the debug codec (absent = CBOR,
-//!   fixed for the connection lifetime — ADR-0017 §4); `?device=<id>`
-//!   echoes a known device anchor (§2 restore path).
+//!   fixed for the connection lifetime — ADR-0017 §4); `?token=<uuid>`
+//!   restores a binding (a device id authenticates nothing).
 //! - ONE frame shape both directions: `{ev, args}`; the protocol does
 //!   not encode direction, dispatch cannot branch on it.
 //! - Every connect answers `{"ev": "connected", "args": {device_id,
-//!   user_id|null}}` — the device assignment frame (§2) and the
-//!   restored binding, one frame, no separate handshake.
+//!   user_id|null, token}}` — the device assignment, the restored
+//!   binding and the credential to present next time, one frame.
 //! - Inbound `{ev: "<type>", args}` → `engine.call` the booth named by
 //!   `ev` (instance key `"ws"`, handler = event name — the multi-entry
 //!   model). Identity rides the PAYLOAD (§7 amendment): the handler
@@ -50,6 +50,7 @@
 // crate's own test build; `tests/` crates set the same line at their own root.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
 pub mod assets;
+pub mod auth;
 pub mod booths;
 pub mod admin;
 pub mod code_export;
@@ -252,6 +253,20 @@ impl Gateway {
         let user = identity::anonymous();
         let token = self.registry.issue_token(device, user)?;
         Ok(identity::Identified { device, user, token, idle: false })
+    }
+
+    /// Register the shipped auth booth (`auth.rs`): the venue's verbs need a place to ASK whether a
+    /// credential names a user, and that place is a booth so a deployment can replace the policy
+    /// (an external IdP, an LDAP bind) without prism moving. A venue with no such booth is legal: it
+    /// serves the anonymous plane, and every login answers the standard error naming the missing
+    /// type.
+    pub async fn with_auth(engine: &Engine, registry: &identity::Registry) -> anyhow::Result<()> {
+        auth::install(engine, registry.store()).await?;
+        println!(
+            "prism: auth booth live (`{}`: accounts ns 50, verifiers ns 55)",
+            auth::AUTH_BOOTH
+        );
+        Ok(())
     }
 
     /// Register the language echo booths (steel / python / nushell
@@ -704,21 +719,63 @@ impl Gateway {
 
 
 
-    /// signup/login: registry calls, the auth FIELD of this connection
-    /// is the write (§3 one set — no move, no second collection).
-    /// Both answers are ordinary `<ev>.result` frames; failures are
-    /// error values.
-    async fn auth_event(&self, id: u64, ev: &str, args: serde_json::Value) {
-        let username = args.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let password = args.get("password").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let device = self.identities(id).0;
-        let outcome = if ev == "signup" {
-            let nickname = args.get("nickname").and_then(|v| v.as_str()).unwrap_or("");
-            self.registry.signup(&username, nickname, &password, device)
-        } else {
-            self.registry.login(&username, &password, device)
+    /// One login, from both legs: ASK the auth booth, then do the venue's own act. The ask is a CALL,
+    /// never an event — an emit is persisted as an MQ row (aura `realm/src/events.rs`) and a payload
+    /// that reaches no route is served by the unauthenticated `/admin/dead`, so a password must not
+    /// travel that way. The venue holds no password and no verifier; it holds the binding and the
+    /// token the proven user id earns.
+    pub(crate) async fn login_op(
+        &self,
+        op: &str,
+        device: identity::DeviceId,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<(identity::UserId, identity::TokenId)> {
+        let mut payload = serde_json::Map::new();
+        payload.insert("op".into(), serde_json::Value::String(op.to_string()));
+        for key in ["username", "password", "nickname"] {
+            if let Some(v) = args.get(key) {
+                payload.insert(key.into(), v.clone());
+            }
+        }
+        let target = InstanceId {
+            booth_type: auth::AUTH_BOOTH.to_string(),
+            key: InstanceKey::Singleton,
         };
-        match outcome {
+        let answer = match self.engine.call(target, op, serde_json::Value::Object(payload)).await {
+            Ok(Waited::Done(Ok(v))) => v,
+            Ok(Waited::Done(Err(e))) => return Err(anyhow::anyhow!("{e}")),
+            Ok(Waited::Pending(_)) => {
+                return Err(anyhow::anyhow!(
+                    "auth booth `{}` is cold; no login can be answered here",
+                    auth::AUTH_BOOTH
+                ))
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "no auth booth `{}` is registered: {e}",
+                    auth::AUTH_BOOTH
+                ))
+            }
+        };
+        // The booth names the user; the venue does not second-guess an installed component (its code
+        // already runs in this realm) and never accepts an anonymous answer as a login.
+        let user = answer
+            .get("user")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("auth booth answered without a user"))?
+            .parse::<identity::UserId>()
+            .map_err(|e| anyhow::anyhow!("auth booth answered a malformed user id: {e}"))?;
+        let token = self.registry.bind_login(device, user)?;
+        Ok((user, token))
+    }
+
+    /// signup/login: the booth's answer names the user, then the auth FIELD of this connection is
+    /// written (§3 one set — no move, no second collection) and the token rotates. Both answers are
+    /// ordinary `<ev>.result` frames; failures are error values.
+    async fn auth_event(&self, id: u64, ev: &str, args: serde_json::Value) {
+        let device = self.identities(id).0;
+        let op = if ev == "signup" { auth::OP_REGISTER } else { auth::OP_VERIFY };
+        match self.login_op(op, device, &args).await {
             Ok((user_id, token)) => {
                 if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
                     auth_set(&conn.user, user_id);

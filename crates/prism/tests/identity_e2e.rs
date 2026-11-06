@@ -40,6 +40,9 @@ async fn boot_gw() -> (SocketAddr, std::sync::Arc<Gateway>) {
     // (the guard dropping deletes the files under a live fjall db).
     let registry = Registry::open(&dir.into_path()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    // The venue's login verbs ask a booth; a test that signs up needs it registered, exactly as the
+    // binary's boot does.
+    Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

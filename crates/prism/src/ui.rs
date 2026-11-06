@@ -365,15 +365,10 @@ async fn dispatch(
     let data = uplink.data;
     match asked.as_str() {
         "login" | "signup" => {
-            let username = data.get("username").and_then(Value::as_str).unwrap_or("");
-            let password = data.get("password").and_then(Value::as_str).unwrap_or("");
-            let nickname = data.get("nickname").and_then(Value::as_str).unwrap_or("");
-            let outcome = if asked == "signup" {
-                gw.registry().signup(username, nickname, password, device)
-            } else {
-                gw.registry().login(username, password, device)
-            };
-            match outcome {
+            // ONE SEAM FOR BOTH LEGS: the booth proves the credential (a call — a password never
+            // rides the event plane), the venue binds the device and rotates the token.
+            let op = if asked == "signup" { crate::auth::OP_REGISTER } else { crate::auth::OP_VERIFY };
+            match gw.login_op(op, device, &data).await {
                 Ok((user_id, fresh)) => {
                     crate::auth_set(user, user_id);
                     // Two speeches, both facts: `token` carries what only it can (the ROTATED

@@ -1,16 +1,16 @@
-//! identity — ADR-0017 §2/§3/§9 and the 2026-10-29 split: accounts, devices, and the token that
-//! is the ONLY credential.
+//! identity — ADR-0017 §2/§3/§9 and the 2026-10-29 split: devices, the token that is the ONLY
+//! credential, and the clock that decides whether it still carries permission.
 //!
 //! Three collections in prism's OWN okm instance (never aura's meta or data plane):
 //!
 //! | ns | key | payload |
 //! |---|---|---|
-//! | 50 `Account` | `Uuid7` | username, nickname, argon2id PHC hash |
 //! | 51 `Device`  | `Uuid7` | user, alias, first_seen, revoked |
 //! | 53 `Token`   | `Uuid4` | device, user, issued_at, revoked_at |
 //! | 54 `Activity`| `Uuid7` | at — the clock the idle window reads |
 //!
-//! (ns 52 is the effector node registry — see `nodes.rs`.)
+//! (ns 52 is the effector node registry — see `nodes.rs`; ns 50 `Account` and ns 55 `Credential`
+//! are the auth booth's — see `auth.rs`. This module holds no password and cannot verify one.)
 //!
 //! The keys are `okm_core::Uuid7`/`Uuid4`: 16 raw bytes on the wire, no text anywhere in the
 //! store. Two consequences the shape relies on:
@@ -31,16 +31,14 @@
 //!   clock is the device's last activity (ns 54), so a credential whose device has been idle past
 //!   the window restores nothing either — and the device is still named, which is what lets a login
 //!   keep its alias instead of minting a new device every timeout.
-//! - an **account** is a unique username + password hash; one user, many devices.
+//! - an **account** is a user id the auth booth vouches for; this module only ever records that a
+//!   device is bound to one (`bind_login`). Where the username and its verifier live, and how they
+//!   are proven, is the auth booth's business (`auth.rs`) — the venue holds no password.
 //!
 //! Live auth state stays where it was (§3): a per-connection field in the gateway, never a second
 //! collection. `resolve_token` is the only thing that fills it.
 
 use anyhow::anyhow;
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
-};
 use okm_core::document::Collection;
 use okm_core::{DocumentEncode, KeyEncode, Uuid4, Uuid7};
 
@@ -60,20 +58,6 @@ pub fn anonymous() -> UserId {
 pub fn is_anonymous(user: UserId) -> bool {
     user == anonymous()
 }
-
-/// The account table (prism instance, ns 50). The key is the user id; the password hash is an
-/// argon2id PHC string (salt embedded) — never plaintext, never a home-grown hash.
-#[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
-#[ok_ref(Uuid7)]
-#[ok_index(by_name { fields(username) })]
-#[ok_ns(50)]
-pub struct Account {
-    pub username: String,
-    pub nickname: String,
-    pub password_hash: String,
-}
-
-use __OkmIndex_Account_by_name as AccountByName;
 
 /// The device table (prism instance, ns 51): a stable id, its binding, and the name the user gave
 /// it. `revoked` is the server's stamp (0 = never): a revoked device restores nothing until fresh
@@ -168,6 +152,13 @@ impl Registry {
         crate::nodes::NodeStore::new(self.store.clone())
     }
 
+    /// The same instance, for the auth booth: its two tables (ns 50 accounts, ns 55 verifiers) live
+    /// beside the identity rows because the shipped booth IS prism's — a swapped implementation
+    /// stores wherever it likes and never sees this handle.
+    pub(crate) fn store(&self) -> okm_core::FjallStore {
+        self.store.clone()
+    }
+
     /// Mint a device: a fresh uuid7 row, anonymous, no alias. Nothing is fingerprint-based, so two
     /// browsers that look identical still get two ids.
     pub fn new_device(&self) -> anyhow::Result<DeviceId> {
@@ -215,50 +206,19 @@ impl Registry {
         Ok(())
     }
 
-    /// signup: create the account, bind the device, hand back the first token. The token is what
-    /// the page keeps; the user id is what the connection's auth field takes.
-    pub fn signup(
-        &self,
-        username: &str,
-        nickname: &str,
-        password: &str,
-        device: DeviceId,
-    ) -> anyhow::Result<(UserId, TokenId)> {
-        if username.is_empty() || password.is_empty() {
-            return Err(anyhow!("username and password are required"));
+    /// A login that has already been PROVEN, at the storage level: bind the device to the user the
+    /// auth booth named, and hand back a fresh token. The venue never sees a password — the proof is
+    /// the booth's (`auth.rs`, one call) and this is the step that follows it.
+    ///
+    /// Rotation lives in `issue_token`: a login replaces the device's token set, so a leaked token
+    /// dies at the next login. The bind clears a revocation stamp too — fresh proven credentials are
+    /// the only path back.
+    pub fn bind_login(&self, device: DeviceId, user: UserId) -> anyhow::Result<TokenId> {
+        if is_anonymous(user) {
+            return Err(anyhow!("a login must name a user"));
         }
-        if self.find_account(username)?.is_some() {
-            return Err(anyhow!("username taken"));
-        }
-        let hash = hash_password(password)?;
-        let id = Uuid7::now();
-        let t = Collection::<_, UserId, Account>::new(self.store.clone());
-        t.put(
-            &id,
-            &Account {
-                username: username.to_string(),
-                nickname: nickname.to_string(),
-                password_hash: hash,
-            },
-        )?;
-        self.bind_device(device, id)?;
-        Ok((id, self.issue_token(device, id)?))
-    }
-
-    /// login: resolve username → account, verify the hash, bind the device, rotate the token.
-    /// Unknown name and wrong password share one error string — the gateway does not distinguish
-    /// (user enumeration is deployment's problem, not this table's).
-    pub fn login(
-        &self,
-        username: &str,
-        password: &str,
-        device: DeviceId,
-    ) -> anyhow::Result<(UserId, TokenId)> {
-        let (user, account) =
-            self.find_account(username)?.ok_or_else(|| anyhow!("invalid credentials"))?;
-        verify_password(password, &account.password_hash)?;
         self.bind_device(device, user)?;
-        Ok((user, self.issue_token(device, user)?))
+        self.issue_token(device, user)
     }
 
     /// logout: revoke every token of the device and clear its binding. Idempotent by construction.
@@ -371,15 +331,6 @@ impl Registry {
         Ok(out)
     }
 
-    /// Username → (id, row). The text lives in the index; the row verifies an exact match, because
-    /// an index hit may be a prefix collision.
-    pub fn find_account(&self, username: &str) -> anyhow::Result<Option<(UserId, Account)>> {
-        let t = Collection::<_, UserId, Account>::new(self.store.clone());
-        Ok(t.scan::<AccountByName>(username.as_bytes())?.into_iter().find_map(
-            |(key, row)| row.filter(|a| a.username == username).map(|a| (key.decoded, a)),
-        ))
-    }
-
     fn bind_device(&self, device: DeviceId, user: UserId) -> anyhow::Result<()> {
         let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
         if let Some(mut d) = t.get(&device)? {
@@ -436,21 +387,6 @@ fn idle_from_env() -> u64 {
         .unwrap_or(DEFAULT_IDLE_SECS)
 }
 
-fn hash_password(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
-        .map(|h| h.to_string())
-        .map_err(|e| anyhow!("hash: {e}"))
-}
-
-fn verify_password(password: &str, hash: &str) -> anyhow::Result<()> {
-    let parsed = PasswordHash::new(hash).map_err(|e| anyhow!("stored hash: {e}"))?;
-    Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .map_err(|_| anyhow!("invalid credentials"))
-}
-
 /// Unix milliseconds. Prism's own clock: the value is this venue's, not an ordering authority.
 /// The clock every table in this module stamps with. Public because the venue judges a connection's
 /// idleness against the same milliseconds the rows carry.
@@ -477,7 +413,8 @@ mod tests {
     fn a_token_authenticates_and_a_device_id_alone_does_not() {
         let r = registry();
         let device = r.new_device().unwrap();
-        let (alice, token) = r.signup("alice", "Ali", "pw-a", device).unwrap();
+        let alice = Uuid7::now();
+        let token = r.bind_login(device, alice).unwrap();
 
         assert_eq!(r.resolve_token(token).unwrap(), Some((device, alice)));
         assert_eq!(r.device_user(device).unwrap(), Some(alice));
@@ -500,9 +437,9 @@ mod tests {
     fn login_rotates_and_revocation_kills_the_set() {
         let r = registry();
         let device = r.new_device().unwrap();
-        let (alice, first) = r.signup("alice", "Ali", "pw-a", device).unwrap();
-        let (again, second) = r.login("alice", "pw-a", device).unwrap();
-        assert_eq!(alice, again);
+        let alice = Uuid7::now();
+        let first = r.bind_login(device, alice).unwrap();
+        let second = r.bind_login(device, alice).unwrap();
         assert_ne!(first, second, "rotation mints a new token");
         assert_eq!(r.resolve_token(first).unwrap(), None, "the old token is retired");
         assert_eq!(r.resolve_token(second).unwrap(), Some((device, alice)));
@@ -513,26 +450,25 @@ mod tests {
         assert!(r.revoke_device(Uuid7::now()).is_err(), "unknown device is a refusal");
 
         // Re-login re-binds and clears the stamp — the only way back.
-        let (_, third) = r.login("alice", "pw-a", device).unwrap();
+        let third = r.bind_login(device, alice).unwrap();
         assert_eq!(r.device_user(device).unwrap(), Some(alice));
         assert_eq!(r.resolve_token(third).unwrap(), Some((device, alice)));
     }
 
-    /// Accounts: unique username through the text index, one error for both halves of a failed
-    /// login, and an alias that is display-only.
+    /// Bindings drive the "my devices" list (the `by_user` index, clock-ordered because the ids are
+    /// uuid7), and an alias is display-only — it never participates in a decision, so two devices may
+    /// share one. The credential half of an account lives with the auth booth, not here.
     #[test]
-    fn accounts_are_unique_and_aliases_are_just_names() {
+    fn bindings_are_listed_and_aliases_are_just_names() {
         let r = registry();
         let a = r.new_device().unwrap();
         let b = r.new_device().unwrap();
-        let (alice, _) = r.signup("alice", "Ali", "pw-a", a).unwrap();
-        let (bob, _) = r.signup("bob", "Bo", "pw-b", b).unwrap();
+        let alice = Uuid7::now();
+        let bob = Uuid7::now();
+        r.bind_login(a, alice).unwrap();
+        r.bind_login(b, bob).unwrap();
         assert_ne!(alice, bob);
-        assert!(r.signup("alice", "", "other", b).is_err(), "username unique");
-
-        let e1 = r.login("alice", "nope", a).unwrap_err().to_string();
-        let e2 = r.login("ghost", "nope", a).unwrap_err().to_string();
-        assert_eq!(e1, e2, "enumeration-free");
+        assert!(r.bind_login(a, anonymous()).is_err(), "a login must name a user");
 
         // The "my devices" list reads the by_user index: both rows, newest last.
         let listed = r.devices_of(alice).unwrap();
@@ -554,7 +490,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = Registry::open_with_idle(&dir.into_path(), 1).unwrap();
         let device = r.new_device().unwrap();
-        let (_, token) = r.signup("alice", "Ali", "pw-a", device).unwrap();
+        let token = r.bind_login(device, Uuid7::now()).unwrap();
         r.set_alias(device, "laptop").unwrap();
         assert!(!r.idle(device, now_ms()).unwrap(), "a device that just spoke is not idle");
         std::thread::sleep(std::time::Duration::from_millis(50));

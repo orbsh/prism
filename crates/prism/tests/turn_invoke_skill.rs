@@ -289,7 +289,9 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
     .expect("engine boot");
     // The production boot path registers the echo plane AND gravity's two
     // guests (turn + provider); a test that skipped this would be testing a
-    // gateway that cannot turn at all.
+    // gateway that cannot turn at all. The login verbs ask the auth booth, and
+    // this test signs up.
+    Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine.clone(), registry, prism::nodes::Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
