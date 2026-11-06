@@ -98,6 +98,19 @@ plane and every login attempt answers the standard error naming the missing type
 leg — leaving the page and coming back — is NOT built: the renderer has no "leave this page"
 operation and the venue reserves no callback prefix.)
 
+THE SURFACE IS THE BOOTH'S TOO, and it is one reserved region. A page or an application asks with
+`ui:auth.request` (`{"mode": "signup"}` for the other screen) and the booth answers `ui:auth.screen`
+with ONE `set` into the `auth` slot. That slot is a region the LAYOUT declares — a `placeholder` bound
+to it — because a booth cannot own the root: `create` REPLACES the whole page (`fluxen`,
+`ui_core/src/ctx.rs`), so the login surface is an island inside the application's layout, never a
+second root. `auth` is therefore the ONE slot name the platform reserves, and it is the whole cost an
+application pays: one node in its shell and one control (`dest: auth.request`) that says only "open
+it". The form's own bind is a venue VERB (`login` / `signup` / `logout`), which is what keeps the
+credential off the plane, and the venue's `ui:login` fact is what turns the screen into the signed-in
+line (the booth reads its own account row for the name). Where the region STANDS on the page is the
+page's arrangement and lives in `assets/app.css`, the same file that owns every other layout number
+here.
+
 ### 3. One connection set; auth state is a per-connection field
 
 The gateway holds ONE set of connections. Each connection carries its own auth state as a field:
@@ -364,6 +377,12 @@ renderer stays generic and no slot name is compiled into a bundle. Recorded on t
   answers the same call — prism binds the user id it named, and the rotated token restores both the
   user and the device. The shipped booth's two tables and its one-error-for-both-halves rule are
   locked by `crates/prism/src/auth.rs`'s unit tests.
+- The login SURFACE is locked by `auth_seam`'s third case (a request draws a form whose bind is a venue
+  verb; the venue's `ui:login` redraws it as the signed-in line), and it was measured once on the real
+  stack — prism, fluxen's bundle and gravity's shell in headless chromium: the control draws a
+  two-field form with a `password` input, `{"mode":"signup"}` draws three, and a filled submit ends at
+  "signed in as … / sign out". The case that matters is the PAGE's payload shape (`{data, payload}`
+  per field); a hand-written wire test with flat strings had passed while a real page was refused.
 - A deployment declares three facts: `PRISM_IDENTITY` (required, `required` or `open`),
   `PRISM_ASSETS` (optional; absent is a legal install that serves identity, turns and peers), and
   `PRISM_IDLE_WINDOW` (optional, seconds, default 30 days). A store starts empty: the venue's

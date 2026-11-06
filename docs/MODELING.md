@@ -75,6 +75,8 @@ The venue reports what happened to a connection as events on the plane, and an a
 
 **The proof is a booth's; the login is the venue's.** A login is one call: prism asks the `auth` booth whether a credential names a user (`verify`, or `register` for a new one), then binds the device and mints the token itself. The booth may check its own rows, prism's instance, or something else entirely — that choice is a deployment's and needs no venue change. A password never rides the plane: an emit is persisted as a queue row and a payload that reaches no route is served by `/admin/dead` on plain HTTP, so the ask is a call and the answer is a user id. An application never authenticates anybody; it declares that an event needs a user and reads `sender {device, user}`.
 
+**The surface is the booth's too, and it owns ONE region.** `ui:auth.request` asks (a page's control or an application's emit), `ui:auth.screen` answers with a `set` into the `auth` slot, and the layout declares that slot as a `placeholder` — a booth cannot own the root, because `create` replaces the whole page. So `auth` is the one name the platform reserves: an application ships the region's node and a door that says "open it", and knows nothing else about login. The form's own bind is a venue verb, and the venue's `ui:login` fact is what turns the screen into the signed-in line.
+
 ## Islands: one application, several booths
 
 The case this model exists for, spelled out.
