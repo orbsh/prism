@@ -137,6 +137,9 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers:
             entry: None,
             resolution: aura_booth::RouteResolution::Singleton,
             wildcard: true,
+            // The venue's own fan-out is public: the gate it enforces is on the events it
+            // delivers, never on the act of delivering them.
+            auth: false,
         }],
         concurrency: aura_booth::Concurrency::Queued,
     };
@@ -413,8 +416,13 @@ async fn dispatch(
             // reached by someone it did not agree to serve — the check stays on this side of
             // delivery, not inside every booth.
             let bound = crate::auth_get(user);
-            if identity::is_anonymous(bound) && gw.event_requires_auth(&format!("{UI_PREFIX}{other}")).await {
+            if identity::is_anonymous(bound) && gw.requires_auth(&format!("{UI_PREFIX}{other}")).await {
                 eprintln!("prism: /channel event `{other}` refused: authentication required");
+                // THE VENUE KNOWS IT REFUSED, so it says so as a FACT: an application never learns
+                // this (nothing was delivered to it), and a surface that only opens on a click is a
+                // surface nobody finds at the moment it is needed. The auth booth subscribes; the
+                // notice below is for the person, this is for the platform.
+                say(&gw, device, crate::auth::AUTH_REQUIRED_FACT, json!({"event": other})).await;
                 say(&gw, device, NOTICE_EVENT, json!({"detail": format!("`{other}` requires a bound user")})).await;
                 return;
             }

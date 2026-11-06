@@ -52,20 +52,16 @@ pub fn echo_booths() -> Vec<Echo> {
         language: "steel",
         source: r#"(define (echo_sender args) (hash-ref args "sender"))"#.into(),
     });
-    // The per-event auth enforcement booth (ADR-0017 §2): the
-    // persisted interface_schema carries an `auth` block keyed by
-    // handler name — presence means the event requires a bound user.
-    // The gateway enforces it BEFORE the call (the event never
-    // reaches the booth from an anonymous sender); the handler itself
-    // is the sender proof again. Value is reserved (presence is the
-    // rule; a future form axis would ride it).
+    // The per-event auth enforcement booth (ADR-0017 §2): the DECLARATION says the event needs a
+    // bound user — `auth #t` on the same `on` that names the event. One place per event; there is
+    // no second table to disagree with. The gateway enforces it BEFORE the call (the event never
+    // reaches the booth from an anonymous sender); the handler itself is the sender proof again.
     #[cfg(feature = "steel")]
     v.push(Echo {
         type_name: "echo_priv",
         language: "steel",
-        source: r#"(define (interface_schema args)
-  (hash "auth" (hash "echo_priv" "required")))
-(define (echo_priv args) (hash-ref args "sender"))"#
+        source: r#"(define (echo_priv args) (hash-ref args "sender"))
+(on "echo_priv" (hash "auth" #t) echo_priv)"#
             .into(),
     });
     // The DRAWN-answer booth: a booth answer that is an operation gets drawn, so a caller can
@@ -76,36 +72,36 @@ pub fn echo_booths() -> Vec<Echo> {
         type_name: "echo_frame",
         language: "steel",
         // The renderer leg delivers `ui:<dest>`, so the subscription carries the marker and the
-        // body keeps its plain name — the declaration names the entry point separately. The body
-        // EMITS its answer: a delivery discards a booth's return value, and the page is reached by
-        // an event, never by an answer.
-        source: r#"(define (interface_schema args)
-  (hash "receives" (hash "ui:echo_frame" (hash "entry" "echo_frame"))))
-(define (echo_frame args)
+        // collector binds the handler under that same name (delivery addresses handlers by event
+        // name). The body EMITS its answer: a delivery discards a booth's return value, and the
+        // page is reached by an event, never by an answer.
+        source: r#"(define (echo_frame args)
   (ctx.emit
     (hash "event" "ui:echo_frame.out"
           "data" (hash "name" "ui:echo_frame.out"
                        "device" (hash-ref (hash-ref args "sender") "device")
                        "data" (list (hash-ref args "data")))))
-  "emitted")"#
+  "emitted")
+(on "ui:echo_frame" (hash) echo_frame)"#
             .into(),
     });
     // The same answer, behind the auth declaration: it proves an event is REFUSED anonymously
-    // and DELIVERED once a user is bound, without either half having to be inferred.
+    // and DELIVERED once a user is bound, without either half having to be inferred. The page
+    // addresses it as `ui:echo_gate`; the program leg's bare call addresses the type name, so both
+    // names carry the same declaration — one `on` each, nothing repeated inside a schema block.
     #[cfg(feature = "steel")]
     v.push(Echo {
         type_name: "echo_gate",
         language: "steel",
-        source: r#"(define (interface_schema args)
-  (hash "auth" (hash "echo_gate" "required")
-        "receives" (hash "ui:echo_gate" (hash "entry" "echo_gate"))))
-(define (echo_gate args)
+        source: r#"(define (echo_gate args)
   (ctx.emit
     (hash "event" "ui:echo_gate.out"
           "data" (hash "name" "ui:echo_gate.out"
                        "device" (hash-ref (hash-ref args "sender") "device")
                        "data" (list (hash-ref args "data")))))
-  "emitted")"#
+  "emitted")
+(on "ui:echo_gate" (hash "auth" #t) echo_gate)
+(on "echo_gate" (hash "auth" #t) echo_gate)"#
             .into(),
     });
     #[cfg(feature = "python")]

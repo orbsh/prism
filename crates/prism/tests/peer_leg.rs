@@ -33,17 +33,15 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     if app == "gated" {
-        // A SCRIPT booth, because a declaration is what gates: the persisted `interface_schema`
-        // carries the `auth` block (a Rust body has no schema to persist, so it can never declare
-        // one — the same rule that leaves compiled booths without storage).
+        // A SCRIPT booth, because the near half of this test is the DECLARATION: `auth #t` rides
+        // the very `on` that names the event, and the venue's gate reads the route that
+        // declaration produced. (A Rust body can declare it with `.gated()` on its `on*`.)
         engine
             .register(BoothType::script(
                 "turn_gate",
                 "steel",
-                r#"(define (interface_schema args)
-  (hash "auth" (hash "turn_gate" "required")
-        "receives" (hash "ui:turn.submit" (hash "entry" "turn_gate"))))
-(define (turn_gate args) "gated")"#,
+                r#"(define (turn_gate args) "gated")
+(on "ui:turn.submit" (hash "auth" #t) turn_gate)"#,
             ))
             .await
             .unwrap();
@@ -75,11 +73,16 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
         idle_ttl: None,
         max_exec: None,
         hooks: std::collections::BTreeMap::new(),
+        // The fixture's OWN event, not `ui:turn.submit`: that name is declared by the platform's
+        // real turn booth, and a declaration gates the event for everyone routed to it — an
+        // anonymous peer cannot put someone else's gated event on the plane (that is the next
+        // test's subject). This one is about the transport.
         receives: vec![ReceiveDecl {
-            event: "ui:turn.submit".into(),
+            event: "ui:peer.submit".into(),
             entry: None,
             resolution: RouteResolution::Singleton,
             wildcard: false,
+            auth: false,
         }],
         concurrency: aura_booth::Concurrency::Queued,
     };
@@ -127,7 +130,7 @@ async fn a_program_submits_a_view_event_and_reads_the_answer_back() {
 
     send_json(
         &mut ws,
-        json!({"ev": "ui:turn.submit", "args": {"content": "hi", "channel_id": 1, "member_id": 1}}),
+        json!({"ev": "ui:peer.submit", "args": {"content": "hi", "channel_id": 1, "member_id": 1}}),
     )
     .await;
 

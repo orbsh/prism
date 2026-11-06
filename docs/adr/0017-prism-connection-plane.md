@@ -75,12 +75,15 @@ window stays up: it loses the uplinks, not the connection.
 Nothing evicts a connection for being anonymous or quiet. Public services legitimately live on
 anonymous connections, and what the window takes away is authentication, never the socket.
 
-Whether an event requires an account is a business decision. A booth type declares it in its
-persisted `interface_schema`, and the venue enforces that declaration before delivery, resolving the
-event through the router: every booth type routed for the event is asked, and a type declaring any
-`auth` block gates its events. The framework only makes "is the sender a device or a user" queryable,
-and answers a required-auth event from an anonymous sender with a standard error value — the socket
-stays up. Commerce declares it on "place order"; chat may never.
+Whether an event requires an account is a business decision, and it is written ONCE — on the
+subscription itself. `@on("ui:turn.submit", auth=True)` in a script, `(on "ui:turn.submit" (hash
+"auth" #t) handler)` in steel, `on_as(...).gated()` for a Rust body: the flag rides the declaration
+that already names the event (aura `ReceiveDecl.auth`), and registration carries it onto the route
+(`Route.auth`). The venue therefore asks the ROUTER before delivery — a routed event whose
+declaration is gated refuses an anonymous sender with the standard error value, and the socket stays
+up. There is no second table keyed by event name, in the schema or anywhere else: a name written
+twice is a name that can disagree with itself. The framework only makes "is the sender a device or a
+user" queryable. Commerce declares it on "place order"; chat may never.
 
 **Authentication is the venue's; PROVING a credential is a booth's.** The shape is SSO inside the
 platform, with prism as the identity provider. The verbs (`login`, `signup`, `logout`), the
@@ -110,6 +113,12 @@ credential off the plane, and the venue's `ui:login` fact is what turns the scre
 line (the booth reads its own account row for the name). Where the region STANDS on the page is the
 page's arrangement and lives in `assets/app.css`, the same file that owns every other layout number
 here.
+
+THE REFUSAL OPENS IT. A gated event from an anonymous connection is dropped BEFORE delivery, so no
+application ever learns it happened — a surface that only opens when a person finds a door is a
+surface that is missing at the moment it is needed. So the venue says `ui:auth.required {event}` to
+that device, beside the `notice` that tells the person; the booth subscribes to the former and draws.
+Nothing in the application path participates.
 
 ### 3. One connection set; auth state is a per-connection field
 
@@ -383,6 +392,12 @@ renderer stays generic and no slot name is compiled into a bundle. Recorded on t
   two-field form with a `password` input, `{"mode":"signup"}` draws three, and a filled submit ends at
   "signed in as … / sign out". The case that matters is the PAGE's payload shape (`{data, payload}`
   per field); a hand-written wire test with flat strings had passed while a real page was refused.
+- The refusal OPENS the surface, and that is locked too: `auth_seam`'s fourth case sends a gated event
+  from an anonymous connection and expects the sign-in screen without touching the door — the venue is
+  the only party that knows a delivery was dropped. Measured once on the real stack as well
+  (`window.fluxen.send('echo_gate', {})` on a signed-out page: the region goes from empty to a
+  two-field form). `ui_leg`'s gate case reads BOTH facts of a refusal (`auth.required` and `notice`),
+  in either order.
 - A deployment declares three facts: `PRISM_IDENTITY` (required, `required` or `open`),
   `PRISM_ASSETS` (optional; absent is a legal install that serves identity, turns and peers), and
   `PRISM_IDLE_WINDOW` (optional, seconds, default 30 days). A store starts empty: the venue's

@@ -51,6 +51,12 @@ pub const AUTH_SCREEN: &str = "ui:auth.screen";
 pub const AUTH_REGION: &str = "auth";
 pub const LOGIN_FACT: &str = "ui:login";
 pub const LOGOUT_FACT: &str = "ui:logout";
+/// The venue's REFUSAL fact: said to the device whose gated event it just dropped. The surface would
+/// otherwise only open when a person clicks a door — an application never learns its event was gated,
+/// because nothing was delivered to it. Two spellings for the two consumers: `say` adds the marker
+/// from the bare half, the booth subscribes to the full name.
+pub const AUTH_REQUIRED_FACT: &str = "auth.required";
+pub const AUTH_REQUIRED: &str = "ui:auth.required";
 
 /// The account table (ns 50): who a user id IS, for display and for the login lookup. No verifier
 /// here — see `Credential`.
@@ -169,18 +175,28 @@ pub async fn install(engine: &Engine, store: FjallStore) -> anyhow::Result<()> {
                 entry: None,
                 resolution: RouteResolution::Singleton,
                 wildcard: false,
+                auth: false,
             },
             ReceiveDecl {
                 event: LOGIN_FACT.to_string(),
                 entry: None,
                 resolution: RouteResolution::Singleton,
                 wildcard: false,
+                auth: false,
             },
             ReceiveDecl {
                 event: LOGOUT_FACT.to_string(),
                 entry: None,
                 resolution: RouteResolution::Singleton,
                 wildcard: false,
+                auth: false,
+            },
+            ReceiveDecl {
+                event: AUTH_REQUIRED.to_string(),
+                entry: None,
+                resolution: RouteResolution::Singleton,
+                wildcard: false,
+                auth: false,
             },
         ],
         concurrency: Concurrency::Queued,
@@ -240,6 +256,9 @@ async fn answer(ctx: &Ctx, store: FjallStore, envelope: Value) -> anyhow::Result
             (signed_in_screen(&who), "login")
         }
         LOGOUT_FACT => (login_screen("login"), "logout"),
+        // The venue refused a gated event for this device: that IS the moment to ask, and the
+        // application could not have asked for it (nothing was delivered to it).
+        AUTH_REQUIRED => (login_screen("login"), "required"),
         other => {
             eprintln!("prism: auth booth heard `{other}` and has no screen for it");
             return Ok(Value::Null);

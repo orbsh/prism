@@ -238,6 +238,7 @@ async fn connect_is_an_event_and_the_application_answers_it() {
                 entry: None,
                 resolution: aura_booth::RouteResolution::Singleton,
                 wildcard: false,
+                auth: false,
             }],
             concurrency: aura_booth::Concurrency::Queued,
         })
@@ -346,6 +347,7 @@ async fn a_disconnect_is_a_fact_for_the_application() {
                 entry: None,
                 resolution: aura_booth::RouteResolution::Singleton,
                 wildcard: false,
+                auth: false,
             }],
             concurrency: aura_booth::Concurrency::Queued,
         })
@@ -425,9 +427,14 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
 
     let op = json!({"action": "set", "slot": "secret", "data": {"type": "text"}});
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
-    let (slot, name, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"), "anonymous sender must be refused");
-    assert!(data["detail"].as_str().is_some_and(|d| d.contains("echo_gate")), "{data}");
+    // TWO facts on a refusal: the platform's (`auth.required`, which is what opens the surface — no
+    // application learns of a dropped event) and the person's (`notice`). Both, in either order.
+    let said = recv_named(&mut ws, ["auth.required", "notice"]).await;
+    assert!(
+        said["notice"]["detail"].as_str().is_some_and(|d| d.contains("echo_gate")),
+        "the person is told: {said:?}"
+    );
+    assert_eq!(said["auth.required"]["event"], "echo_gate", "the refusal names what it dropped");
 
     // signup on the leg: the account is prism's, and the answer is a fact, not a verb.
     send_uplink(
@@ -472,8 +479,11 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     let gone = recv_named(&mut ws, ["token", "logout"]).await;
     assert!(gone["logout"]["device"].as_str().is_some(), "{:?}", gone["logout"]);
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
-    let (slot, name, _) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
+    let again = recv_named(&mut ws, ["auth.required", "notice"]).await;
+    assert!(
+        again["notice"]["detail"].as_str().is_some(),
+        "refused again after the logout: {again:?}"
+    );
 }
 
 /// Revocation reaches BOTH legs: a revoked device's renderer socket is closed, not left

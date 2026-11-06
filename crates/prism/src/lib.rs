@@ -602,7 +602,7 @@ impl Gateway {
         // client means stays explicit instead of guessed.
         if ev.starts_with(ui::UI_PREFIX) {
             let (device, user) = self.identities(id);
-            if identity::is_anonymous(user) && self.event_requires_auth(&ev).await {
+            if identity::is_anonymous(user) && self.requires_auth(&ev).await {
                 self.send_to(
                     id,
                     Frame::new(
@@ -632,15 +632,13 @@ impl Gateway {
         }
 
         let (device, user) = self.identities(id);
-        // Per-event auth ENFORCEMENT (ADR-0017 §2): the booth
-        // definition's persisted `auth` block declares which handlers
-        // require a bound user — presence of the handler name is the
-        // rule. The check rides the schema the upload already
-        // persisted (no second declaration surface), runs BEFORE the
-        // call so the event never reaches the booth from an anonymous
-        // sender, and answers with the same `error` VALUE shape as
-        // any other failure (the socket stays up).
-        if identity::is_anonymous(user) && self.handler_requires_auth(&ev).await {
+        // Per-event auth ENFORCEMENT (ADR-0017 §2): the booth's own DECLARATION says which events
+        // need a bound user (`@on(..., auth=True)`, `(on event opts h)`, `.on_as(...).gated()`),
+        // and the route carries that flag — one lookup on the table the delivery itself uses, no
+        // second ACL, no schema parse. Runs BEFORE the call so the event never reaches the booth
+        // from an anonymous sender, and answers with the same `error` VALUE shape as any other
+        // failure (the socket stays up).
+        if identity::is_anonymous(user) && self.requires_auth(&ev).await {
             self.send_to(
                 id,
                 Frame::new(
@@ -814,45 +812,19 @@ impl Gateway {
         }
     }
 
-    /// Does the booth type `ev` declare handler `ev` (the dispatch rule:
-    /// type name == handler name on the echo plane) under its
-    /// interface_schema `auth` block? The read rides the SAME persisted
-    /// copy `ctx.interface_schema` reflects (4.5b) — the upload-time
-    /// introspection is the single declaration surface; an absent schema
-    /// (Rust-native type, or a script that declares none) means no auth
-    /// requirement. An unresolvable declaration is fail-OPEN: a missing
-    /// block never silently blocks a public event — the declared-auth
-    /// case requires the block to be present.
-    pub(crate) async fn handler_requires_auth(&self, ev: &str) -> bool {
-        self.engine
-            .realm
-            .lock()
-            .await
-            .schema_of(ev)
-            .cloned()
-            .flatten()
-            .and_then(|schema| schema.get("auth")?.get(ev).map(|v| v.as_bool().unwrap_or(true)))
-            .unwrap_or(false)
-    }
-
-    /// Does the event require a bound user? The ROUTE is what names the booth now that an event
-    /// no longer names a type (a page's `turn.submit` becomes `ui:turn.submit`, routed to
-    /// whichever booth declared it): every type routed for the event is asked, and a type whose
-    /// persisted `interface_schema` declares ANY `auth` block gates its events. The declaration
-    /// face is unchanged; only the lookup follows the plane instead of the event name.
-    pub(crate) async fn event_requires_auth(&self, ev: &str) -> bool {
+    /// Does the event require a sender with a bound user? The DECLARATION answers, and the answer
+    /// travelled with it: `ReceiveDecl.auth` becomes `Route.auth` at registration, so this is one
+    /// route lookup and no schema parse. The event name lives in exactly one place — the `on` /
+    /// `@on` that subscribes to it — which is why there is no second table to disagree with.
+    /// A name that reaches no route is NOT gated: a public event must never be blocked by an
+    /// unresolvable declaration.
+    pub(crate) async fn requires_auth(&self, name: &str) -> bool {
         let realm = self.engine.realm.lock().await;
         realm
             .router
-            .matches(ev)
+            .matches(name)
             .into_iter()
-            .filter_map(|route| realm.schema_of(&route.booth_type).cloned().flatten())
-            .any(|schema| {
-                schema
-                    .get("auth")
-                    .and_then(|a| a.as_object())
-                    .is_some_and(|m| !m.is_empty())
-            })
+            .any(|route| route.auth)
     }
 
 

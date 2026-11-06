@@ -248,3 +248,21 @@ async fn a_swapped_auth_booth_names_the_user_and_prism_binds_it() {
     assert_eq!(f.ev, "error");
     assert_eq!(f.args["message"].as_str(), Some("invalid credentials"));
 }
+/// THE REFUSAL OPENS THE SURFACE BY ITSELF. A gated event from an anonymous page is dropped BEFORE
+/// delivery, so no application ever learns it happened — a surface that only opens when a person
+/// clicks a door is a surface nobody finds at the moment it is needed. The venue says
+/// `ui:auth.required` and the booth draws, with no application in the loop.
+#[tokio::test]
+async fn a_refused_gated_event_opens_the_login_screen() {
+    let addr = boot_shipped().await;
+    let mut ws = open_ui(addr).await;
+
+    // `echo_gate` declares `auth` in its interface_schema (the echo fixture the gate tests use).
+    send_uplink(&mut ws, serde_json::json!({"dest": "echo_gate", "data": {}})).await;
+
+    let login = screen_into(&mut ws, "login").await;
+    assert_eq!(
+        login["children"][0]["bind"]["value"]["default"], "sign in",
+        "the refusal draws the sign-in screen: {login}"
+    );
+}
