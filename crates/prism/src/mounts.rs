@@ -82,13 +82,13 @@ impl MountDecl {
             body: Body::Remote {
                 node_alias: self.node_alias.clone(),
                 // The body's `language` IS the carrier here: it is what the
-                // node's dispatch selects a session runtime with (aura's
-                // spawn_session key), not the operation's language.
+                // node's dispatch selects an executor with (aura's
+                // executor key), not the operation's language.
                 language: self.carrier.clone(),
                 source: self.runner.clone(),
                 encoding: self.encoding,
             },
-            // No per-type TTL: a mount holds no local session state, and the
+            // No per-type TTL: a mount holds no local executor state, and the
             // node's own residency is the node's business.
             idle_ttl: None,
             max_exec: None,

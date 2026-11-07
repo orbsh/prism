@@ -137,7 +137,7 @@ apart is what lets one leg speak Accrete without teaching the other about it.
 Revocation is the case that proves the field is enough. `POST /admin/revoke {device_id}` clears the
 binding and stamps the device in the registry, clears the auth field on BOTH legs, sends `revoked` to
 a peer connection before closing it, and closes a renderer connection whose sender it drops — a
-revoked device's page does not keep watching a session that no longer exists.
+revoked device's page does not keep watching a connection that no longer exists.
 
 ### 4. Two legs, one shape each: `/ws` and `/channel`
 
@@ -272,7 +272,7 @@ account folding of ADR-0015's step 3 is a decision this plane has not taken.
 
 The existing effector dial-in gateway (register / Call / Result / Host frames) is mounted under
 `/effector/<alias>`. Semantics unchanged: effector dials out, realm keys `probes` by alias, residency
-identity travels as `session = "<booth_type>/<key>"`. The URL segment IS the alias claim and the
+identity travels as `executor = "<booth_type>/<key>"`. The URL segment IS the alias claim and the
 `Register` frame repeats it; the two must agree or the connection is refused, because a path that
 admitted any alias would make the URL a lie on every later frame.
 
@@ -296,7 +296,7 @@ only what it has always kept.
 Keys are 16 raw bytes and `get`/`scan` hand the key back, so no row repeats its own name and there is
 no key-versus-payload state for discipline to hold.
 
-Everything except the username lookup uses ids: sessions, message senders and authorization checks
+Everything except the username lookup uses ids: connections, message senders and authorization checks
 never touch a name. The nickname is value data; the framework never resolves a user by nickname. A
 login revokes the device's older tokens before minting the new one, so a leaked token dies at the next
 login; logout revokes the whole set, clears the binding and hands the page a fresh anonymous token;

@@ -197,7 +197,7 @@ async fn effector_mount_remote_call_roundtrip() {
     }
 
     // Invoke through the wire: prism's mount hands the connection to
-    // the realm, the remote session executes, ctx.invoke resolves
+    // the realm, the remote executor executes, ctx.invoke resolves
     // against prism's own realm.
     let out = engine
         .invoke(

@@ -199,7 +199,7 @@ data}` 发 `ui:<dest>`。sender 是这条 socket 自己的身份，只查一次�
 ### 8. 远程 effector 入口 `/effector/<alias>`
 
 现有 effector 拨入网关（register / Call / Result / Host 帧）挂载到 `/effector/<alias>`。语义不变：
-effector 拨出，realm 按 alias 键控 `probes`，residency 身份以 `session = "<booth_type>/<key>"`
+effector 拨出，realm 按 alias 键控 `probes`，执行单元身份以 `executor = "<booth_type>/<key>"`
 传递。URL 段**就是** alias 声明，`Register` 帧会重复它；两者必须一致，否则连接被拒——一个放行任意
 alias 的路径会让 URL 在此后每一帧的日志里都成为谎言。
 

@@ -282,9 +282,9 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
 
     // The ctx bridge out of the resident guest (ADR-0001 §8): the delivered
     // script calls the sibling nu mount through the host realm and gets its
-    // VALUE back. It runs on a session that has ALREADY served two calls —
+    // VALUE back. It runs on an executor that has ALREADY served two calls —
     // the bridge is per-call state (it carries the enclosing remote call's
-    // id), so a session that kept only its cold-start bridge would answer
+    // id), so an executor that kept only its cold-start bridge would answer
     // "unknown call_id" here instead of reaching the sibling.
     let bridged = engine
         .invoke(
