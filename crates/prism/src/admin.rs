@@ -18,8 +18,7 @@
 //! boundary the posture names (ADR-0015 §7 — `open` deployments live
 //! behind a network they trust). ADR-0017 §7's account folding (step ③,
 //! records hanging under the logged-in user) lands with the account
-//! session surface, not here — these endpoints are exactly where they
-//! will hang.
+//! surface, not here — these endpoints are exactly where they will hang.
 //!
 //! Failure shapes: a malformed or missing field = 400; a decision the
 //! registry refuses (ambiguous pending queue, no such record) = 409 —

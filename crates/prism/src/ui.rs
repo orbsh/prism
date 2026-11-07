@@ -22,8 +22,11 @@
 //! EVENT (the peer leg's rule: type == handler == `event`), and its answer is a frame list —
 //! a handler may return a layout, one operation, or a list, and the renderer only draws.
 //!
-//! The instance key is `Named("ui")`: the renderer's leg is one instance for now. Per-client
-//! partitioning arrives with sessions, and that is the line that will change.
+//! The instance key is `Named("ui")`: the renderer's leg is ONE instance, and it stays one. The
+//! wildcard `renderer` booth only ROUTES, and the fan-out already walks one sender per live
+//! connection, so a per-client instance would add identity to something that holds no per-client
+//! state (PLAN, settled 2026-10-31). A conversation is not this venue's key either: the venue
+//! addresses a device, and which conversation that device is in is the application's own row.
 
 use std::sync::Arc;
 

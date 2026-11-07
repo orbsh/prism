@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(device.encode().len(), 16);
         assert_ne!(r.new_device().unwrap(), device);
 
-        assert_eq!(r.resolve_token(Uuid4::new()).unwrap(), None, "no row, no session");
+        assert_eq!(r.resolve_token(Uuid4::new()).unwrap(), None, "no row, no identity");
 
         // Logout revokes the token AND clears the binding: the same token stops resolving.
         r.logout(device).unwrap();

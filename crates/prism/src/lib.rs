@@ -247,8 +247,9 @@ impl Gateway {
 
     /// Resolve a connection's identity. A LIVE TOKEN names the (device, user) and slides its
     /// expiry; with no usable token the connection is a FRESH anonymous device that gets a token of
-    /// its own, so the client always leaves with something to present next time. An id — device,
-    /// session, anything the client can guess — authenticates nothing (ADR-0018 / the token split).
+    /// its own, so the client always leaves with something to present next time. An id the client can
+    /// produce — a device id, an application's session id, any guessed value — authenticates
+    /// nothing (ADR-0018 / the token split).
     /// What this connect resolves to. A presented token names its device; whether that name still
     /// carries permission is the ACTIVITY CLOCK's answer, not the token's — a device silent past the
     /// window connects as anonymous even though the token is alive, and keeps its id (so its alias

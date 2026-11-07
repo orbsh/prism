@@ -102,7 +102,7 @@ So there is no separate "front-end microservice" problem left to solve: an appli
 |-------|--------------|--------------------------|
 | the venue | connections, devices, users, the tokens it mints, the routes it was told to serve | an application's vocabulary (a model, a rule, a setting); a password or a verifier |
 | the auth booth | credentials (wherever it likes), the login surface | the binding or the token: a login is the venue's act, once the proof is in |
-| the application | its rows (in its own namespace), its layouts, its event vocabulary | a copy of the venue's reachability facts |
+| the application | its rows (in its own namespace), its conversations, its layouts, its event vocabulary | a copy of the venue's reachability facts |
 | the page | the token and what it was handed | anything durable: a page that stores truth is a second source of truth |
 | the platform (aura) | the field: types, routes, the embedded store an application declares | business policy for any application |
 
@@ -117,3 +117,4 @@ The same application may speak to a renderer and to a program. The difference is
 - A transport that learns an application's vocabulary — the moment prism knows what a model is, every application change is a gateway change.
 - A second surface for administration — one vocabulary, one auth story, one client for the product and its settings.
 - A layout that exists only as a deployment file, when the application behind it could state it itself.
+- A conversation as a key of the venue's. The venue addresses a DEVICE and authenticates a USER; which conversation a device is in is a row in the application's own store — krystallizer's session, an append-only log keyed by the application's own `(channel, member)` and read as a projection. So "connect and see the history" is the application answering `ui:connect` with that projection, never a session table here: a session in the transport is the same defect `channel_id` was.
