@@ -551,7 +551,15 @@ async fn dispatch(
             // event shape was retired.
             if event == gravity_booth::CANCEL_EVENT {
                 let target = gravity_booth::turn_instance(&device.to_string());
-                gw.engine.realm.lock().await.stop_set(&target);
+                let realm = gw.engine.realm.lock().await;
+                // A CLICK MEANS "NOW", so it is both actions (aura ADR-0047 §2): the bit
+                // stops the turn at its next boundary, the interrupt stops the wait — which
+                // is the one that reaches a turn parked inside a single provider pull. The
+                // bit is not redundant: a turn that finishes cleanly between chunks should
+                // still record that it was asked to stop, and only the bit is readable from
+                // inside the guest.
+                realm.stop_set(&target);
+                realm.stop_interrupt(&target);
                 return;
             }
             let envelope = json!({
