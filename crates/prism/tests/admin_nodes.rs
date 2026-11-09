@@ -20,7 +20,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 async fn boot() -> (std::net::SocketAddr, NodeStore) {
     let dir = tempfile::tempdir().unwrap();
-    let registry = Registry::open(&dir.into_path()).unwrap();
+    let registry = Registry::open(&dir.keep()).unwrap();
     let nodes = registry.nodes();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
@@ -208,8 +208,7 @@ async fn ws_and_fallthrough_coexist() {
 #[tokio::test]
 async fn a_failed_delivery_is_readable_over_http() {
     let dir = tempfile::tempdir().unwrap();
-    let registry = Registry::open(&dir.into_path()).unwrap();
-    let nodes = registry.nodes();
+    let registry = Registry::open(&dir.keep()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     engine

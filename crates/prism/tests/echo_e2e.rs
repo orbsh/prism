@@ -19,7 +19,7 @@ type WsClient =
 /// the same cfgs as `booths::echo_booths`), return (addr, handles).
 async fn boot() -> SocketAddr {
     let dir = tempfile::tempdir().unwrap();
-    let registry = Registry::open(&dir.into_path()).unwrap();
+    let registry = Registry::open(&dir.keep()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);

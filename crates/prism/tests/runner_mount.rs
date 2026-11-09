@@ -170,7 +170,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
 
     let target = InstanceId {
         booth_type: "runner_nu".into(),
-        key: InstanceKey::Named("session-1".into()),
+        key: InstanceKey::Named("runner-1".into()),
     };
     let invoke = |code: &str| {
         let target = target.clone();
@@ -223,7 +223,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         .invoke(
             InstanceId {
                 booth_type: "runner_py".into(),
-                key: InstanceKey::Named("session-1".into()),
+                key: InstanceKey::Named("runner-1".into()),
             },
             "execute",
             serde_json::json!({
@@ -249,7 +249,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         .unwrap();
     let resident_target = InstanceId {
         booth_type: "runner_py_resident".into(),
-        key: InstanceKey::Named("session-1".into()),
+        key: InstanceKey::Named("runner-1".into()),
     };
     let counter =
         "import json\nSTATE['n'] = STATE.get('n', 0) + 1\nprint(json.dumps({'n': STATE['n']}))";
@@ -291,7 +291,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
             resident_target.clone(),
             "execute",
             serde_json::json!({
-                "code": "import json\nr = ctx_invoke('runner_nu', 'session-1', 'execute', \
+                "code": "import json\nr = ctx_invoke('runner_nu', 'runner-1', 'execute', \
                          {'code': '{sum: (($env.TOOLRUNNER_ARGS | from json | get n) + 3)} | to json', \
                          'args': {'n': 4}})\nprint(json.dumps({'bridged': r}))"
             }),
@@ -322,7 +322,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         .invoke(
             InstanceId {
                 booth_type: "runner_unbuilt".into(),
-                key: InstanceKey::Named("session-1".into()),
+                key: InstanceKey::Named("runner-1".into()),
             },
             "execute",
             serde_json::json!({ "code": "{ok: true} | to json" }),
@@ -357,7 +357,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         .invoke(
             InstanceId {
                 booth_type: "runner_nu".into(),
-                key: InstanceKey::Named("session-1".into()),
+                key: InstanceKey::Named("runner-1".into()),
             },
             "the_caller_made_this_name_up",
             serde_json::json!({

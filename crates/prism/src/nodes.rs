@@ -286,7 +286,7 @@ mod tests {
     fn store() -> NodeStore {
         let dir = tempfile::tempdir().unwrap();
         // Registry owns the directory lock; the node store shares it.
-        let r = crate::identity::Registry::open(&dir.into_path()).unwrap();
+        let r = crate::identity::Registry::open(&dir.keep()).unwrap();
         r.nodes()
     }
 

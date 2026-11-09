@@ -38,7 +38,7 @@ async fn boot_gw() -> (SocketAddr, std::sync::Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
     // Leak the tempdir: the registry must survive for the test's life
     // (the guard dropping deletes the files under a live fjall db).
-    let registry = Registry::open(&dir.into_path()).unwrap();
+    let registry = Registry::open(&dir.keep()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
     // The venue's login verbs ask a booth; a test that signs up needs it registered, exactly as the
     // binary's boot does.

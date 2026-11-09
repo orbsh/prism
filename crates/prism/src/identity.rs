@@ -404,7 +404,7 @@ mod tests {
 
     fn registry() -> Registry {
         let dir = tempfile::tempdir().unwrap();
-        Registry::open(&dir.into_path()).unwrap()
+        Registry::open(&dir.keep()).unwrap()
     }
 
     /// The split, at the storage level: a token authenticates, a device id alone does not, and a
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn a_silent_device_is_idle_but_its_token_still_names_it() {
         let dir = tempfile::tempdir().unwrap();
-        let r = Registry::open_with_idle(&dir.into_path(), 1).unwrap();
+        let r = Registry::open_with_idle(&dir.keep(), 1).unwrap();
         let device = r.new_device().unwrap();
         let token = r.bind_login(device, Uuid7::now()).unwrap();
         r.set_alias(device, "laptop").unwrap();
