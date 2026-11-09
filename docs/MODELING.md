@@ -8,7 +8,7 @@ The model of the plane in one place: who the participants are, what crosses the 
 
 | name | what it is | who issues it |
 |------|------------|---------------|
-| **device** | one connection's identity, and the only reachability the venue knows | the venue, at connect (`?device=` anchors it across a reconnect) |
+| **device** | one connection's identity, and the only reachability the venue knows | the venue, at connect (`?token=` names it across a reconnect — the id itself authenticates nothing) |
 | **user** | the account a device is bound to; anonymous is a state, not a different device | the registry, at `login` |
 | **token** | the credential naming (device, user); the page carries it and nothing else claims identity | the registry |
 | **booth** | an application instance on the plane: declared by a name, told what happened by its own `@on` declarations | the application, at registration |
