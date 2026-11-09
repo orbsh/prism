@@ -587,3 +587,95 @@ async fn a_view_event_for_another_device_is_not_drawn_here() {
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
 }
+
+/// A USER IS AN ADDRESS TOO, and only the venue can deliver one (ADR-0018 §3): a booth cannot
+/// enumerate devices, so "reach that person" is a fan-out here. Two live devices of one account
+/// both receive it, and a third connection that never logged in receives nothing — an account's
+/// reach stops where the binding does.
+#[tokio::test]
+async fn a_user_address_reaches_every_live_device_of_that_account() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut one = open_ui(addr).await;
+    let _one = read_connected(&mut one).await;
+    send_uplink(
+        &mut one,
+        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let landed = recv_named(&mut one, ["token", "login"]).await;
+    let user = landed["login"]["user"]
+        .as_str()
+        .expect("the account the login bound")
+        .to_string();
+
+    // The same account on a second socket — a phone beside the laptop.
+    let mut two = open_ui(addr).await;
+    let _two = read_connected(&mut two).await;
+    send_uplink(
+        &mut two,
+        json!({"dest": "login", "data": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let second = recv_named(&mut two, ["token", "login"]).await;
+    assert_eq!(
+        second["login"]["user"].as_str(),
+        Some(user.as_str()),
+        "one account, two devices: {second:?}"
+    );
+
+    // A socket that never logs in: the account's fan-out must not reach it.
+    let mut three = open_ui(addr).await;
+    let _three = read_connected(&mut three).await;
+
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "ui:sync",
+        json!({"name": "ui:sync", "user": user, "data": {"mark": "for-ada"}}),
+    )
+    .await
+    .expect("emit ui:sync");
+
+    for (who, ws) in [("first", &mut one), ("second", &mut two)] {
+        let given = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(ws)).await;
+        let (slot, name, data) = given.unwrap_or_else(|_| panic!("{who}: the fan-out reaches this device"));
+        assert_eq!(
+            (slot.as_str(), name.as_str()),
+            ("sync", "sync"),
+            "{who}: the slot and the fact are the event's own name"
+        );
+        assert_eq!(data["mark"], "for-ada", "{who}: {data}");
+    }
+
+    // The anonymous one: its next message answers its OWN uplink, which is what "nothing was
+    // delivered here" looks like on a leg that has no silence.
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    send_uplink(&mut three, json!({"dest": "echo_frame", "data": op})).await;
+    let ops = recv_ops(&mut three).await;
+    assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
+}
+
+/// An address that cannot be read is NOT an absent one. `device: 12` used to fall through
+/// `.and_then(as_str)` into the broadcast arm — a typo that reaches every screen in the venue is
+/// the one failure this rule exists for.
+#[tokio::test]
+async fn a_malformed_address_reaches_nobody_rather_than_everybody() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let _device = read_connected(&mut ws).await;
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "ui:typo",
+        json!({"name": "ui:typo", "device": 12, "data": {"mark": "typo"}}),
+    )
+    .await
+    .expect("emit ui:typo");
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
+    let ops = recv_ops(&mut ws).await;
+    assert_eq!(
+        ops[0]["data"]["attrs"]["class"][0], "mine",
+        "a typo is not a broadcast: {ops:?}"
+    );
+}

@@ -102,10 +102,67 @@ pub(crate) struct UiConn {
     pub user: crate::AuthField,
 }
 
+/// Who an emit is for. The wire names ONE address — a `device` (one connection's name) or a
+/// `user` (an account, reached through every device live for it) — and names none for everyone
+/// (ADR-0018 §3: a booth cannot enumerate devices, so cross-device delivery is necessarily a
+/// fan-out the venue performs).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Reach {
+    Device(identity::DeviceId),
+    User(identity::UserId),
+}
+
+/// Read the address the emitter stated. A malformed one is an ERROR, not an absent one:
+/// `device: 12` used to fall through `.and_then(as_str)` into the broadcast arm, which is the
+/// one failure mode where a typo reaches an unrelated screen. Addresses are TEXT because a
+/// 128-bit id does not fit a JSON number (a browser's numbers are f64).
+fn reach_of(payload: &Value) -> Result<Option<Reach>, String> {
+    if let Some(v) = payload.get("device").filter(|v| !v.is_null()) {
+        let text = v
+            .as_str()
+            .ok_or_else(|| format!("`device` is not text: {v}"))?;
+        let id = text
+            .parse::<identity::DeviceId>()
+            .map_err(|e| format!("`device` `{text}`: {e}"))?;
+        return Ok(Some(Reach::Device(id)));
+    }
+    if let Some(v) = payload.get("user").filter(|v| !v.is_null()) {
+        let text = v.as_str().ok_or_else(|| format!("`user` is not text: {v}"))?;
+        let id = text
+            .parse::<identity::UserId>()
+            .map_err(|e| format!("`user` `{text}`: {e}"))?;
+        // Anonymous is a state, not an account: addressing it would reach every signed-out
+        // screen in the venue, which is what a broadcast already means — so say broadcast.
+        if identity::is_anonymous(id) {
+            return Err(format!(
+                "`user` `{text}` is the anonymous sentinel, not an account"
+            ));
+        }
+        return Ok(Some(Reach::User(id)));
+    }
+    Ok(None)
+}
+
+/// Does a live connection receive this emit? ONE predicate for both legs, so the renderer's
+/// fan-out and the peer leg cannot disagree about what an address means. An anonymous
+/// connection is bound to no account, so no `user` reaches it: the idle window and a logout
+/// both keep the device's name and withhold the permission, and this is where that shows.
+pub(crate) fn reached(
+    reach: Option<&Reach>,
+    device: identity::DeviceId,
+    user: identity::UserId,
+) -> bool {
+    match reach {
+        None => true,
+        Some(Reach::Device(d)) => *d == device,
+        Some(Reach::User(u)) => !identity::is_anonymous(user) && user == *u,
+    }
+}
+
 /// Where a booth's DATA payload goes on the programmatic leg: the same event, `{ev, args}`,
 /// to the peer connections it addresses. A renderer draws an operation list; a program reads
 /// the data shape — one emit, two legs (`gravity ADR-0009`'s two renderings).
-pub(crate) type PeerDeliver = Arc<dyn Fn(Option<&str>, Option<&str>, &str, Value) + Send + Sync>;
+pub(crate) type PeerDeliver = Arc<dyn Fn(Option<&Reach>, Option<&str>, &str, Value) + Send + Sync>;
 
 /// Install the venue's one subscription: what the application emits as a VIEW event is
 /// pushed to the renderers (and, as data, to a program). A Rust body because the venue is IN this process — the frames go
@@ -152,10 +209,11 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers:
     }
 }
 
-/// Put an application's frames on the renderers it names. Payload: `{device?: n, frames:
-/// <frame or list>}`; `content` is accepted as a synonym (it is the wire's name for it), and
-/// a bare frame stands alone. The frames are the renderer's vocabulary — the venue does not
-/// interpret them, which is why it can forward a layout, an append and a patch alike.
+/// Put an application's frames on the renderers it addresses. Payload:
+/// `{name, device? | user?, sender?, data}`; an array in `data` is DRAWN and anything else is
+/// injected into the slot named by the event. The frames are the renderer's vocabulary — the
+/// venue does not interpret them, which is why it can forward a layout, an append and a patch
+/// alike.
 pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
     // name is consumed by the dispatcher), so the emitter states it: `name` is the recipient
@@ -166,14 +224,17 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
         return;
     };
     let name = name.strip_prefix(UI_PREFIX).unwrap_or(name).to_string();
-    // Who it is for: the channel, or a single device. `sender` is excluded from the fan-out —
-    // a page does not hear its own input echoed back.
-    // Addresses arrive as TEXT: a uuid is 16 bytes, and a JSON number cannot carry them (JS
-    // Number is f64, so anything past 2^53 loses its tail). The spelling is the codec's business.
-    let target = payload
-        .get("device")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    // Who it is for: one device, or every live device of one account; no address is everyone.
+    // `sender` is excluded either way — a page does not hear its own input echoed back.
+    let reach = match reach_of(&payload) {
+        Ok(reach) => reach,
+        Err(e) => {
+            eprintln!(
+                "prism: view event `{name}` carries an unusable address, nothing delivered: {e}"
+            );
+            return;
+        }
+    };
     let sender = payload
         .get("sender")
         .and_then(|s| s.get("device").and_then(Value::as_str).or_else(|| s.as_str()))
@@ -191,7 +252,7 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     let body = payload.get("data").cloned().unwrap_or_else(|| {
         let mut rest = payload.clone();
         if let Some(o) = rest.as_object_mut() {
-            for k in ["name", "device", "sender"] {
+            for k in ["name", "device", "user", "sender"] {
                 o.remove(k);
             }
         }
@@ -201,7 +262,7 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     // reaches the peer connections the event addresses, as `{ev, args}` — the same event the
     // renderer gets, minus the drawing.
     if !body.is_array() {
-        peers(target.as_deref(), sender.as_deref(), &name, body.clone());
+        peers(reach.as_ref(), sender.as_deref(), &name, body.clone());
     }
     let ops: Vec<Content<Value>> = match body {
         Value::Array(frames) => ops_of(frames, "view"),
@@ -215,7 +276,11 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     let mut sent = 0usize;
     for c in conns.values() {
         let here = c.device.to_string();
-        if target.as_ref().is_some_and(|t| *t != here) || sender.as_ref() == Some(&here) {
+        let user = *c
+            .user
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sender.as_ref() == Some(&here) || !reached(reach.as_ref(), c.device, user) {
             continue;
         }
         let _ = c.tx.send(ops.clone());
@@ -223,7 +288,7 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     }
     if sent == 0 {
         eprintln!(
-            "prism: view event `{name}` reached no renderer (channel {target:?}, sender {sender:?})"
+            "prism: view event `{name}` reached no renderer (address {reach:?}, sender {sender:?})"
         );
     }
 }

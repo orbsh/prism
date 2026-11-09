@@ -336,14 +336,21 @@ impl Gateway {
         // frames. Installed here so every path that serves (tests, `main`) gets it.
         // Two sinks: a renderer draws an operation list, a program reads the data shape.
         let peer_conns = std::sync::Arc::clone(&self.conns);
+        // The peer leg takes the SAME predicate as the renderers: a `user` reaches every live
+        // connection of that account on both legs, or a browser and a CLI would disagree about
+        // who "that person" is.
         let peers: ui::PeerDeliver = std::sync::Arc::new(
-            move |target: Option<&str>, sender: Option<&str>, name: &str, data: serde_json::Value| {
+            move |reach: Option<&ui::Reach>, sender: Option<&str>, name: &str, data: serde_json::Value| {
                 let Ok(conns) = peer_conns.lock() else {
                     return;
                 };
                 for c in conns.values() {
                     let here = c.device.to_string();
-                    if target.is_some_and(|t| t != here) || sender == Some(here.as_str()) {
+                    let user = *c
+                        .user
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if sender == Some(here.as_str()) || !ui::reached(reach, c.device, user) {
                         continue;
                     }
                     let _ = c.tx.send(Frame::new(name, data.clone()));

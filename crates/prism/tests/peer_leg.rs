@@ -31,6 +31,8 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
     let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    // The auth verbs ask the booth (a call), so the account case below signs up on this leg.
+    Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
     if app == "gated" {
         // A SCRIPT booth, because the near half of this test is the DECLARATION: `auth #t` rides
@@ -194,5 +196,66 @@ async fn the_peer_leg_still_dispatches_a_booth_named_by_the_event() {
     // A bare `ev` is a CALL to the booth it names, and this leg answers `<ev>.result` (login and
     // signup do the same). A view event a booth EMITS comes back under its own bare name — the
     // two faces differ because one is a call and the other is an announcement.
+    assert_eq!(frame["ev"], "echo_steel.result", "{frame}");
+}
+
+/// The SAME address predicate on the programmatic leg: a `user` reaches every live connection of
+/// that account, so a CLI and a browser cannot disagree about who "that person" is. A program
+/// that never logged in is bound to no account and hears nothing.
+#[tokio::test]
+async fn a_user_address_reaches_the_programs_of_that_account() {
+    let (addr, gw) = boot("stub").await;
+    let mut one = open_peer(addr).await;
+    let _ = recv_json(&mut one).await;
+    send_json(
+        &mut one,
+        json!({"ev": "signup", "args": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let landed = recv_json(&mut one).await;
+    assert_eq!(landed["ev"], "signup.result", "{landed}");
+    let user = landed["args"]["user_id"]
+        .as_str()
+        .expect("the account the signup bound")
+        .to_string();
+
+    let mut two = open_peer(addr).await;
+    let _ = recv_json(&mut two).await;
+    send_json(
+        &mut two,
+        json!({"ev": "login", "args": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let landed = recv_json(&mut two).await;
+    assert_eq!(
+        landed["args"]["user_id"].as_str(),
+        Some(user.as_str()),
+        "one account, two sockets: {landed}"
+    );
+
+    let mut stranger = open_peer(addr).await;
+    let _ = recv_json(&mut stranger).await;
+
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "ui:sync",
+        json!({"name": "ui:sync", "user": user, "data": {"mark": "for-ada"}}),
+    )
+    .await
+    .expect("emit ui:sync");
+
+    for (who, ws) in [("first", &mut one), ("second", &mut two)] {
+        let given = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(ws)).await;
+        let frame = given.unwrap_or_else(|_| panic!("{who}: the fan-out reaches this program"));
+        assert_eq!(frame["ev"], "sync", "{who}: the address is not on the peer leg's frame");
+        assert_eq!(frame["args"]["mark"], "for-ada", "{who}: {frame}");
+    }
+
+    // The stranger's next frame is its own call's answer: nothing was delivered to it.
+    send_json(&mut stranger, json!({"ev": "echo_steel", "args": {"a": 1}})).await;
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(&mut stranger))
+        .await
+        .expect("the echo answers");
     assert_eq!(frame["ev"], "echo_steel.result", "{frame}");
 }
