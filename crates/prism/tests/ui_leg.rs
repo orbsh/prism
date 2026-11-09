@@ -679,3 +679,42 @@ async fn a_malformed_address_reaches_nobody_rather_than_everybody() {
         "a typo is not a broadcast: {ops:?}"
     );
 }
+
+/// The device list on the renderer's leg: the page asks, the venue answers with the FACT `devices`
+/// (into the slot named after it), and a name rides back the same way. Anonymous is told through a
+/// notice — the same refusal a program reads as an error value.
+#[tokio::test]
+async fn a_page_can_ask_for_its_accounts_devices() {
+    let (addr, _gw) = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    read_connected(&mut ws).await;
+
+    send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"), "{data}");
+
+    send_uplink(
+        &mut ws,
+        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    recv_named(&mut ws, ["token", "login"]).await;
+
+    send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("devices", "devices"), "{data}");
+    let rows = data["devices"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "one device so far: {data}");
+    assert_eq!(rows[0]["current"], true, "{data}");
+    assert_eq!(rows[0]["alias"], "", "unnamed until the person names it: {data}");
+
+    send_uplink(&mut ws, json!({"dest": "alias", "data": {"alias": "laptop"}})).await;
+    let (slot, name, data) = recv_speech(&mut ws).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("alias", "alias"), "{data}");
+    assert_eq!(data["alias"], "laptop", "{data}");
+
+    // The list reads the name back — the rename was storage, not a receipt.
+    send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
+    let (_, _, data) = recv_speech(&mut ws).await;
+    assert_eq!(data["devices"][0]["alias"], "laptop", "{data}");
+}

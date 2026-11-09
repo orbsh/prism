@@ -259,3 +259,70 @@ async fn a_user_address_reaches_the_programs_of_that_account() {
         .expect("the echo answers");
     assert_eq!(frame["ev"], "echo_steel.result", "{frame}");
 }
+
+/// The account's devices are the VENUE's to list (a booth cannot enumerate devices): both rows
+/// arrive, the one asking is marked, an anonymous socket is refused with an error VALUE and keeps
+/// its socket — and `alias` renames the caller's own device, display only.
+#[tokio::test]
+async fn a_device_list_belongs_to_the_account() {
+    let (addr, _gw) = boot("stub").await;
+    let mut one = open_peer(addr).await;
+    let _ = recv_json(&mut one).await;
+    send_json(&mut one, json!({"ev": "devices"})).await;
+    let refused = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(&mut one))
+        .await
+        .expect("a refusal is an answer, not a silence");
+    assert_eq!(refused["ev"], "error", "{refused}");
+    assert!(
+        refused["args"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("authentication required"),
+        "{refused}"
+    );
+
+    send_json(
+        &mut one,
+        json!({"ev": "signup", "args": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let _ = recv_json(&mut one).await;
+
+    let mut two = open_peer(addr).await;
+    let _ = recv_json(&mut two).await;
+    send_json(
+        &mut two,
+        json!({"ev": "login", "args": {"username": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let _ = recv_json(&mut two).await;
+
+    // The name is the person's own, and the answer says the name back.
+    send_json(&mut two, json!({"ev": "alias", "args": {"alias": "  phone  "}})).await;
+    let named = recv_json(&mut two).await;
+    assert_eq!(named["ev"], "alias.result", "{named}");
+    assert_eq!(named["args"]["alias"], "phone", "trimmed on the way in: {named}");
+
+    send_json(&mut two, json!({"ev": "devices"})).await;
+    let listed = recv_json(&mut two).await;
+    assert_eq!(listed["ev"], "devices.result", "{listed}");
+    let rows = listed["args"]["devices"].as_array().expect("rows");
+    assert_eq!(rows.len(), 2, "both devices of the account: {listed}");
+    let mine = rows
+        .iter()
+        .find(|r| r["current"] == true)
+        .expect("the asking connection is marked");
+    assert_eq!(mine["alias"], "phone", "{mine}");
+    let other = rows
+        .iter()
+        .find(|r| r["current"] == false)
+        .expect("the other device is listed too");
+    assert!(other["device"].as_str().is_some_and(|d| d.len() == 36), "{other}");
+    assert!(other["first_seen"].as_u64().is_some(), "{other}");
+
+    // A name is display only: an empty one is refused as an error value, not stored as the name.
+    send_json(&mut two, json!({"ev": "alias", "args": {"alias": "   "}})).await;
+    let refused = recv_json(&mut two).await;
+    assert_eq!(refused["ev"], "error", "{refused}");
+    assert_eq!(refused["args"]["ev"], "alias", "{refused}");
+}

@@ -79,6 +79,13 @@ pub const CONNECT_EVENT: &str = "connect";
 /// (signup included), `logout` the binding ending, `disconnect` the connection going away.
 pub const LOGIN_EVENT: &str = "login";
 pub const LOGOUT_EVENT: &str = "logout";
+
+/// The account's device list, said to the page that asked: the answer lands in the slot named
+/// after the fact, like every other piece of venue speech.
+pub const DEVICES_EVENT: &str = "devices";
+
+/// A device was renamed. Display only — the fact carries the device and its new name.
+pub const ALIAS_EVENT: &str = "alias";
 pub const DISCONNECT_EVENT: &str = "disconnect";
 
 /// The renderer connection table: id → connection. The venue owns it, the forwarding booth
@@ -478,6 +485,39 @@ async fn dispatch(
                 say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
             }
         },
+        // The account's own devices, on this leg too: the venue answers with a FACT (the page
+        // binds slot `devices`), because a booth cannot enumerate devices either. Anonymous gets
+        // the same refusal a program gets, as a notice the person can read.
+        "devices" => match gw.device_rows(device, crate::auth_get(user)) {
+            Ok(rows) => {
+                say(
+                    &gw,
+                    device,
+                    DEVICES_EVENT,
+                    json!({ "device": device.to_string(), "devices": rows }),
+                )
+                .await
+            }
+            Err(e) => say(&gw, device, NOTICE_EVENT, json!({ "detail": e.to_string() })).await,
+        },
+        // `alias` names THIS device: the connection's own row, so it needs no address and no
+        // permission — a name is not a decision.
+        "alias" => {
+            let named = crate::clean_alias(data.get("alias").and_then(Value::as_str).unwrap_or_default())
+                .and_then(|alias| gw.registry().set_alias(device, &alias).map(|()| alias));
+            match named {
+                Ok(alias) => {
+                    say(
+                        &gw,
+                        device,
+                        ALIAS_EVENT,
+                        json!({ "device": device.to_string(), "alias": alias }),
+                    )
+                    .await
+                }
+                Err(e) => say(&gw, device, NOTICE_EVENT, json!({ "detail": e.to_string() })).await,
+            }
+        }
         other => {
             // THE DECLARATION STILL GATES AT THE VENUE. An anonymous connection never gets to
             // put the event on the plane at all, so a booth that declared `auth` cannot be

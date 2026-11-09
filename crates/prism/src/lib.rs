@@ -118,6 +118,21 @@ pub(crate) fn auth_set(field: &AuthField, user: identity::UserId) {
     *field.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = user;
 }
 
+/// A device name, as the person typed it. Display only — it never takes part in a decision, so two
+/// devices may share one; the bound is there to keep a list readable and a frame small. Empty is
+/// refused here rather than stored, because an empty row already means "show the id".
+pub(crate) fn clean_alias(raw: &str) -> anyhow::Result<String> {
+    let alias = raw.trim();
+    if alias.is_empty() {
+        anyhow::bail!("`alias` must not be empty (an unnamed device shows its id)");
+    }
+    let width = alias.chars().count();
+    if width > 64 {
+        anyhow::bail!("`alias` is too long: {width} characters, at most 64");
+    }
+    Ok(alias.to_string())
+}
+
 /// The venue's optional face: the renderer's static bundle. A DEPLOYMENT FACT with a legal
 /// absence — an install that serves identity/turns/peers and no UI is a real deployment, and
 /// it says so at boot. The LAYOUT is not here: it is the application's answer to
@@ -591,6 +606,49 @@ impl Gateway {
                 }
                 return;
             }
+            // ACCOUNT VERBS THE VENUE OWNS (ADR-0017 §7): a device list belongs to the account, and
+            // no booth can answer it — a booth cannot enumerate devices. `devices` reads the
+            // `by_user` index (uuid7 order = first-seen order); `alias` names one of the caller's
+            // own devices, and it is display only.
+            "devices" => {
+                let (device, user) = self.identities(id);
+                match self.device_rows(device, user) {
+                    Ok(rows) => self.send_to(
+                        id,
+                        Frame::new("devices.result", serde_json::json!({ "devices": rows })),
+                    ),
+                    Err(e) => self.send_to(
+                        id,
+                        Frame::new(
+                            "error",
+                            serde_json::json!({ "ev": "devices", "message": e.to_string() }),
+                        ),
+                    ),
+                }
+                return;
+            }
+            "alias" => {
+                let device = self.identities(id).0;
+                let named = clean_alias(args.get("alias").and_then(|v| v.as_str()).unwrap_or_default())
+                    .and_then(|alias| self.registry.set_alias(device, &alias).map(|()| alias));
+                match named {
+                    Ok(alias) => self.send_to(
+                        id,
+                        Frame::new(
+                            "alias.result",
+                            serde_json::json!({ "device_id": device.to_string(), "alias": alias }),
+                        ),
+                    ),
+                    Err(e) => self.send_to(
+                        id,
+                        Frame::new(
+                            "error",
+                            serde_json::json!({ "ev": "alias", "message": e.to_string() }),
+                        ),
+                    ),
+                }
+                return;
+            }
             "broadcast" => {
                 let to_auth = args.get("to").and_then(|v| v.as_str()) == Some("auth");
                 self.broadcast_frame(Frame::new("broadcast", args), to_auth);
@@ -818,6 +876,33 @@ impl Gateway {
                 self.send_to(id, Frame::new("error", serde_json::json!({"ev": ev, "message": e.to_string()})))
             }
         }
+    }
+
+    /// The account's devices, shaped for the wire — the one answer no booth can produce, because a
+    /// booth cannot enumerate devices. Ids travel as TEXT (a 128-bit id does not fit a JSON
+    /// number), `alias` is the name the person gave (empty means "show the id"), and `current`
+    /// marks the connection that asked. Anonymous has no list: a device list is a property of an
+    /// account, and a login is what binds one.
+    pub(crate) fn device_rows(
+        &self,
+        device: identity::DeviceId,
+        user: identity::UserId,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        if identity::is_anonymous(user) {
+            anyhow::bail!("authentication required: a device list belongs to a bound user");
+        }
+        let rows = self.registry.devices_of(user)?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, row)| {
+                serde_json::json!({
+                    "device": id.to_string(),
+                    "alias": row.alias,
+                    "first_seen": row.first_seen,
+                    "current": id == device,
+                })
+            })
+            .collect())
     }
 
     /// Does the event require a sender with a bound user? The DECLARATION answers, and the answer
