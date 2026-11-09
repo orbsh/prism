@@ -718,3 +718,30 @@ async fn a_page_can_ask_for_its_accounts_devices() {
     let (_, _, data) = recv_speech(&mut ws).await;
     assert_eq!(data["devices"][0]["alias"], "laptop", "{data}");
 }
+
+/// A STOP IS NOT AN EVENT (ADR-0008 as revised): a page's cancel is served by the VENUE,
+/// which holds authority over the connection, by setting the realm's stop bit on the
+/// sender's own instance. Nothing goes on the plane, so nothing can queue behind the turn
+/// it means to stop — which is the failure the event shape had.
+#[tokio::test]
+async fn a_cancel_sets_the_stop_bit_on_the_senders_own_instance() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let device = read_connected(&mut ws).await;
+
+    let target = gravity_booth::turn_instance(&device);
+    assert!(
+        !gw.engine.realm.lock().await.stops.is_set(&target),
+        "nothing asked yet"
+    );
+
+    send_uplink(&mut ws, json!({ "dest": "turn.cancel", "data": {} })).await;
+
+    for _ in 0..200 {
+        if gw.engine.realm.lock().await.stops.is_set(&target) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the venue never set the stop bit for {device}");
+}

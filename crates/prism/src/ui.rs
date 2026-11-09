@@ -543,6 +543,17 @@ async fn dispatch(
             // claim another. Identity is looked up here, once, and travel in the envelope like
             // any other routing fact.
             let event = format!("{UI_PREFIX}{other}");
+            // A STOP IS NOT AN EVENT (ADR-0008 as revised): the venue holds authority over
+            // this connection, so a cancel is served HERE by setting the realm's stop bit on
+            // the sender's own instance — the running turn reads it at its next chunk
+            // boundary. Emitting it would address a booth that no longer listens: a delivery
+            // to the instance that is running the turn waits behind it, which is why the
+            // event shape was retired.
+            if event == gravity_booth::CANCEL_EVENT {
+                let target = gravity_booth::turn_instance(&device.to_string());
+                gw.engine.realm.lock().await.stop_set(&target);
+                return;
+            }
             let envelope = json!({
                 "name": event,
                 // The ADDRESS is a device (ADR-0018: a channel is an application's business) and
