@@ -1,160 +1,85 @@
 # prism — the connection plane
 
-WS gateway hosting Aura actors, the entry point of the stateless-agent
-stack (design: `docs/adr/0017-prism-connection-plane.md`, en/zh).
-Built on the aura engine as a workspace sibling (`../../aura`,
-`../../effector` by path — same triangle as aura's own cross-repo deps).
+prism is the stack's single entry point for clients: one accept loop, one event protocol, the venue's identity, and the mounted effector surface. Design: `docs/adr/0017-prism-connection-plane.md` (en + `.zh-CN`); the model — participants, the marked wire in both directions, addressing, where state lives — is `docs/MODELING.md` (+ `.zh-CN`). It builds as a workspace sibling of aura and effector (path deps), so those checkouts must exist.
 
-## Scope of this landing (echo plane + identity, PLAN Phase 0/1 reduced)
+## Surfaces
 
-Runs a gateway whose actor set is the echo in every embedded language —
-the minimal example that proves each carrier end to end through a real
-socket — plus the §2/§3/§7 identity plane (device anchors, accounts,
-one connection set with a per-connection auth field). Wire rules
-(ADR-0017 §4, honored here):
+| path | kind | wire | who |
+|:--|:--|:--|:--|
+| `/ws` | WS | `{ev, args}` in both directions | a program: the CLI, a peer, a test |
+| `/channel` | WS | downstream an ACTION LIST (`Vec<Content>`), upstream `content::Outflow` | a renderer page |
+| `/effector/<alias>` | WS | effector-protocol frames: `Challenge{nonce}` → signed `Register` → `Registered` / `Refused{reason}` | a node dialling in |
+| `/code/<sha256>` | HTTP | the bytes registered under that hash, immutable | anyone holding the hash |
+| `/admin/nodes`, `/admin/nodes/{alias}/approve`, `/admin/revoke`, `/admin/dead` | HTTP | JSON | the operator |
+| `/app.css`, then everything else | HTTP | the renderer bundle, plain GETs only | a browser |
 
-- ONE frame shape in BOTH directions: `{"ev": "<name>", "args": {...}}`.
-  The protocol encodes no direction; dispatch cannot branch on it.
-- The client's `ev` names an actor TYPE; the handler name equals the
-  event name (the multi-entry model). The result returns to the CALLING
-  connection as `{"ev": "<name>.result", ...}`; failures are
-  `{"ev": "error", "args": {"ev", "message"}}` VALUES — the socket
-  never closes for a business error.
-- `{"ev": "broadcast", "args": x}` fans the frame out to every live
-  connection (the connection-set traversal of §3, minus the auth sets).
-- `{"ev": "ping"}` answers `ping.result` — a gateway-liveness verb, no
-  actor involved.
-- Handshake: `GET /ws`, `?protocol=json` selects the debug codec;
-  absent = CBOR (production default), fixed for the connection.
-  `?device=<id>` echoes a known device anchor (§2).
-- Every connect is answered `{"ev":"connected","args":{device_id,
-  user_id|null}}` — device assignment and restored binding, one frame.
-- `signup` / `login` are ordinary business events (§4) on the same
-  socket, verified against argon2id hashes in prism's OWN okm instance
-  (§7 — accounts never enter aura's planes); login writes the
-  connection's auth field (§3, one set).
-- Identity reaches actors through the PAYLOAD (§7 amendment): the
-  handler receives `{"sender": {"device","user"}, "args": <original>}`;
-  `echo_sender` answers with the sender half as the live proof. Ctx,
-  Job, InstanceId stay identity-free.
-- `broadcast` accepts `"to": "all"|"auth"` (default all) — the
-  predicate over the one connection set.
-- Per-event auth ENFORCEMENT (§2): an actor declares `{auth:
-  {"<handler>": ...}}` in its `interface_schema` — presence of the
-  handler name is the rule (the value is reserved). The gateway reads
-  the SAME persisted copy `ctx.interface_schema` reflects (the
-  upload-time introspection is the single declaration surface; no
-  second surface, no per-connection ACL table), checks it BEFORE the
-  call, and answers `{"ev": "error", "args": {"ev", "message":
-  "authentication required"}}` to an anonymous sender — the event
-  never reaches the actor, the socket stays up. `echo_priv` is the
-  live proof.
+There is no second RPC surface: every face rides the same accept loop, and `handle_conn` reads the request head RAW and branches — the specific `/admin/…` paths first, then `/code/…`, the bundle, and `/effector/<alias>` — replaying the head into the WS upgrade only for the requests that are sockets. A new HTTP face goes into that routing queue; it cannot be written inside the tungstenite handshake callback, which can only decorate a successful upgrade.
 
-Echo actors (source: `crates/prism/src/actors.rs`; a language's carrier
-absent from the build skips its echo with a boot note, never silently):
+## Two legs, one wire each
 
-| type          | carrier  | form |
-|---------------|----------|------|
-| `echo_steel`  | steel    | `(define (echo_steel args) args)` |
-| `echo_sender` | steel    | returns the envelope's sender half — the identity proof |
-| `echo_priv`   | steel    | declares `auth` for its handler — the per-event auth proof |
-| `echo_python` | python   | `def echo_python(args): return args` |
-| `echo_nu`     | nushell  | `export def echo_nu [args] { $args }` |
+The PROGRAMMATIC leg (`/ws`) answers a connect with `{ev: "connected", args: {device_id, user_id, token}}` — both ids as text, `user_id` null for an anonymous connection — and then follows one rule: the client's `ev` names a booth TYPE, the handler name equals that name, and the answer comes back as `<ev>.result`. Failures are `error` VALUES with the socket staying up; a socket is never closed to report a business failure. `?protocol=json` (or `?codec=`) selects the debug codec; absent means CBOR, fixed for the connection.
 
-Landed (PLAN Phase 1 tail, 2026-10-09): `logout` — the device binding
-(§2's table) and the connection's auth field (§3) clear together, the
-auth-gated events error again on the same socket, reconnects come back
-anonymous. Server-side revocation LANDED (2026-10-10): `POST
-/admin/revoke {device_id}` — the binding and the trust stamp clear, the
-live connection is kicked with a `revoked` frame and a real Close, the
-device echo restores nothing until a fresh login re-earns the anchor.
+The RENDERER's leg (`/channel`) speaks fluxen's wire and therefore has no verbs: downstream is always an ARRAY of operations, and upstream is `content::Outflow {dest, id?, data}` where `dest` is a bare application name. The venue's own speech is `inject`s into the slots a layout declares — `token` (`{device, token}`, the credential the page keeps), `connect` (`{device}`, the fact an application answers with its layout), `login`, `logout`, `disconnect` — plus `notice` (`{detail}`) for refusals and ends. Everything UI-facing is `ui:<name>` on the plane and carries no marker on the page's wire: the venue adds it on the way in and strips it on the way out, which is why a page's `dest` and the frames it reads are bare.
 
-Turn verbs + streaming LANDED (2026-10-10): `turn.submit {session_id,
-content}` opens an ADR-0034 iterate stream against the `turn_executor`
-booth (instance key = session_id) and translates every pulled envelope
-into `turn.delta` frames, closing with `turn.done` (the terminal value)
-or `turn.error`; `turn.cancel` disposes the connection's live stream
-(idempotent). One live turn per connection; the duplicate submit is
-refused. The submit gate reads the executor type's persisted
-interface_schema `auth` block — the SAME declaration face the echo
-plane enforces. The gateway drives the stream because the WS connection
-lives here; the executor booth is an ordinary realm citizen (the
-connection plane adapts, it does not bypass). The executor is gravity's
-REAL turn booth (LANDED 2026-10-12): a python generator fetching the
-projection from mem-server, pulling tokens through the provider booth,
-appending the exchange on success — deployment facts via env
-(TurnConfig), the key VALUE never crossing prism.
+## Identity
 
-Deliberately NOT here (the rest of ADR-0017, planned as later phases):
-`/admin` actor upload, `/effector/<alias>` mount
-(the effector gateway currently lives in `aura/crates/engine`), `/assets`,
-the CBOR-vs-JSON DevTools panel. They ride prism PLAN Phase 1+/1.8.
+The venue knows DEVICES and USERS, both verified, and a token is the only credential.
 
-Landed early (PLAN Phase 1.9, ADR-0027 §4): `GET /code/{sha256}` — the
-static code export rides the SAME accept loop as `/ws` (a raw head read
-routes `/code/...` to a plain HTTP download, every other path replays
-its head into the WS handshake). Content is a direct same-process read
-of aura's meta plane; no auth — the hash is the capability, the body
-re-hashes to its own URL. A malformed address is 400, an absent blob
-404; `Cache-Control: public, max-age=31536000, immutable`.
+| collection | ns | owner | key | payload |
+|:--|:--|:--|:--|:--|
+| `Account` | 50 | the auth booth | `Uuid7` | `username`, `nickname` |
+| `Device` | 51 | the venue | `Uuid7` | `user`, `alias`, `first_seen`, `revoked` |
+| `Node` | 52 | the venue | proxy id | `alias`, `public_key`, `status`, `created_at` |
+| `Token` | 53 | the venue | `Uuid4` | `device`, `user`, `issued_at`, `revoked_at` |
+| `Activity` | 54 | the venue | `Uuid7` | `at` — the ONE clock |
+| `Credential` | 55 | the auth booth | `Uuid7` (= user id) | `hash` |
 
-Landed, step 1 (PLAN Phase 1.8, ADR-0015 §4/§5/§7): the node identity
-trust plane's prism-side data surface. The boot REQUIRES a declared
-posture — `PRISM_IDENTITY=required|open`, no default, stated in the
-startup log — and the node registry (`{alias, public_key, status,
-created_at}`) lives in prism's own okm instance with its four
-curl-first approval endpoints on the same accept loop:
+`?token=` is the only restore path — a device id names a device and authenticates nothing. Freshness is the device's own clock: `Activity` is written on the message path (throttled, with one last stamp when a connection ends) and read at connect and at every uplink, so a device silent past `PRISM_IDLE_WINDOW` connects ANONYMOUS while keeping its id and alias, and a login on the same connection restores the usual name. Local verbs are exactly `login`, `signup` and `logout`, beside `broadcast` (the fan-out helper) and `ping` (liveness); every other name belongs to a booth.
 
-```sh
-curl -X POST localhost:8765/admin/nodes -d '{"alias":"home-pc","public_key":"..."}'
-curl localhost:8765/admin/nodes
-curl -X POST localhost:8765/admin/nodes/home-pc/approve   # unique pending; key optional
-curl -X DELETE localhost:8765/admin/nodes/home-pc         # tombstones (status=revoked)
-```
+AUTHENTICATION IS THE VENUE'S, THE PROOF IS A BOOTH'S. The verbs, the device↔user binding and the token live here and are not configurable; the credential proof and the login surface are booth `auth`'s, which answers ONE call — `verify` or `register`, returning the user id a credential names — after which prism binds the device and rotates the token. A password is never an emit: every emit is persisted as an MQ row and an unroutable payload is served by `/admin/dead`, so the ask is a call. A gate is declared on the RECEIVE (`on_as(…).gated()` in Rust, `@on(…, auth=True)` in python, the options hash in steel), registration carries it onto the route, and prism asks one question of that table for both legs and both addressing modes. A name matching no route is not gated (fail-open). A gated event refused for an anonymous connection says `ui:auth.required {event}` to that device beside the `notice` that tells the person, and that is what opens the login surface.
 
-The handshake EXECUTION (challenge frames gating a live effector
-connection) lands with the `/effector/<alias>` mount — until then
-`required` is the declared posture and the verdict table is in place,
-test-locked, with no node yet to gate.
+## Applications are booths
+
+The venue forwards; it does not interpret. An application emits `ui:<name>` with `{name, device, sender, data}`: `name` states where it goes, prism strips the marker and excludes the sender, and the payload goes out as one batch per connection — an operation list is DRAWN, anything else is DATA and rides an `inject` into the slot named by the event. THE LAYOUT IS THE APPLICATION'S ANSWER TO CONNECT: there is no `init` verb, no `PRISM_INIT` and no layout file here; a booth that declares `ui:connect` draws the page, and a venue with no such booth draws nothing and stays up.
+
+No turn verb lives here. A conversation is not the venue's key: the address is a device and the authentication a user, while the conversation is the application's own data. gravity's booth declares `ui:turn.submit` itself, keyed on the envelope's `device`, and says its frames through the same `ui:` plane.
+
+## Nodes and mounts
+
+`/effector/<alias>` is the dial-in mount, and the handshake is HOST-FIRST and posture-blind on the wire: the venue sends the nonce, the node answers a signed `Register`, and the answer is `Registered` or `Refused{reason}` before the close. `PRISM_IDENTITY=required` gates on `NodeStore::verdict` (an unapproved or conflicting key is refused with its reason); `open` means no registry, never no proof — the signature is verified in both postures. A node's identity is `(alias, public_key)`, and the handshake never learns a user.
+
+`PRISM_MOUNTS` is a JSON manifest of mounts, replayed at every boot because `Remote` booth definitions are not persisted: each entry is `{type, alias, carrier, language, runner, encoding?}`, where `alias` must equal the dial-in path and `runner` is a FIXED deployment artifact. A skill travels as a call argument, so a new skill — or a new version of one — mints no type, no ns and no route. Absent `PRISM_MOUNTS` means no nodes.
+
+## Configuration
+
+| variable | meaning | absent |
+|:--|:--|:--|
+| `PRISM_IDENTITY` | `required` \| `open` — the trust posture | boot error; the posture is never defaulted |
+| `PRISM_ADDR` | listen address | `127.0.0.1:8765` |
+| `PRISM_DATA` | the registry directory | `./prism-data` |
+| `PRISM_ASSETS` | the renderer bundle root — the bundle IS THE ORIGIN | nothing served at `/`; the boot log says so |
+| `PRISM_MOUNTS` | the node mount manifest | no mounts |
+| `PRISM_IDLE_WINDOW` | device idle window, seconds | 30 days |
 
 ## Run
 
 ```sh
-PRISM_IDENTITY=open cargo run          # the posture is required (ADR-0015 §7 — no default)
-PRISM_IDENTITY=open PRISM_ADDR=127.0.0.1:9000 cargo run   # PRISM_DATA=<dir> = registry storage (default ./prism-data)
+PRISM_IDENTITY=open cargo run
+PRISM_IDENTITY=open PRISM_ADDR=127.0.0.1:9000 PRISM_DATA=/tmp/venue cargo run
 ```
 
-Debug client (JSON codec, stdlib only):
-
-```sh
-python3 -m pip install websockets && python3 - <<'EOF'
-import asyncio, json, websockets
-async def main():
-    async with websockets.connect("ws://127.0.0.1:8765/ws?protocol=json") as ws:
-        await ws.send(json.dumps({"ev": "echo_steel", "args": {"msg": "hi"}}))
-        print(json.loads(await ws.recv()))
-asyncio.run(main())
-EOF
-```
+The binary registers the shipped auth booth, the echo booths (the carrier demo: one per embedded language, plus the sender and the gated one), and the declared mounts, then states which faces are live. A venue with no bundle still serves identity and the peer leg; it just has no page.
 
 ## Test
 
 ```sh
-cargo test --workspace
+cargo test -p prism --lib --test admin_nodes --test auth_seam --test code_export \
+  --test echo_e2e --test effector_handshake --test effector_mount --test identity_e2e \
+  --test peer_leg --test runner_mount --test turn_invoke_skill --test ui_leg -- --test-threads=1
 ```
 
-`crates/prism/tests/echo_e2e.rs` boots engine + gateway and drives a
-real WebSocket: every language round-trips through BOTH codecs, the
-broadcast fan-out reaches two connections, unknown types and garbage
-frames return error VALUES without closing. `identity_e2e.rs` covers
-§2/§3/§7 end to end: device assignment, signup/login, the binding
-across reconnects via `?device=`, the auth predicate over the one
-connection set, and the sender envelope on the wire. The codec pair
-itself (dual-encoding maintenance contract: one model, two codecs, one
-round-trip over every shape) is locked in `crates/prism-protocol`.
+71 tests across 12 binaries (measured 2026-11-09). The list is enumerated on purpose: `cargo test --workspace` stops at the first failing binary, so one red or hung binary hides everything after it. Every file boots a real engine and a real socket — there is no mocked transport — and `--test-threads=1` is the only mode the suite runs in, which makes a missing deadline look like patience: a read the leg legitimately never sends blocks forever.
 
-## Layout
+`turn_invoke_skill` drives a real turn, so gravity's guests must be prebuilt first (`cargo build --bins -p gravity-booth` in `~/world/gravity`); prism's cargo does not rebuild a sibling's binaries, and a stale guest surfaces as a HANG. The renderer's leg is checked the same way, with a JSON-pinned WS client on `/channel?codec=json`: a message there IS an array of operations, so a test asserts `ops[0]["action"]` and never `frame["ev"]`.
 
-    crates/prism-protocol/   the wire Frame + JSON/CBOR codecs
-    crates/prism/            gateway lib + binary (actors.rs = the
-                             echoes; identity.rs = accounts/devices)
+The wire types and both codecs live in `crates/prism-protocol`: one model, two encodings, one round-trip test per shape.
