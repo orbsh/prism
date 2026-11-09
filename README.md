@@ -40,7 +40,7 @@ AUTHENTICATION IS THE VENUE'S, THE PROOF IS A BOOTH'S. The verbs, the device↔u
 
 ## Applications are booths
 
-The venue forwards; it does not interpret. An application emits `ui:<name>` with `{name, device, sender, data}`: `name` states where it goes, prism strips the marker and excludes the sender, and the payload goes out as one batch per connection — an operation list is DRAWN, anything else is DATA and rides an `inject` into the slot named by the event. THE LAYOUT IS THE APPLICATION'S ANSWER TO CONNECT: there is no `init` verb, no `PRISM_INIT` and no layout file here; a booth that declares `ui:connect` draws the page, and a venue with no such booth draws nothing and stays up.
+The venue forwards; it does not interpret. An application emits `ui:<name>` with `{name, device | user, sender, data}`: `name` states where it goes, `device` addresses one connection while `user` addresses an account and the venue fans it out to every live device bound to it (a booth cannot enumerate devices), `sender` is excluded, and the payload goes out as one batch per connection — an operation list is DRAWN, anything else is DATA and rides an `inject` into the slot named by the event. THE LAYOUT IS THE APPLICATION'S ANSWER TO CONNECT: there is no `init` verb, no `PRISM_INIT` and no layout file here; a booth that declares `ui:connect` draws the page, and a venue with no such booth draws nothing and stays up.
 
 No turn verb lives here. A conversation is not the venue's key: the address is a device and the authentication a user, while the conversation is the application's own data. gravity's booth declares `ui:turn.submit` itself, keyed on the envelope's `device`, and says its frames through the same `ui:` plane.
 

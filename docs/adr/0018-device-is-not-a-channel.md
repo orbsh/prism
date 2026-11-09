@@ -48,15 +48,19 @@ and answered on that same connection.
 
 3. **`channel_id` is not a venue field, and the wire does not carry it in either direction.**
    Fan-out is an ADDRESS, not a membership test: an event that wants several recipients names them
-   (device ids, or the users that resolve to them). "Send to everyone in channel 7" is a sentence
+   (device ids, or the users that resolve to them). A booth that names a USER names an account and
+   leaves the fan-out to the venue — it cannot enumerate devices, so cross-device delivery can only
+   be the venue's. "Send to everyone in channel 7" is a sentence
    only the booth that owns channel 7 can say, so it is the booth that turns a group into a
    recipient list. The sending half already speaks that way (gravity's turn emits
-   `{name, device, data}` and no sender of its own) and the receiving half addresses `device` and
-   nothing else — so a booth that emits the retired field reaches no renderer, instead of reaching
-   one by luck. Addressing the field again would be a new decision, not a compatibility question.
+   `{name, device, data}` and no sender of its own) and the receiving half addresses `device` or
+   `user` and nothing else — so a booth that emits the retired field reaches no renderer, instead of
+   reaching one by luck. Addressing the field again would be a new decision, not a compatibility
+   question.
 
 4. **What the venue still guarantees,** and nothing more: a device id is the address of a live
-   connection; an anchored id (`?device=`) survives a reconnect; the device↔user binding is the
+   connection; the TOKEN is the credential that survives a reconnect (an id names a device and
+   authenticates nothing); the device↔user binding is the
    registry's; the auth declaration gates delivery before it happens; a sender is excluded from
    the fan-out of its own event.
 

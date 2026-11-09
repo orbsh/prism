@@ -36,7 +36,7 @@ Order inside one batch is semantics (a region's `set` precedes the patch that fi
 
 ## What addresses what
 
-A **device** is the address; a **user** may be reached through the devices bound to it. There is no channel on this wire: a channel is a user-visible grouping (a group chat, or a one-to-one conversation using the same mechanism), and grouping is an application's business — it stores its own membership, answers "who is in here" itself, and turns a group into a list of recipients. The venue cannot enumerate a group, validate membership, or issue a channel id (ADR-0018).
+A **device** is the address; a **user** may be reached through the devices bound to it. On the wire that is one field on the emit: `device` names a connection, `user` names an account and the venue fans it out to every live device bound to it, and naming neither is a broadcast. An address that cannot be read reaches NOBODY rather than everybody — a malformed id is a typo, not an invitation to broadcast. There is no channel on this wire: a channel is a user-visible grouping (a group chat, or a one-to-one conversation using the same mechanism), and grouping is an application's business — it stores its own membership, answers "who is in here" itself, and turns a group into a list of recipients. The venue cannot enumerate a group, validate membership, or issue a channel id (ADR-0018).
 
 ## The application is a view
 
