@@ -1,5 +1,7 @@
 # Prism handshake plan (Phase 1.8 step 2, second half) — unblocked 2026-10-29
 
+ARCHIVED 2026-11-09 — this plan is DELIVERED, and nothing in it is pending work. The record of the landing is `docs/PLAN.md`'s Phase 1.8 line ("STEP 2 LANDED AND VERIFIED 2026-10-31") with its gates (`tests/effector_handshake.rs` 6/6, `tests/admin_nodes.rs` 4/4). The file stays as the design record of the frames and the order they had to land in — read it for the WHY, and the ADRs (`prism` 0017 §8, `effector` ADR-0002, `aura` ADR-0015) for the ruling.
+
 ## Status
 
 Shelved 2026-10-12, unblocked 2026-10-29. The shelving reason is gone on both halves:
