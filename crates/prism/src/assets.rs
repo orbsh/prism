@@ -75,7 +75,7 @@ impl AssetRoot {
     /// the same as before this branch existed).
     pub(crate) async fn serve(&self, head: &Head, stream: &mut TcpStream) -> bool {
         // A plain GET is ours; an UPGRADE request belongs to the WS legs and must reach the
-        // upgrade machinery untouched (answering it with a 404 would break /ws and /ui).
+        // upgrade machinery untouched (answering it with a 404 would break /ws and /channel).
         if !head.is_get() || is_upgrade(head) {
             return false;
         }

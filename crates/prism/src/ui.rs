@@ -268,7 +268,7 @@ pub(crate) async fn serve(
                         break;
                     }
                 }
-                Err(e) => eprintln!("prism: /ui encode failed: {e}"),
+                Err(e) => eprintln!("prism: /channel encode failed: {e}"),
             }
         }
         // Channel closed (the table dropped our sender — revocation or disconnect): close
