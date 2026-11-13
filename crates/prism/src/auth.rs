@@ -120,7 +120,7 @@ impl AuthStore {
             .find_account(username)?
             .ok_or_else(|| anyhow!("invalid credentials"))?;
         let cred = Collection::<_, UserId, Credential>::new(self.store.clone())
-            .get(&user)?
+            .get_row(&user)?
             .ok_or_else(|| anyhow!("invalid credentials"))?;
         verify_password(password, &cred.hash)?;
         Ok(user)
@@ -129,7 +129,9 @@ impl AuthStore {
     /// The name to show for a user: the nickname, else the username, else nothing (a booth swapped for
     /// an external IdP may have no row here at all — the screen then says "you").
     pub fn display_name(&self, user: UserId) -> anyhow::Result<Option<String>> {
-        let Some(account) = Collection::<_, UserId, Account>::new(self.store.clone()).get(&user)? else {
+        let Some(account) =
+            Collection::<_, UserId, Account>::new(self.store.clone()).get_row(&user)?
+        else {
             return Ok(None);
         };
         Ok(Some(if account.nickname.is_empty() { account.username } else { account.nickname }))
@@ -139,9 +141,13 @@ impl AuthStore {
     /// index hit may be a prefix collision.
     pub fn find_account(&self, username: &str) -> anyhow::Result<Option<(UserId, Account)>> {
         let t = Collection::<_, UserId, Account>::new(self.store.clone());
-        Ok(t.scan::<AccountByName>(username.as_bytes())?
-            .into_iter()
-            .find_map(|(key, row)| row.filter(|a| a.username == username).map(|a| (key.decoded, a))))
+        for hit in t.scan::<AccountByName>(username.as_bytes()) {
+            let (_, key, row) = hit?;
+            if let Some(account) = row.filter(|a| a.username == username) {
+                return Ok(Some((key.decoded, account)));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -373,7 +379,10 @@ mod tests {
 
         // The verifier is a row of its own, keyed by the USER ID — not a field of the account.
         let creds = Collection::<_, UserId, Credential>::new(s.store.clone());
-        assert!(creds.get(&user).unwrap().is_some(), "ns 55 holds the hash for this user");
+        assert!(
+            creds.get_row(&user).unwrap().is_some(),
+            "ns 55 holds the hash for this user"
+        );
     }
 
     /// One error for both halves of a failed login, and a taken username is refused.

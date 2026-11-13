@@ -181,7 +181,7 @@ impl Registry {
     /// One device row, if it exists.
     pub fn device(&self, id: DeviceId) -> anyhow::Result<Option<Device>> {
         let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
-        Ok(t.get(&id)?)
+        Ok(t.get_row(&id)?)
     }
 
     /// The binding a device names, or None when the row is anonymous or revoked. This is the
@@ -197,7 +197,7 @@ impl Registry {
     /// devices may share one.
     pub fn set_alias(&self, id: DeviceId, alias: &str) -> anyhow::Result<()> {
         let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
-        let Some(mut d) = t.get(&id)? else {
+        let Some(mut d) = t.get_row(&id)? else {
             return Err(anyhow!("unknown device {}", id));
         };
         d.alias = alias.to_string();
@@ -234,7 +234,7 @@ impl Registry {
     /// it; anonymous = was anonymous).
     pub fn revoke_device(&self, device: DeviceId) -> anyhow::Result<UserId> {
         let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
-        let Some(mut d) = t.get(&device)? else {
+        let Some(mut d) = t.get_row(&device)? else {
             return Err(anyhow!("unknown device {}", device));
         };
         let was = d.user;
@@ -269,7 +269,7 @@ impl Registry {
     /// permission. A revoked row reads None and is left alone.
     pub fn resolve_token(&self, token: TokenId) -> anyhow::Result<Option<(DeviceId, UserId)>> {
         let t = Collection::<_, TokenId, Token>::new(self.store.clone());
-        let Some(row) = t.get(&token)? else {
+        let Some(row) = t.get_row(&token)? else {
             return Ok(None);
         };
         if row.revoked_at != 0 {
@@ -286,7 +286,7 @@ impl Registry {
     /// Revoke one token (a single tab's logout, or an operator's kick). Reports whether it flipped.
     pub fn revoke_token(&self, token: TokenId) -> anyhow::Result<bool> {
         let t = Collection::<_, TokenId, Token>::new(self.store.clone());
-        let Some(mut row) = t.get(&token)? else {
+        let Some(mut row) = t.get_row(&token)? else {
             return Ok(false);
         };
         if row.revoked_at != 0 {
@@ -302,8 +302,8 @@ impl Registry {
         let t = Collection::<_, TokenId, Token>::new(self.store.clone());
         let mut n = 0usize;
         let now = now_ms();
-        for hit in t.scan::<TokenByDevice>(device.encode().as_slice())? {
-            let (key, Some(mut row)) = (hit.0, hit.1) else {
+        for hit in t.scan::<TokenByDevice>(device.encode().as_slice()) {
+            let (_, key, Some(mut row)) = hit? else {
                 continue;
             };
             if row.revoked_at != 0 || row.device != device {
@@ -322,10 +322,11 @@ impl Registry {
     pub fn devices_of(&self, user: UserId) -> anyhow::Result<Vec<(DeviceId, Device)>> {
         let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
         let mut out = Vec::new();
-        for hit in t.scan::<DeviceByUser>(user.encode().as_slice())? {
-            let Some(row) = hit.1 else { continue };
+        for hit in t.scan::<DeviceByUser>(user.encode().as_slice()) {
+            let (_, key, row) = hit?;
+            let Some(row) = row else { continue };
             if row.user == user && row.revoked == 0 {
-                out.push((hit.0.decoded, row));
+                out.push((key.decoded, row));
             }
         }
         Ok(out)
@@ -333,7 +334,7 @@ impl Registry {
 
     fn bind_device(&self, device: DeviceId, user: UserId) -> anyhow::Result<()> {
         let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
-        if let Some(mut d) = t.get(&device)? {
+        if let Some(mut d) = t.get_row(&device)? {
             d.user = user;
             // A fresh authentication re-earns the device's trust: the revocation stamp clears with
             // the successful bind (the credentials were just proven — the only path back).
@@ -350,7 +351,7 @@ impl Registry {
     /// from is idle, which is the safe direction (the alternative would be to trust silence).
     pub fn activity(&self, device: DeviceId) -> anyhow::Result<Option<u64>> {
         let t = Collection::<_, DeviceId, Activity>::new(self.store.clone());
-        Ok(t.get(&device)?.map(|a| a.at))
+        Ok(t.get_row(&device)?.map(|a| a.at))
     }
 
     /// Record that the device spoke: one scalar row, no read-modify-write of the device.

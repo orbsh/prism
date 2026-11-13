@@ -255,7 +255,7 @@ impl NodeStore {
         ids.sort();
         let mut rows = Vec::with_capacity(ids.len());
         for id in ids {
-            if let Some(row) = t.get(&NodeKey { id })? {
+            if let Some(row) = t.get_row(&NodeKey { id })? {
                 rows.push(row);
             }
         }
@@ -264,11 +264,14 @@ impl NodeStore {
 
     fn rows_of(&self, alias: &str) -> anyhow::Result<Vec<Node>> {
         let t = self.table();
-        Ok(t.scan::<NodeByAlias>(alias.as_bytes())?
-            .into_iter()
-            .filter_map(|h| h.1)
-            .filter(|n| n.alias == alias)
-            .collect())
+        let mut rows = Vec::new();
+        for hit in t.scan::<NodeByAlias>(alias.as_bytes()) {
+            let (_, _, row) = hit?;
+            if let Some(n) = row.filter(|n| n.alias == alias) {
+                rows.push(n);
+            }
+        }
+        Ok(rows)
     }
 }
 
