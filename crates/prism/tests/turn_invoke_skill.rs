@@ -1,6 +1,8 @@
-//! `invoke_skill` end to end (gravity ADR-0004 §3 · ADR-0001): a turn resolves a
-//! skill, the model picks one, and the step's SCRIPT runs on a real node — the
-//! whole walk, through the whole stack.
+//! Both doors to a script, end to end (gravity ADR-0004 §3 · ADR-0001): a turn
+//! resolves a skill and runs one step through `invoke_skill`, then runs a SECOND
+//! code row through `run` — no skill, no step, just the row. Both scripts execute
+//! on a real node, and each one's value has to come back to the model before the
+//! stub will answer.
 //!
 //! What is real here: k10r's mem-server (the skill node, its code row, its
 //! doors), prism's gateway, an aura engine with a `runner_py` mount, a real
@@ -159,6 +161,7 @@ async fn seed_turn_rows(engine: &aura_engine::Engine, store_url: &str, endpoint:
 /// this stub drives both the execution and the write side.
 async fn sse_server(
     skill_id: u64,
+    bare_code_id: u64,
     first: &'static str,
     second: &'static str,
 ) -> (String, Arc<Mutex<Vec<Value>>>) {
@@ -214,6 +217,24 @@ async fn sse_server(
                     }]}}]})
                 };
 
+                // THE OTHER DOOR (gravity ADR-0004 §3, the `run` tool): the same
+                // node, the same language match, but the row is named directly —
+                // no skill, no step. A model that wrote a script with `write_code`
+                // reaches it exactly this way.
+                let run_row = |code_id: u64| {
+                    json!({"choices": [{"delta": {"tool_calls": [{
+                        "id": format!("r{code_id}"),
+                        "type": "function",
+                        "function": {
+                            "name": "run",
+                            "arguments": json!({
+                                "code_id": code_id,
+                                "arguments": {"n": 4},
+                            }).to_string(),
+                        }
+                    }]}}]})
+                };
+
                 let refusal = |why: &str| {
                     axum::response::Response::builder()
                         .status(500)
@@ -226,7 +247,9 @@ async fn sse_server(
                     if !saw(first) {
                         return refusal("step 0's result never reached the model");
                     }
-                    invoke(1)
+                    // Step 1 goes through the OTHER door on purpose: two different
+                    // code rows, reached two different ways, in one turn.
+                    run_row(bare_code_id)
                 } else if index == 2 {
                     if !saw(second) {
                         return refusal("step 1's result never reached the model");
@@ -259,7 +282,7 @@ async fn sse_server(
 // current-thread runtime would park the only worker on its own request (the
 // deadlock this test first hit).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
+async fn a_skill_step_and_a_bare_row_both_run_on_the_node() {
     // What the step's script prints — one JSON document, an arithmetic fact no
     // stub can fake: the number comes from the payload gravity passed through.
     const PRODUCED: &str = r#"{"sum":7}"#;
@@ -417,7 +440,8 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
 
     // The turn's deployment facts are ROWS in its own namespace now (gravity ADR-0007); only the
     // two spawn specs are environment, because they are where the binary lives.
-    let (endpoint, seen) = sse_server(skill_id, PRODUCED, PRODUCED_2).await;
+    let (endpoint, seen) =
+        sse_server(skill_id, code_ids[1], PRODUCED, PRODUCED_2).await;
     seed_turn_rows(&engine, &store_url, &endpoint).await;
     std::env::set_var("GRAVITY_TEST_KEY", "test-key");
 
@@ -552,16 +576,29 @@ async fn a_skill_step_runs_on_the_node_and_its_value_reaches_the_model() {
         .find(|candidate| candidate["id"].as_u64() == Some(skill_id))
         .expect("the skill node is in the graph");
     assert_eq!(skill_node["name"], skill_row["name"]);
+    // ONE skill call, not two: step 1 went through `run`, which has no skill row
+    // to count. The code row counts instead — that is where a script's use
+    // belongs when nothing but the script was named.
     assert_eq!(
         skill_node["invoke_calls"].as_u64(),
-        Some(2),
-        "two steps walked, two attempts counted: {skill_node}"
+        Some(1),
+        "the skill was walked once; the second row was run directly: {skill_node}"
     );
+    assert_eq!(skill_node["invoke_ok"].as_u64(), Some(1), "and it came back");
+    // The counters ride the row's VERTEX (the same place a skill's live), not the
+    // /code read, which answers the script and its contract.
+    let second_row = raw["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["id"].as_u64() == Some(code_ids[1]))
+        .expect("the code row is a vertex in the graph");
     assert_eq!(
-        skill_node["invoke_ok"].as_u64(),
-        Some(2),
-        "and both came back"
+        second_row["invoke_calls"].as_u64(),
+        Some(1),
+        "the bare row records its own use — the same vocabulary as a skill's: {second_row}"
     );
+    assert_eq!(second_row["invoke_ok"].as_u64(), Some(1), "{second_row}");
 
     // Nothing promoted itself: the resolver still answers only the real skill.
     let resolved: Value = ureq::post(&format!("{store_url}/skills/37/resolve"))
