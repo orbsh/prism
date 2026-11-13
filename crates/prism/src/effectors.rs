@@ -192,6 +192,18 @@ pub(crate) async fn serve_mounted(
                 // Unknown call_id: the caller timed out — drop the late
                 // result (pending_calls' scan owns timeouts).
             }
+            // The node's answer to a stop (aura ADR-0047 stage two). Nothing waits for
+            // it — the caller's terminal value is already decided — so the honest half
+            // is recorded here: `landed: false` means the node could not reach the work
+            // and that call kept running. Silence must not read as "it stopped".
+            Frame::Interrupted { call_id, landed } => {
+                if !landed {
+                    eprintln!(
+                        "prism: node '{path_alias}' could not reach call {call_id} — no \
+                         carrier on it can act on a stop, so that call kept running"
+                    );
+                }
+            }
             Frame::Host(HostFrame::Call(call)) => {
                 // Ctx bridge over the wire: resolve against the instance the
                 // enclosing remote call was routed to, then reply on this
