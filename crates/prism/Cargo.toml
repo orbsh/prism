@@ -20,6 +20,10 @@ tokio = { workspace = true }
 tokio-tungstenite = { version = "0.24", features = ["handshake"] }
 futures-util = "0.3"
 base64 = "0.22"
+# Node tokens hash to their registry credential (SHA-256 hex): the store keeps the digest,
+# never the token (ADR-0003) — high entropy means no KDF is needed for it.
+sha2 = "0.10"
+hex = "0.4"
 aura-realm = { path = "../../../aura/crates/realm" }
 gravity-booth = { path = "../../../gravity/crates/booth" }
 effector-protocol = { path = "../../../effector/crates/protocol" }

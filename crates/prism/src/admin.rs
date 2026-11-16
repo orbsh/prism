@@ -4,13 +4,14 @@
 //! `code_export`). JSON in, JSON out, one record behind it.
 //!
 //! ```text
-//! POST   /admin/nodes                    {alias, public_key}  → 201 pending record
-//! GET    /admin/nodes                                            → [{alias, public_key, status, created_at}]
+//! POST   /admin/nodes                    {alias}              → 201 {token, status, created_at}
+//!                                        (the token is shown ONCE; the registry keeps its digest)
+//! GET    /admin/nodes                                            → [{alias, credential, status, created_at}]
 //! GET    /admin/dead                                             → [{event, reason, data}]
 //!   The engine's dead ring: events that reached nobody, and deliveries that reached a queue but
 //!   could not call the body (`delivery-failed`, which carries the entry name and the error).
-//! POST   /admin/nodes/{alias}/approve    {public_key?}        → 200 approved record
-//! DELETE /admin/nodes/{alias}            {public_key?}        → 200 {revoked: n}
+//! POST   /admin/nodes/{alias}/approve    {credential?}      → 200 approved record
+//! DELETE /admin/nodes/{alias}            {credential?}      → 200 {revoked: n}
 //! ```
 //!
 //! Authorization is deliberately absent in this landing: the interim
@@ -61,11 +62,21 @@ pub(crate) async fn serve_dead(
 pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u8]) -> Option<Vec<u8>> {
     let rest = path.strip_prefix("/admin")?;
     let response = match (method, rest) {
-        ("POST", "/nodes") => match parse_pair(body) {
-            Ok((alias, public_key)) => match nodes.create(&alias, &public_key) {
-                Ok(row) => json_response(201, &row_json(&row)),
-                Err(e) => plain(400, &e.to_string()),
-            },
+        // Mint: the operator names the alias, the plane invents the token and keeps only its
+        // digest. This response is the ONE place the token exists in readable form (ADR-0003) —
+        // hand it to the node (config `token`, or `--token` for the container form) and forget it.
+        ("POST", "/nodes") => match parse_alias(body) {
+            Ok(alias) => {
+                let (token, credential) = crate::nodes::mint_token();
+                match nodes.create(&alias, &credential) {
+                    Ok(row) => {
+                        let mut out = row_json(&row);
+                        out["token"] = json!(token);
+                        json_response(201, &out)
+                    }
+                    Err(e) => plain(400, &e.to_string()),
+                }
+            }
             Err(e) => plain(400, &e.to_string()),
         },
         ("GET", "/nodes") => match nodes.list() {
@@ -152,13 +163,13 @@ pub(crate) async fn serve_revoke(
 fn row_json(n: &crate::nodes::Node) -> serde_json::Value {
     json!({
         "alias": n.alias,
-        "public_key": n.public_key,
+        "credential": n.credential,
         "status": n.status,
         "created_at": n.created_at,
     })
 }
 
-fn parse_pair(body: &[u8]) -> anyhow::Result<(String, String)> {
+fn parse_alias(body: &[u8]) -> anyhow::Result<String> {
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| anyhow::anyhow!("body must be JSON: {e}"))?;
     let field = |k: &str| -> anyhow::Result<String> {
@@ -168,10 +179,10 @@ fn parse_pair(body: &[u8]) -> anyhow::Result<(String, String)> {
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow::anyhow!("`{k}` is required"))
     };
-    Ok((field("alias")?, field("public_key")?))
+    field("alias")
 }
 
-/// The optional `public_key` on approve/revoke bodies: absent (or an
+/// The optional `credential` on approve/revoke bodies: absent (or an
 /// empty body) = None; present but not a non-empty string = error.
 fn optional_key(body: &[u8]) -> anyhow::Result<Option<String>> {
     if body.is_empty() {
@@ -179,13 +190,13 @@ fn optional_key(body: &[u8]) -> anyhow::Result<Option<String>> {
     }
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| anyhow::anyhow!("body must be JSON: {e}"))?;
-    match v.get("public_key") {
+    match v.get("credential") {
         None => Ok(None),
         Some(x) => x
             .as_str()
             .filter(|s| !s.is_empty())
             .map(|s| Some(s.to_string()))
-            .ok_or_else(|| anyhow::anyhow!("`public_key` must be a non-empty string")),
+            .ok_or_else(|| anyhow::anyhow!("`credential` must be a non-empty string")),
     }
 }
 

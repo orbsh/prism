@@ -3,7 +3,7 @@
 //! lives in Prism's connection plane, never in aura).
 //!
 //! What lands here (step 1 of the ADR's implementation order, prism's
-//! half): the node registry — `{alias, public_key, status, created_at}`
+//! half): the node registry — `{alias, credential, status, created_at}`
 //! rows in prism's own okm instance — the verdict the handshake will
 //! consult, the trust-mode posture (`identity: required | open`, no
 //! default), and the approval HTTP surface (`/admin/nodes...`, wired in
@@ -15,9 +15,9 @@
 //! Registry pattern (the Account/Device/TypeName family): fixed-width
 //! proxy id key + payload mirror + text index + HighWater reduce.
 //! Alias is open-ended runtime DATA — it resolves through `by_alias`,
-//! never as a key. Public keys ride as base64 text (WireGuard's
-//! encoding, ed25519's algorithm — ADR-0015 §1); the store never
-//! parses them, only compares.
+//! never as a key. A CREDENTIAL is the SHA-256 hex of the node's token
+//! (ADR-0003: the authority is the token the node dialed with); the store
+//! never holds the token itself and never parses the digest, only compares.
 //!
 //! One approved key per alias is the model that makes `conflict`
 //! mean something: approving a second key REPLACES the first (§6
@@ -46,21 +46,47 @@ pub struct Node {
     /// Payload mirror of the proxy id (the TypeName precedent).
     pub id: u64,
     pub alias: String,
-    /// base64 ed25519 public key (the §1 encoding; opaque here).
-    pub public_key: String,
+    /// SHA-256 hex of the node's token (ADR-0003): the store keeps the digest so a
+    /// dump of this table is not a set of keys. Opaque here — compared, never parsed.
+    pub credential: String,
     /// `pending | approved | revoked` — stringly because it is never
     /// indexed and the vocabulary is tiny; the transitions below are
     /// the only writers.
     pub status: String,
-    /// Epoch milliseconds at record creation.
+        /// Epoch milliseconds at record creation.
     pub created_at: u64,
     /// Single-group discriminator for the registry-wide watermark.
     pub global: u32,
 }
 
+/// Mint one node token and the credential the registry stores for it.
+///
+/// The token is 32 random bytes, URL-safe base64 without padding — it rides a URL QUERY
+/// (ADR-0003: the authority is the dial), so it must not need escaping. The credential is the
+/// SHA-256 hex of it: a node token is already high-entropy randomness, so a slow KDF buys
+/// nothing here; what matters is that the registry never holds the token, so a dump of the node
+/// table is not a set of keys. The token is returned to the operator ONCE, at minting.
+pub fn mint_token() -> (String, String) {
+    use base64::Engine as _;
+    use argon2::password_hash::rand_core::RngCore as _;
+    let mut bytes = [0u8; 32];
+    argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let credential = token_credential(&token);
+    (token, credential)
+}
+
+/// The credential a token hashes to. Public because the handshake and the tests both need to
+/// ask "does this token match the row?" without ever holding a second copy of the rule.
+pub fn token_credential(token: &str) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(token.as_bytes()))
+}
+
+
 use __OkmIndex_Node_by_alias as NodeByAlias;
 
-/// The handshake verdict for a (alias, public_key) claim (ADR-0015 §3's
+/// The handshake verdict for a (alias, credential) claim (ADR-0015 §3's
 /// table, `required` row set). Mapping decisions to names the wire
 /// answers: `registered | pending | conflict`.
 #[derive(Debug, PartialEq, Eq)]
@@ -120,20 +146,20 @@ impl NodeStore {
     /// attempt — approving the queued row is §6's rotation); a revoked
     /// row of the claimant revives to pending when nothing else holds
     /// the alias — a re-decision, never self-service.
-    pub fn verdict(&self, alias: &str, public_key: &str) -> anyhow::Result<Verdict> {
+    pub fn verdict(&self, alias: &str, credential: &str) -> anyhow::Result<Verdict> {
         let t = self.table();
         let rows = self.rows_of(alias)?;
-        let mine = rows.iter().find(|n| n.public_key == public_key);
+        let mine = rows.iter().find(|n| n.credential == credential);
         if mine.map(|n| n.status.as_str()) == Some("approved") {
             return Ok(Verdict::Registered);
         }
         let alias_taken = rows
             .iter()
-            .any(|n| n.public_key != public_key && n.status == "approved");
+            .any(|n| n.credential != credential && n.status == "approved");
         if alias_taken {
             // Surface the attempt: queue it if it is not already a row.
             if mine.is_none() {
-                self.create(alias, public_key)?;
+                self.create(alias, credential)?;
             }
             return Ok(Verdict::Conflict);
         }
@@ -149,7 +175,7 @@ impl NodeStore {
             // A fresh claim queues itself; a write the engine refuses is
             // reported, never read as "awaiting approval".
             None => {
-                self.create(alias, public_key)?;
+                self.create(alias, credential)?;
                 Ok(Verdict::Pending)
             }
         }
@@ -157,16 +183,16 @@ impl NodeStore {
 
     /// Create a pending record (the `POST /nodes` surface, and the
     /// handshake's fresh-claim path).
-    pub fn create(&self, alias: &str, public_key: &str) -> anyhow::Result<Node> {
-        if alias.is_empty() || public_key.is_empty() {
-            return Err(anyhow!("alias and public_key are required"));
+    pub fn create(&self, alias: &str, credential: &str) -> anyhow::Result<Node> {
+        if alias.is_empty() || credential.is_empty() {
+            return Err(anyhow!("alias and credential are required"));
         }
         let t = self.table();
         // Same (alias, key) already live → idempotent (return the row).
         if let Some(existing) = self
             .rows_of(alias)?
             .into_iter()
-            .find(|n| n.public_key == public_key && n.status != "revoked")
+            .find(|n| n.credential == credential && n.status != "revoked")
         {
             return Ok(existing);
         }
@@ -180,7 +206,7 @@ impl NodeStore {
         let row = Node {
             id: watermark + 1,
             alias: alias.to_string(),
-            public_key: public_key.to_string(),
+            credential: credential.to_string(),
             status: "pending".into(),
             created_at: now_ms(),
             global: 0,
@@ -190,20 +216,20 @@ impl NodeStore {
     }
 
     /// Approve a key for an alias (`POST /admin/nodes/{alias}/approve`).
-    /// `public_key` Some = that record; None = the sole pending record
+    /// `credential` Some = that record; None = the sole pending record
     /// (an ambiguous queue is refused, never guessed). Approval rotates:
     /// a previously approved key for the alias falls to `revoked` (§6).
-    pub fn approve(&self, alias: &str, public_key: Option<&str>) -> anyhow::Result<Node> {
+    pub fn approve(&self, alias: &str, credential: Option<&str>) -> anyhow::Result<Node> {
         let t = self.table();
         let rows = self.rows_of(alias)?;
-        let target = match public_key {
-            Some(k) => rows.iter().find(|n| n.public_key == k && n.status != "revoked"),
+        let target = match credential {
+            Some(k) => rows.iter().find(|n| n.credential == k && n.status != "revoked"),
             None => {
                 let mut pending = rows.iter().filter(|n| n.status == "pending");
                 let first = pending.next();
                 if first.is_none() || pending.next().is_some() {
                     return Err(anyhow!(
-                        "no unique pending key for `{alias}` — approve by public_key"
+                        "no unique pending key for `{alias}` — approve by credential"
                     ));
                 }
                 first
@@ -226,11 +252,11 @@ impl NodeStore {
     /// With a key, that record only; without, every live (pending or
     /// approved) record of the alias. Rows survive as `revoked` —
     /// tombstones, not erasure.
-    pub fn revoke(&self, alias: &str, public_key: Option<&str>) -> anyhow::Result<usize> {
+    pub fn revoke(&self, alias: &str, credential: Option<&str>) -> anyhow::Result<usize> {
         let t = self.table();
         let mut n = 0usize;
         for row in self.rows_of(alias)? {
-            let hit = public_key.map_or(true, |k| k == row.public_key);
+            let hit = credential.map_or(true, |k| k == row.credential);
             if hit && row.status != "revoked" {
                 let mut dead = row;
                 dead.status = "revoked".into();
@@ -304,12 +330,12 @@ mod tests {
         assert_eq!(s.list().unwrap().len(), 1);
         // Approve by alias (unique pending) → registered.
         let approved = s.approve("home-pc", None).unwrap();
-        assert_eq!(approved.public_key, "KEY-A");
+        assert_eq!(approved.credential, "KEY-A");
         assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Registered);
         // A different key under the alias → conflict, never takeover.
         assert_eq!(s.verdict("home-pc", "KEY-B").unwrap(), Verdict::Conflict);
         assert_eq!(
-            s.list().unwrap().iter().find(|n| n.public_key == "KEY-B").unwrap().status,
+            s.list().unwrap().iter().find(|n| n.credential == "KEY-B").unwrap().status,
             "pending",
             "the conflicting claim is still queued for the operator"
         );

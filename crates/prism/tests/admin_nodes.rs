@@ -84,17 +84,14 @@ async fn raw(addr: std::net::SocketAddr, method: &str, path: &str, body: Option<
 async fn approval_lifecycle_over_http() {
     let (addr, nodes) = boot().await;
 
-    // POST /admin/nodes → 201 + the pending row.
-    let (status, _, created) = request(
-        addr,
-        "POST",
-        "/admin/nodes",
-        Some(json!({"alias": "home-pc", "public_key": "AAA="})),
-    )
-    .await;
+    // POST /admin/nodes → 201 + the pending row AND the token, shown once.
+    let (status, _, created) = request(addr, "POST", "/admin/nodes", Some(json!({"alias": "home-pc"})))
+        .await;
     assert_eq!(status, 201);
     assert_eq!(created["status"], "pending");
     assert!(created["created_at"].as_u64().unwrap() > 0);
+    let first = created["token"].as_str().unwrap().to_string();
+    let first_id = prism::nodes::token_credential(&first);
 
     // GET /admin/nodes → the listing, application/json.
     let (status, ctype, rows) = request(addr, "GET", "/admin/nodes", None).await;
@@ -109,22 +106,26 @@ async fn approval_lifecycle_over_http() {
     assert_eq!(approved["status"], "approved");
     // The handshake seam sees it: registered for the key, conflict for
     // another (the record is the SAME table the approval wrote).
-    assert_eq!(nodes.verdict("home-pc", "AAA=").unwrap(), Verdict::Registered);
-    assert_eq!(nodes.verdict("home-pc", "BBB=").unwrap(), Verdict::Conflict);
+    assert_eq!(nodes.verdict("home-pc", &first_id).unwrap(), Verdict::Registered);
+    assert_eq!(
+        nodes.verdict("home-pc", &prism::nodes::token_credential("some-other-token")).unwrap(),
+        Verdict::Conflict
+    );
 
-    // Rotation: enroll + approve a second key → the first demotes (§6).
-    request(addr, "POST", "/admin/nodes", Some(json!({"alias": "home-pc", "public_key": "BBB="})))
-        .await;
+    // Rotation: mint + approve a second token → the first demotes (§6).
+    let (_, _, second) = request(addr, "POST", "/admin/nodes", Some(json!({"alias": "home-pc"}))).await;
+    let second_token = second["token"].as_str().unwrap().to_string();
+    let second_id = prism::nodes::token_credential(&second_token);
     let (status, _, _) = request(
         addr,
         "POST",
         "/admin/nodes/home-pc/approve",
-        Some(json!({"public_key": "BBB="})),
+        Some(json!({"credential": second_id})),
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(nodes.verdict("home-pc", "BBB=").unwrap(), Verdict::Registered);
-    assert_eq!(nodes.verdict("home-pc", "AAA=").unwrap(), Verdict::Conflict);
+    assert_eq!(nodes.verdict("home-pc", &second_id).unwrap(), Verdict::Registered);
+    assert_eq!(nodes.verdict("home-pc", &first_id).unwrap(), Verdict::Conflict);
 
     // Revoke the alias → live keys fall to pending-verdict (revoked),
     // a fresh claim queues again — never self-service.
@@ -146,14 +147,14 @@ async fn approval_lifecycle_over_http() {
 async fn failures_are_the_machines_answer() {
     let (addr, _nodes) = boot().await;
 
-    let (status, _, _) = request(addr, "POST", "/admin/nodes", Some(json!({"alias": "x"}))).await;
-    assert_eq!(status, 400, "missing public_key");
+    let (status, _, _) = request(addr, "POST", "/admin/nodes", Some(json!({}))).await;
+    assert_eq!(status, 400, "missing alias");
 
-    request(addr, "POST", "/admin/nodes", Some(json!({"alias": "amb", "public_key": "K1"}))).await;
-    request(addr, "POST", "/admin/nodes", Some(json!({"alias": "amb", "public_key": "K2"}))).await;
+    request(addr, "POST", "/admin/nodes", Some(json!({"alias": "amb"}))).await;
+    request(addr, "POST", "/admin/nodes", Some(json!({"alias": "amb"}))).await;
     let resp = raw(addr, "POST", "/admin/nodes/amb/approve", None).await;
     assert!(resp.starts_with("HTTP/1.1 409"), "{resp}");
-    assert!(resp.contains("no unique pending key"), "the reason travels for the human: {resp}");
+    assert!(resp.contains("no unique pending"), "the reason travels for the human: {resp}");
 
     let (status, _, _) = request(addr, "POST", "/admin/nodes/ghost/approve", None).await;
     assert_eq!(status, 409);

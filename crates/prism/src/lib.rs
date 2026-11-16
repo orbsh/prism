@@ -441,9 +441,16 @@ impl Gateway {
         // query, so it takes a bare accept over the prefixed stream
         // (the upgrade replaying its head), not the client handshake.
         if let Some(alias) = head.path.strip_prefix("/effector/").filter(|a| !a.is_empty() && !a.contains('/')) {
+            // The token rides the dial (ADR-0003): read it off the query before the socket is
+            // served, and let the mount decide (a `required` plane refuses a tokenless dial).
+            let token = head
+                .query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("token="))
+                .map(str::to_string);
             let stream = code_export::Prefixed::new(head.bytes, stream);
             let ws = tokio_tungstenite::accept_async(stream).await?;
-            return effectors::serve_mounted(self.as_ref(), alias.to_string(), ws).await;
+            return effectors::serve_mounted(self.as_ref(), alias.to_string(), token, ws).await;
         }
         let stream = code_export::Prefixed::new(head.bytes, stream);
 

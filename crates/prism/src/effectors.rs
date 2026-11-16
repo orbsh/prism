@@ -42,9 +42,14 @@ where
 /// Serve one effector connection whose upgrade requested
 /// `/effector/{alias}`. Runs the register handshake, then the
 /// reader/writer pair, to connection end.
+///
+/// `token` is what arrived on the dial (`?token=…`). It is the node's authority (ADR-0003): the
+/// plane hashes it and asks the registry whether that digest is approved for the alias. Nothing
+/// about identity travels inside a frame — the frame says what the node IS.
 pub(crate) async fn serve_mounted(
     gw: &Gateway,
     path_alias: String,
+    token: Option<String>,
     ws: tokio_tungstenite::WebSocketStream<code_export::Prefixed>,
 ) -> anyhow::Result<()> {
     let realm = gw.engine.realm.clone();
@@ -57,32 +62,17 @@ pub(crate) async fn serve_mounted(
         .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
     let (mut sink, mut stream) = ws.split();
 
-    // THE HOST SPEAKS FIRST: a fresh nonce, in either posture. One wire shape means a node
-    // never has to know how it is being trusted, and a replayed Register cannot answer a
-    // later connection.
-    let nonce = effector_protocol::nonce();
-    sink.send(Message::Text(
-        serde_json::to_string(&Frame::Challenge { nonce: nonce.clone() })?,
-    ))
-    .await?;
+    // The node speaks first, and only to describe itself: alias + carriers. Its authority rode
+    // the dial, so there is no challenge to answer and no signature to check — a proof that must
+    // travel inside a frame is a credential inside a frame, and the connection already carries it.
+    let credential = token.as_deref().map(crate::nodes::token_credential);
 
-    // Registration: alias + carriers + proof. The frame's alias must equal the path's (the
-    // URL segment is the claim this socket arrived under) and the signature must verify
-    // against the public key the frame states — that is possession, and it is checked in
-    // BOTH postures: `open` means "no registry", never "no proof".
-    let (node_alias, carriers, public_key) = match stream.next().await {
+    let (node_alias, carriers) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
-            Frame::Register { node_alias, carriers, public_key, signature }
-                if node_alias == path_alias =>
-            {
-                if let Err(why) =
-                    effector_protocol::verify_register(&public_key, &nonce, &node_alias, &signature)
-                {
-                    refuse(&mut sink, format!("signature: {why}")).await;
-                    anyhow::bail!("register refused for '{node_alias}': {why}");
-                }
-                (node_alias, carriers, public_key)
-            }
+            Frame::Register {
+                node_alias,
+                carriers,
+            } if node_alias == path_alias => (node_alias, carriers),
             // A claim that contradicts its own URL is refused like any other, and STATED: the
             // node operator has one socket and no log on this machine, so a reason that only
             // exists in the host's log is a reason nobody can act on.
@@ -109,26 +99,41 @@ pub(crate) async fn serve_mounted(
     match gw.posture() {
         crate::nodes::Posture::Open => {
             eprintln!(
-                "effector mount: '{node_alias}' key {} verified; posture `open` — registry not consulted",
-                &public_key[..public_key.len().min(16)]
+                "effector mount: '{node_alias}' dialed {}; posture `open` — registry not consulted",
+                if credential.is_some() {
+                    "with a token"
+                } else {
+                    "without a token"
+                }
             );
         }
         crate::nodes::Posture::Required => {
-            let verdict = gw.nodes().verdict(&node_alias, &public_key)?;
+            let credential = match credential.as_deref() {
+                Some(c) => c,
+                None => {
+                    let reason = format!(
+                        "no token on the dial for '{node_alias}' — this plane is in `required` \
+                         posture; mint one with POST /admin/nodes and pass it as `?token=…`"
+                    );
+                    refuse(&mut sink, reason.clone()).await;
+                    anyhow::bail!("register refused: {reason}");
+                }
+            };
+            let verdict = gw.nodes().verdict(&node_alias, credential)?;
             match verdict {
                 crate::nodes::Verdict::Registered => {}
                 crate::nodes::Verdict::Pending => {
                     let reason = format!(
-                        "no approved key for '{node_alias}' yet — this claim is queued; \
-                         approve it with POST /admin/nodes/{{alias}}/approve"
+                        "no approved credential for '{node_alias}' yet — this token's digest is \
+                         queued; approve it with POST /admin/nodes/{{alias}}/approve"
                     );
                     refuse(&mut sink, reason.clone()).await;
                     anyhow::bail!("register refused: {reason}");
                 }
                 crate::nodes::Verdict::Conflict => {
                     let reason = format!(
-                        "another key holds the approved slot for '{node_alias}' — an enrolled \
-                         key is never silently replaced; revoke it first"
+                        "another token holds the approved slot for '{node_alias}' — an enrolled \
+                         node is never silently replaced; revoke it first"
                     );
                     refuse(&mut sink, reason.clone()).await;
                     anyhow::bail!("register refused: {reason}");

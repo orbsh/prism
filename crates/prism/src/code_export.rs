@@ -36,8 +36,11 @@ use tokio::net::TcpStream;
 /// leak into the handshake stream.
 pub(crate) struct Head {
     pub bytes: Vec<u8>,
-    /// Request target (query stripped; the routes ignore query).
+    /// Request target (query stripped; only the effector mount reads it).
     pub path: String,
+    /// The query string, verbatim after `?` (`""` when absent). The effector dial carries its
+    /// token here (ADR-0003): a credential in the dial, never in a frame.
+    pub query: String,
     pub method: String,
     pub body: Vec<u8>,
 }
@@ -67,6 +70,7 @@ pub(crate) async fn read_head(stream: &mut TcpStream) -> Option<Head> {
             let method = parts.next().unwrap_or("").to_string();
             let target = parts.next().unwrap_or("");
             let path = target.split('?').next().unwrap_or(target).to_string();
+            let query = target.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
             let head_bytes = bytes[..pos].to_vec();
             // Body: whatever arrived past the header + the announced
             // Content-Length, read to completion (bounded by the same
@@ -83,7 +87,7 @@ pub(crate) async fn read_head(stream: &mut TcpStream) -> Option<Head> {
                 }
                 body.extend_from_slice(&chunk[..n]);
             }
-            return Some(Head { bytes: head_bytes, path, method, body });
+            return Some(Head { bytes: head_bytes, path, query, method, body });
         }
         if bytes.len() > BOUND {
             return None;
