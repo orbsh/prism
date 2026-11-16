@@ -229,6 +229,18 @@ impl Registry {
         self.bind_device(device, anonymous())
     }
 
+    /// Who a device belongs to, right now. Device identity is THIS plane's (devices, tokens and
+    /// the binding between them are here), so the answer to "whose turn is this" is asked here and
+    /// nowhere else — a booth that received a device id does not have to own a second copy of the
+    /// mapping. `anonymous()` for a device that never logged in or was revoked.
+    pub fn owner_of(&self, device: DeviceId) -> anyhow::Result<UserId> {
+        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        match t.get_row(&device)? {
+            Some(d) => Ok(d.user),
+            None => Ok(anonymous()),
+        }
+    }
+
     /// Server-side revocation: the binding clears AND the trust dies, and no token of that device
     /// survives — re-login is the only path back. Returns the prior binding (the caller reports
     /// it; anonymous = was anonymous).

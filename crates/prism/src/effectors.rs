@@ -201,6 +201,154 @@ pub(crate) async fn serve_mounted(
             // it — the caller's terminal value is already decided — so the honest half
             // is recorded here: `landed: false` means the node could not reach the work
             // and that call kept running. Silence must not read as "it stopped".
+            // THE RESOURCE DOOR (ADR-0003 §7). The node names a resource and asks for material for
+            // ONE transfer; whose resource it is comes from here, because devices and their owners
+            // are this plane's registry — the booth that runs the turn never holds a second copy
+            // of that mapping. The answer is the venue's, so the request is a CALL into the booth
+            // instance that dispatched this remote call, and it is SPAWNED for the same reason the
+            // ctx bridge above is: its result arrives as a frame only this loop can read.
+            Frame::MaterialRequest {
+                call_id,
+                kind,
+                seq,
+                write,
+            } => {
+                let target = {
+                    let r = realm.lock().await;
+                    r.pending_remote.get(&call_id).map(|p| p.instance.clone())
+                };
+                let owner = target
+                    .as_ref()
+                    .and_then(|inst| match &inst.key {
+                        // The envelope addresses a booth by DEVICE (ADR-0018), so the instance key
+                        // is the device text a page's connection was identified by.
+                        aura_booth::InstanceKey::Named(device) => {
+                            device.parse::<okm_core::Uuid7>().ok()
+                        }
+                        aura_booth::InstanceKey::Singleton => None,
+                    })
+                    .and_then(|device| gw.registry().owner_of(device).ok());
+                let realm = realm.clone();
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let refusal = |reason: &str| Frame::MaterialFailed {
+                        call_id: call_id.clone(),
+                        kind: kind.clone(),
+                        seq,
+                        reason: reason.to_string(),
+                    };
+                    let (Some(target), Some(owner)) = (target, owner) else {
+                        tx.send(refusal(
+                            "no turn in flight owns this call, or its device has no owner",
+                        ))
+                        .ok();
+                        return;
+                    };
+                    let args = serde_json::json!({
+                        "owner": owner.to_string(),
+                        "rtype": &kind,
+                        "seq": seq,
+                        "write": write,
+                    });
+                    let frame = match aura_realm::Realm::call(&realm, None, target, "material", args)
+                        .await
+                    {
+                        Ok(slot) => match slot.wait().await {
+                            Ok(aura_booth::call::Waited::Done(Ok(answer))) => Frame::Material {
+                                call_id: call_id.clone(),
+                                kind: kind.clone(),
+                                seq,
+                                url: answer
+                                    .get("url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                credential: answer
+                                    .get("credential")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
+                                transport: answer
+                                    .get("transport")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                mode: answer
+                                    .get("mode")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("ro")
+                                    .to_string(),
+                                at: answer
+                                    .get("ref")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
+                            },
+                            Ok(aura_booth::call::Waited::Done(Err(e))) => {
+                                refusal(&format!("material refused: {e:#}"))
+                            }
+                            Ok(aura_booth::call::Waited::Pending(_)) => {
+                                refusal("material: the booth answered on the cold tier")
+                            }
+                            Err(e) => refusal(&format!("material: {e:#}")),
+                        },
+                        Err(e) => refusal(&format!("material: {e:#}")),
+                    };
+                    tx.send(frame).ok();
+                });
+            }
+            // The node published; the venue records the version and advances the pointer. Fire and
+            // follow: nothing on the wire waits for this, but a failure is logged rather than
+            // swallowed — a lost version is a lost undo.
+            Frame::Synced {
+                call_id,
+                kind,
+                seq,
+                reference,
+            } => {
+                let target = {
+                    let r = realm.lock().await;
+                    r.pending_remote.get(&call_id).map(|p| p.instance.clone())
+                };
+                let owner = target
+                    .as_ref()
+                    .and_then(|inst| match &inst.key {
+                        aura_booth::InstanceKey::Named(device) => {
+                            device.parse::<okm_core::Uuid7>().ok()
+                        }
+                        aura_booth::InstanceKey::Singleton => None,
+                    })
+                    .and_then(|device| gw.registry().owner_of(device).ok());
+                let realm = realm.clone();
+                let path_alias = path_alias.clone();
+                tokio::spawn(async move {
+                    let (Some(target), Some(owner)) = (target, owner) else {
+                        eprintln!("prism: node '{path_alias}' published {kind}/{seq} with no owner — not recorded");
+                        return;
+                    };
+                    let args = serde_json::json!({
+                        "owner": owner.to_string(),
+                        "rtype": &kind,
+                        "seq": seq,
+                        "reference": reference,
+                        "call_id": call_id,
+                    });
+                    let landed = match aura_realm::Realm::call(&realm, None, target, "published", args)
+                        .await
+                    {
+                        Ok(slot) => slot.wait().await,
+                        Err(e) => Err(e),
+                    };
+                    match landed {
+                        Ok(aura_booth::call::Waited::Done(Ok(_))) => {}
+                        Ok(aura_booth::call::Waited::Done(Err(e))) => {
+                            eprintln!("prism: version of {kind}/{seq} not recorded: {e:#}");
+                        }
+                        Ok(aura_booth::call::Waited::Pending(_)) => {
+                            eprintln!("prism: version of {kind}/{seq}: the booth answered on the cold tier");
+                        }
+                        Err(e) => eprintln!("prism: version of {kind}/{seq}: {e:#}"),
+                    }
+                });
+            }
             Frame::Interrupted { call_id, landed } => {
                 if !landed {
                     eprintln!(
