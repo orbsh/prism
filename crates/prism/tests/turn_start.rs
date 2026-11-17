@@ -436,7 +436,9 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
                     { "id": "add", "kind": "call", "code": code_ids[0],
                       "inputs": { "n": 4 },
                       "out_edges": [{ "to": "done" }] },
-                    { "id": "done", "kind": "end" }
+                    // The exit is the run's RESULT — the one thing that comes back
+                    // to the model. An exit that names nothing returns nothing.
+                    { "id": "done", "kind": "end", "inputs": { "total": "$.add.sum" } }
                 ]
             })
             .to_string(),
@@ -458,7 +460,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     // The turn's deployment facts are ROWS in its own namespace now (gravity ADR-0007); only the
     // two spawn specs are environment, because they are where the binary lives.
     let (endpoint, seen) =
-        sse_server(skill_id, code_ids[1], PRODUCED, PRODUCED_2).await;
+        sse_server(skill_id, code_ids[1], "\"total\":7", PRODUCED_2).await;
     seed_turn_rows(&engine, &store_url, &endpoint).await;
     std::env::set_var("GRAVITY_TEST_KEY", "test-key");
 
@@ -504,8 +506,9 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     }
     assert_eq!(reply, "the sum is seven");
 
-    // What the MODEL saw: round 1 carries a tool message whose content is the
-    // node's answer — the proof the walk reached execution and came back.
+    // What the MODEL saw: round 1 carries a tool message with the run's OUTCOME —
+    // the proof the walk reached execution and came back. Not the walk itself: the
+    // step's raw document is the ledger's, and the model reads the exit's result.
     let bodies = seen.lock().unwrap().clone();
     assert_eq!(
         bodies.len(),
@@ -518,12 +521,16 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
         .iter()
         .find(|message| message["role"] == "tool")
         .expect("the fed-back tool message");
+    let told: Value = serde_json::from_str(tool_message["content"].as_str().unwrap_or(""))
+        .expect("the tool message is a document");
+    assert_eq!(told["status"], "complete", "{told}");
+    assert_eq!(
+        told["result"]["total"], 7,
+        "the run's result reached the model: {told}"
+    );
     assert!(
-        tool_message["content"]
-            .as_str()
-            .unwrap_or_default()
-            .contains(PRODUCED),
-        "the node's value reached the model: {tool_message}"
+        told.get("ran").is_none() && told.get("ready").is_none(),
+        "the walk stayed in the ledger: {told}"
     );
 
     // The call site closed the work: the task bound to step 0 is `done`, and
