@@ -56,6 +56,7 @@ async fn boot() -> (std::net::SocketAddr, aura_engine::Engine) {
 /// The real effector's dial config, pointed at prism's mount path.
 fn effector_config(port: u16, alias: &str) -> effector_config::EffectorConfig {
     effector_config::EffectorConfig {
+        class: effector_config::Class::Host,
         control_plane_url: format!("ws://127.0.0.1:{port}/effector/{alias}"),
         // The call path, not the sandbox (steel runs in-process).
         sandbox: true,
@@ -226,6 +227,7 @@ async fn effector_mount_refuses_alias_mismatch() {
     // The node declares a shape; there is nothing to answer. The WRONG alias (path said
     // test-node) is what this test is about.
     let frame = effector_protocol::Frame::Register {
+        class: effector_protocol::NodeClass::Host,
         node_alias: "other-node".into(),
         carriers: vec!["steel".into()],
     };

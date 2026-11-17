@@ -362,6 +362,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     // The node dials in (the real effector runtime, node side of this stack) with a token:
     // the authority is the dial, and this plane is `open` so no registry is consulted.
     let node = effector_runtime::remote::run(effector_config::EffectorConfig {
+        class: effector_config::Class::Host,
         control_plane_url: format!("ws://127.0.0.1:{}/effector/skill-node", addr.port()),
         sandbox: false,
         token: "skill-node-token".into(),

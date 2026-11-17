@@ -85,12 +85,13 @@ pub(crate) async fn serve_mounted(
     // travel inside a frame is a credential inside a frame, and the connection already carries it.
     let credential = token.as_deref().map(crate::nodes::token_credential);
 
-    let (node_alias, carriers) = match stream.next().await {
+    let (node_alias, carriers, class) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
             Frame::Register {
                 node_alias,
                 carriers,
-            } if node_alias == path_alias => (node_alias, carriers),
+                class,
+            } if node_alias == path_alias => (node_alias, carriers, class),
             // A claim that contradicts its own URL is refused like any other, and STATED: the
             // node operator has one socket and no log on this machine, so a reason that only
             // exists in the host's log is a reason nobody can act on.
@@ -171,6 +172,18 @@ pub(crate) async fn serve_mounted(
     if let Some(line) = crate::mounts::dial_in_note(&node_alias, &carriers) {
         eprintln!("{line}");
     }
+    // What contains this node (ADR-0003 §1): the one fact that decides whether it may be handed code
+    // nobody reviewed. Stated at the dial like the alias and the carriers, because an operator
+    // reading a log needs to know which of these machines can run a turn's fresh script.
+    eprintln!(
+        "effector mount: '{node_alias}' is class `{}`{}",
+        class.as_str(),
+        if class == effector_protocol::NodeClass::Container {
+            ""
+        } else {
+            " — a call that requires a container is refused here, in words"
+        }
+    );
 
     // Writer channel: realm calls push frames; this task owns the sink.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();

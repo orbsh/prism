@@ -96,6 +96,7 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
     socket
         .send(Message::Text(
             serde_json::to_string(&Frame::Register {
+                class: effector_protocol::NodeClass::Host,
                 node_alias: "res-node".into(),
                 carriers: vec!["exec".into()],
             })

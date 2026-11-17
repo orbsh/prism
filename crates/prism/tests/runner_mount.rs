@@ -131,6 +131,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     // The node dials in (a real effector, node side of the same stack) with a token on the
     // dial — the authority is the connection (effector ADR-0003), and this plane is `open`.
     let config = effector_config::EffectorConfig {
+        class: effector_config::Class::Host,
         control_plane_url: format!("ws://127.0.0.1:{}/effector/runner-node", addr.port()),
         // The policy belongs to the deployment; this test locks the call path.
         sandbox: false,

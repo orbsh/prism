@@ -101,6 +101,7 @@ async fn recv_frame(ws: &mut WsClient) -> Frame {
 async fn declare(ws: &mut WsClient, alias: &str) -> Frame {
     ws.send(Ws::Text(
         serde_json::to_string(&Frame::Register {
+            class: effector_protocol::NodeClass::Host,
             node_alias: alias.to_string(),
             carriers: vec!["nu".into()],
         })
