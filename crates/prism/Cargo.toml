@@ -13,6 +13,9 @@ okm-core = { git = "https://github.com/orbsh/okm", branch = "main", features = [
 argon2 = "0.5"
 aura-booth = { path = "../../../aura/crates/booth" }
 aura-engine = { path = "../../../aura/crates/engine" }
+# The bin chooses the engine's storage (PRISM_ENGINE): `Engine::start` takes aura's config
+# type, so the venue names it here rather than growing a second, prism-shaped copy.
+aura-config = { path = "../../../aura/crates/config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
@@ -37,7 +40,6 @@ tempfile = "3"
 mem-server = { path = "../../../krystallizer/crates/mem-server" }
 axum = "0.8"
 tokio-tungstenite = { version = "0.24", features = ["handshake"] }
-aura-config = { path = "../../../aura/crates/config" }
 effector-runtime = { path = "../../../effector/crates/runtime" }
 effector-config = { path = "../../../effector/crates/config" }
 # The e2e fixtures declare their k10r rows over the real HTTP doors. Async on

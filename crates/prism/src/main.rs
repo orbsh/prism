@@ -11,15 +11,28 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Demo config surface: the memory plane for booths (persistence is
-    // aura's own fjall switch); the REGISTRY is durable by nature —
-    // accounts and device bindings outlive the process (the whole §2
-    // restore story depends on it).
-    let engine = Engine::start(&Default::default()).await?;
+    // THE VENUE'S MEMORY IS DEPLOYMENT STATE, so it outlives the process the way the registry
+    // does: settings and model rows are what a deployment IS, and a `memory` plane lost them on
+    // every restart — the first turn after a boot then said "this deployment has no settings row"
+    // and the operator re-typed the same four fields. `PRISM_ENGINE=memory` is still there for the
+    // volatility someone wants (tests, a throwaway venue); absent, a build with the `fjall`
+    // feature keeps its own state under `PRISM_DATA`.
+    let dir = std::env::var("PRISM_DATA").unwrap_or_else(|_| "prism-data".into());
+    let want = std::env::var("PRISM_ENGINE").unwrap_or_else(|_| "fjall".into());
+    let engine_config = match (want.as_str(), cfg!(feature = "fjall")) {
+        ("memory", _) => aura_config::EngineConfig::default(),
+        ("fjall", true) => aura_config::EngineConfig {
+            engine: aura_config::Engine::Fjall,
+            data_dir: Some(std::path::Path::new(&dir).join("engine")),
+            ..Default::default()
+        },
+        ("fjall", false) => anyhow::bail!("PRISM_ENGINE=fjall needs this build's `fjall` feature"),
+        (other, _) => anyhow::bail!("PRISM_ENGINE `{other}` is neither `memory` nor `fjall`"),
+    };
+    let engine = Engine::start(&engine_config).await?;
     // The REGISTRY first: it is durable by nature — accounts, devices and bindings outlive the
     // process (the whole §2 restore story depends on it) — and the auth booth reads the same
     // instance (accounts ns 50, verifiers ns 55).
-    let dir = std::env::var("PRISM_DATA").unwrap_or_else(|_| "prism-data".into());
     let registry = Registry::open(std::path::Path::new(&dir))?;
     // The shipped auth booth: the verbs stay here, the proof lives behind one call.
     Gateway::with_auth(&engine, &registry).await?;
