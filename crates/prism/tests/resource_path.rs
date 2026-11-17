@@ -5,12 +5,14 @@
 //! is only the node's TRANSFER work — it is the half this venue never does, so the test asserts the
 //! three things the venue IS responsible for:
 //!
-//!   1. a turn's declaration reaches the node (ToolCall.resources), owner stamped by the venue;
-//!   2. the node's ask is answered from the venue's registry, with the key minted for that call;
-//!   3. a publish records a version and advances the pointer — twice, so the chain is visible.
+//!   1. the node's ask is answered from the venue's registry, with the key minted for that call;
+//!   2. a publish records a version and advances the pointer — twice, so the chain is visible;
+//!   3. a resource the venue offered read-only is refused a write half by name.
 //!
 //! The node never names an owner and never names a location: it asks by (kind, seq) and receives
-//! material. A test that let it name either would be testing a different design.
+//! material. A test that let it name either would be testing a different design. What TRIGGERS the
+//! ask is the script (`ctx.resource`) — that is the node's own business, so this test plays the
+//! node and asks directly, the way the host op will.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -111,8 +113,8 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         Frame::Registered
     ));
 
-    // The turn's dispatch: the declaration rides the call's own args, which is where the realm
-    // reads the environment from.
+    // The turn's dispatch. It carries no declaration: a resource is asked for at RUN time by the
+    // script, so the call itself names nothing.
     let device_key = device.to_string();
     let device_text = device_key.clone();
     let owner_text = user.to_string();
@@ -128,21 +130,16 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         let args = json!({
             "code": "print(1)",
             "args": {"n": 1},
-            "resources": [{"kind": "git", "seq": 1}],
             "sender": {"device": device_text, "user": owner_text},
         });
         aura_realm::Realm::call(&realm, None, target, "execute", args).await
     });
 
-    // 1. The node sees the declaration, and the owner is already on it (the venue's stamp).
-    let Frame::Call(ToolCall {
-        call_id, resources, ..
-    }) = next_frame(&mut socket).await
-    else {
+    // 1. The node sees its call. The owner the venue stamped at the entrance is what the ask below
+    // is answered against — the node never names one.
+    let Frame::Call(ToolCall { call_id, .. }) = next_frame(&mut socket).await else {
         panic!("the dispatch must reach the node as a Call");
     };
-    let declared: Vec<(String, u64)> = resources.iter().map(|r| (r.kind.clone(), r.seq)).collect();
-    assert_eq!(declared, vec![("git".to_string(), 1)]);
 
     // 2. The read half: address + the key, minted per call. The node asks by (kind, seq) only.
     socket
