@@ -220,7 +220,7 @@ async fn recv(ws: &mut WsClient) -> prism_protocol::Frame {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn an_answer_moves_the_run_and_never_reaches_the_model() {
     // The guest binaries must be named BEFORE the gateway registers the booth types.
     let gravity_bins = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../gravity/target/debug");

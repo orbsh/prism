@@ -305,7 +305,7 @@ async fn sse_server(
 // a SYNCHRONOUS client while mem-server is served by this same process, so a
 // current-thread runtime would park the only worker on its own request (the
 // deadlock this test first hit).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     // What the step's script prints — one JSON document, an arithmetic fact no
     // stub can fake: the number comes from the inputs the PLAN declares.
