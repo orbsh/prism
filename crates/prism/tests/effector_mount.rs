@@ -159,6 +159,8 @@ async fn effector_mount_remote_call_roundtrip() {
                 node_alias: "test-node".into(),
                 language: "steel".into(),
                 source: SRC.into(),
+                // The test node runs on this machine: bare metal, written down.
+                requires: Some(aura_booth::Requires::Host),
             },
             idle_ttl: Some(Duration::from_secs(60)),
             max_exec: None,

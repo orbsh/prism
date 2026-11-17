@@ -353,6 +353,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
         language: "python".into(),
         runner: py_spec.clone(),
         encoding: aura_booth::Encoding::Json,
+        requires: Some(aura_booth::Requires::Host),
     };
     let live = prism::mounts::register_all(&engine, std::slice::from_ref(&decl))
         .await

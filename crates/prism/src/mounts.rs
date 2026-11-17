@@ -43,6 +43,10 @@ pub struct MountDecl {
     /// declaration, not a dispatch mechanism — the runner spec is what runs,
     /// and per ADR-0001 §7 the LLM never picks a carrier.
     pub language: String,
+    /// What the node must be for this mount to run (effector ADR-0003 §1). `None` = the container:
+    /// a mount that says nothing gets the separated path, and a node that cannot separate refuses
+    /// the call by name. `Some(Host)` is the exception, written down by the mount.
+    pub requires: Option<aura_booth::Requires>,
     /// The runner: the process carrier's argv spec, or a carrier's source.
     pub runner: String,
     /// The frame codec for the process carriers (JSON default — a runner
@@ -65,6 +69,15 @@ impl MountDecl {
             Some("cbor") => Encoding::Cbor,
             Some(other) => anyhow::bail!("mount manifest: unknown encoding `{other}`"),
         };
+        // `requires` is absent from a manifest entry unless the mount must run on bare metal: a
+        // manifest that said nothing would otherwise be the one place the container default could
+        // be lost, so the field is read here and `None` keeps the default.
+        let requires = match v.get("requires").and_then(Value::as_str) {
+            None => None,
+            Some("container") => Some(aura_booth::Requires::Container),
+            Some("host") => Some(aura_booth::Requires::Host),
+            Some(other) => anyhow::bail!("mount manifest: unknown requires `{other}` (host|container)"),
+        };
         Ok(Self {
             type_name: s("type")?,
             node_alias: s("alias")?,
@@ -72,6 +85,7 @@ impl MountDecl {
             language: s("language")?,
             runner: s("runner")?,
             encoding,
+            requires,
         })
     }
 

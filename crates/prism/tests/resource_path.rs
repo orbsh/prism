@@ -64,6 +64,7 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         language: "python".into(),
         runner: "python3 -c 'pass'".into(),
         encoding: aura_booth::Encoding::Json,
+        requires: Some(aura_booth::Requires::Host),
     };
     let live = prism::mounts::register_all(&engine, std::slice::from_ref(&decl))
         .await

@@ -114,6 +114,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         language: language.into(),
         runner: runner.to_string(),
         encoding: aura_booth::Encoding::Json,
+        requires: Some(aura_booth::Requires::Host),
     };
     // The one-shot runners ride the `exec` carrier; the resident guest rides
     // `induction` — its wire is the frame protocol, not one request/response.
@@ -312,6 +313,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         language: "nu".into(),
         runner: nu_spec.clone(),
         encoding: aura_booth::Encoding::Json,
+        requires: Some(aura_booth::Requires::Host),
     };
     prism::mounts::register_all(&engine, std::slice::from_ref(&unbuilt))
         .await
@@ -429,6 +431,7 @@ fn the_manifest_and_the_announced_carriers_are_compared() {
         language: "nu".into(),
         runner: "nu /opt/runner/runner_nu.nu".into(),
         encoding: aura_booth::Encoding::Json,
+        requires: Some(aura_booth::Requires::Host),
     };
     let mounts = vec![
         mount("runner_nu", "exec"),
