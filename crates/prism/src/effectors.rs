@@ -228,69 +228,40 @@ pub(crate) async fn serve_mounted(
                         aura_booth::InstanceKey::Singleton => None,
                     })
                     .and_then(|device| gw.registry().owner_of(device).ok());
-                let realm = realm.clone();
+                let registry = { realm.lock().await.resources.clone() };
                 let tx = tx.clone();
                 tokio::spawn(async move {
-                    let refusal = |reason: &str| Frame::MaterialFailed {
+                    let refusal = |reason: String| Frame::MaterialFailed {
                         call_id: call_id.clone(),
                         kind: kind.clone(),
                         seq,
-                        reason: reason.to_string(),
+                        reason,
                     };
-                    let (Some(target), Some(owner)) = (target, owner) else {
+                    // The registry is the venue's own table (ADR-0048), not a booth's: no instance
+                    // has to be in flight, and nothing about a chat venue leaks into a build one.
+                    let (Some(_instance), Some(owner)) = (target, owner) else {
                         tx.send(refusal(
-                            "no turn in flight owns this call, or its device has no owner",
+                            "no turn in flight owns this call, or its device has no owner".into(),
                         ))
                         .ok();
                         return;
                     };
-                    let args = serde_json::json!({
-                        "owner": owner.to_string(),
-                        "rtype": &kind,
-                        "seq": seq,
-                        "write": write,
-                    });
-                    let frame = match aura_realm::Realm::call(&realm, None, target, "material", args)
-                        .await
+                    let frame = match aura_realm::resources::Id::new(&owner.to_string(), &kind, seq)
                     {
-                        Ok(slot) => match slot.wait().await {
-                            Ok(aura_booth::call::Waited::Done(Ok(answer))) => Frame::Material {
+                        Ok(id) => match registry.material(&id, write) {
+                            Ok(material) => Frame::Material {
                                 call_id: call_id.clone(),
                                 kind: kind.clone(),
                                 seq,
-                                url: answer
-                                    .get("url")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                credential: answer
-                                    .get("credential")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string),
-                                transport: answer
-                                    .get("transport")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or_default()
-                                    .to_string(),
-                                mode: answer
-                                    .get("mode")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("ro")
-                                    .to_string(),
-                                at: answer
-                                    .get("ref")
-                                    .and_then(|v| v.as_str())
-                                    .map(str::to_string),
+                                url: material.url,
+                                credential: material.credential,
+                                transport: kind.clone(),
+                                mode: material.mode.as_str().to_string(),
+                                at: material.at,
                             },
-                            Ok(aura_booth::call::Waited::Done(Err(e))) => {
-                                refusal(&format!("material refused: {e:#}"))
-                            }
-                            Ok(aura_booth::call::Waited::Pending(_)) => {
-                                refusal("material: the booth answered on the cold tier")
-                            }
-                            Err(e) => refusal(&format!("material: {e:#}")),
+                            Err(e) => refusal(format!("material: {e:#}")),
                         },
-                        Err(e) => refusal(&format!("material: {e:#}")),
+                        Err(e) => refusal(format!("{e:#}")),
                     };
                     tx.send(frame).ok();
                 });
@@ -317,35 +288,27 @@ pub(crate) async fn serve_mounted(
                         aura_booth::InstanceKey::Singleton => None,
                     })
                     .and_then(|device| gw.registry().owner_of(device).ok());
-                let realm = realm.clone();
+                let registry = { realm.lock().await.resources.clone() };
                 let path_alias = path_alias.clone();
                 tokio::spawn(async move {
-                    let (Some(target), Some(owner)) = (target, owner) else {
+                    let (Some(_instance), Some(owner)) = (target, owner) else {
                         eprintln!("prism: node '{path_alias}' published {kind}/{seq} with no owner — not recorded");
                         return;
                     };
-                    let args = serde_json::json!({
-                        "owner": owner.to_string(),
-                        "rtype": &kind,
-                        "seq": seq,
-                        "reference": reference,
-                        "call_id": call_id,
-                    });
-                    let landed = match aura_realm::Realm::call(&realm, None, target, "published", args)
-                        .await
-                    {
-                        Ok(slot) => slot.wait().await,
-                        Err(e) => Err(e),
-                    };
-                    match landed {
-                        Ok(aura_booth::call::Waited::Done(Ok(_))) => {}
-                        Ok(aura_booth::call::Waited::Done(Err(e))) => {
+                    let id = match aura_realm::resources::Id::new(&owner.to_string(), &kind, seq) {
+                        Ok(id) => id,
+                        Err(e) => {
                             eprintln!("prism: version of {kind}/{seq} not recorded: {e:#}");
+                            return;
                         }
-                        Ok(aura_booth::call::Waited::Pending(_)) => {
-                            eprintln!("prism: version of {kind}/{seq}: the booth answered on the cold tier");
+                    };
+                    // Blocking store work on the runtime's thread is not held by any lock: the
+                    // registry was cloned out of the realm above.
+                    match registry.published(&id, &call_id, &reference, crate::identity::now_ms()) {
+                        Ok((version, previous)) => {
+                            println!("prism: {kind}/{seq} published v{version} (was v{previous})");
                         }
-                        Err(e) => eprintln!("prism: version of {kind}/{seq}: {e:#}"),
+                        Err(e) => eprintln!("prism: version of {kind}/{seq} not recorded: {e:#}"),
                     }
                 });
             }
