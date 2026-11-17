@@ -414,6 +414,16 @@ impl Gateway {
             let _ = stream.shutdown().await;
             return Ok(());
         }
+        // Resources before the `serve_admin` prefix: that one claims every `/admin` path it does
+        // not know and answers 404, so a later mount would be unreachable (the same ordering bug
+        // `/admin/revoke` hit).
+        if let Some(response) =
+            admin::serve_resources(self.as_ref(), &head.method, &head.path, &head.body).await
+        {
+            let _ = stream.write_all(&response).await;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
         if let Some(response) = admin::serve_dead(self.as_ref(), &head.method, &head.path).await {
             let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;
