@@ -92,6 +92,32 @@ fn runner_path(file: &str) -> String {
     path
 }
 
+/// The store's doors, called the way the venue calls them: async, with the body
+/// already parsed. `reqwest::Client::new()` per call is fine for a fixture — it is
+/// the connection pool, not the client, that costs anything here.
+async fn post_json(url: &str, body: Value) -> Value {
+    reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .expect("POST body")
+}
+
+async fn get_json(url: &str) -> Value {
+    reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .expect("GET body")
+}
+
 async fn mem_server() -> String {
     let dir = tempfile::tempdir().unwrap();
     let app = mem_server::open(dir.path().to_path_buf()).unwrap();
@@ -389,20 +415,15 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     ] {
         // A code row is scoped since k10r ADR-0024 (it is a vertex of that
         // corpus's graph), so the door names the scope the turn runs in.
-        let code: Value = ureq::post(&format!("{store_url}/code/37"))
-            .send_json(json!({
+        let code: Value = post_json(&format!("{store_url}/code/37"), json!({
                 "language": "python",
                 "description": description,
                 "parameters": "{}",
                 "source": source,
-            }))
-            .unwrap()
-            .into_json()
-            .unwrap();
+            })).await;
         code_ids.push(code["code_id"].as_u64().unwrap());
     }
-    let skill: Value = ureq::post(&format!("{store_url}/skills/37"))
-        .send_json(json!({
+    let skill: Value = post_json(&format!("{store_url}/skills/37"), json!({
             "name": "add-three",
             "title": "adds three",
             "content": "Adds three to a number on this deployment's node.",
@@ -419,26 +440,19 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
                 ]
             })
             .to_string(),
-        }))
-        .unwrap()
-        .into_json()
-        .unwrap();
+        })).await;
     let skill_id = skill["node_id"].as_u64().unwrap();
 
     // A task BOUND to the first step (gravity ADR-0003 §3): the binding is an
     // ordinary fact (k10r ADR-0024 made the code row a vertex, so a fact can point
     // at it), and the call that finishes that code row closes it — no `move_task`
     // anywhere in this turn, and none asked for.
-    let opened: Value = ureq::post(&format!("{store_url}/tasks/37"))
-        .send_json(json!({
+    let opened: Value = post_json(&format!("{store_url}/tasks/37"), json!({
             "name": "add three to four",
             "next": "run the step",
             "finishes_on": [code_ids[0]],
             "ts_ms": 1_000,
-        }))
-        .unwrap()
-        .into_json()
-        .unwrap();
+        })).await;
     let task_id = opened["node_id"].as_u64().unwrap();
 
     // The turn's deployment facts are ROWS in its own namespace now (gravity ADR-0007); only the
@@ -514,11 +528,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
 
     // The call site closed the work: the task bound to step 0 is `done`, and
     // nobody had to say so.
-    let tasks: Value = ureq::get(&format!("{store_url}/tasks/37"))
-        .call()
-        .unwrap()
-        .into_json()
-        .unwrap();
+    let tasks: Value = get_json(&format!("{store_url}/tasks/37")).await;
     let bound = tasks
         .as_array()
         .unwrap()
@@ -533,11 +543,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     // The write side of the loop (k10r ADR-0016): the turn walked two DIFFERENT
     // code rows, so it reported the composition — counted, NOT promoted. The
     // key is the order the rows ran in, spelled by the walker.
-    let proposals: Value = ureq::get(&format!("{store_url}/skills/37/proposals"))
-        .call()
-        .unwrap()
-        .into_json()
-        .unwrap();
+    let proposals: Value = get_json(&format!("{store_url}/skills/37/proposals")).await;
     let rows = proposals.as_array().unwrap();
     assert_eq!(rows.len(), 1, "one composition: {proposals}");
     assert_eq!(
@@ -562,16 +568,8 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     // successes — and the counters are the node's own DECLARED FIELDS (the
     // 2026-10-27 amendment: a number every call bumps is not dynamic data), not
     // the weight system's edge counters.
-    let skill_row: Value = ureq::get(&format!("{store_url}/skills/37/{skill_id}"))
-        .call()
-        .unwrap()
-        .into_json()
-        .unwrap();
-    let raw: Value = ureq::get(&format!("{store_url}/graph/37"))
-        .call()
-        .unwrap()
-        .into_json()
-        .unwrap();
+    let skill_row: Value = get_json(&format!("{store_url}/skills/37/{skill_id}")).await;
+    let raw: Value = get_json(&format!("{store_url}/graph/37")).await;
     let skill_node = raw["nodes"]
         .as_array()
         .unwrap()
@@ -604,11 +602,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     assert_eq!(second_row["invoke_ok"].as_u64(), Some(1), "{second_row}");
 
     // Nothing promoted itself: the resolver still answers only the real skill.
-    let resolved: Value = ureq::post(&format!("{store_url}/skills/37/resolve"))
-        .send_json(json!({ "query": "add three" }))
-        .unwrap()
-        .into_json()
-        .unwrap();
+    let resolved: Value = post_json(&format!("{store_url}/skills/37/resolve"), json!({ "query": "add three" })).await;
     let names: Vec<&str> = resolved
         .as_array()
         .unwrap()

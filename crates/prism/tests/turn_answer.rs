@@ -28,6 +28,32 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 
+/// The store's doors, called the way the venue calls them: async, with the body
+/// already parsed. `reqwest::Client::new()` per call is fine for a fixture — it is
+/// the connection pool, not the client, that costs anything here.
+async fn post_json(url: &str, body: Value) -> Value {
+    reqwest::Client::new()
+        .post(url)
+        .json(&body)
+        .send()
+        .await
+        .expect("POST")
+        .json()
+        .await
+        .expect("POST body")
+}
+
+async fn get_json(url: &str) -> Value {
+    reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .expect("GET")
+        .json()
+        .await
+        .expect("GET body")
+}
+
 async fn mem_server() -> String {
     let dir = tempfile::tempdir().unwrap();
     let app = mem_server::open(dir.path().to_path_buf()).unwrap();
@@ -151,6 +177,12 @@ async fn seed_turn_rows(engine: &aura_engine::Engine, store_url: &str, endpoint:
     );
 }
 
+/// The run's document, decoded. Bounded callers poll it; nothing here waits.
+async fn read_run(store_url: &str, run_id: u64) -> Value {
+    let body = get_json(&format!("{store_url}/runs/37/{run_id}")).await;
+    serde_json::from_str(body["doc"].as_str().expect("a document")).expect("a run document")
+}
+
 type WsClient = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
@@ -213,16 +245,12 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
 
     let store_url = mem_server().await;
     // The skill: a plan with a step only a person can answer.
-    let skill: Value = ureq::post(&format!("{store_url}/skills/37"))
-        .send_json(json!({
+    let skill: Value = post_json(&format!("{store_url}/skills/37"), json!({
             "name": "ask-the-user",
             "title": "asks",
             "content": "Asks which way to go, then finishes.",
             "steps": PLAN,
-        }))
-        .unwrap()
-        .into_json()
-        .unwrap();
+        })).await;
     let skill_id = skill["node_id"].as_u64().unwrap();
 
     let (endpoint, seen) = sse_server(skill_id).await;
@@ -267,19 +295,11 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
 
     // The run exists, is rooted at the skill, and has NOTHING in its log: the ask has
     // not been answered, so nothing has happened.
-    let listed: Value = ureq::get(&format!("{store_url}/runs/37"))
-        .call()
-        .unwrap()
-        .into_json()
-        .unwrap();
+    let listed: Value = get_json(&format!("{store_url}/runs/37")).await;
     let runs = listed.as_array().expect("a list");
     assert_eq!(runs.len(), 1, "one run: {listed}");
     let run_id = runs[0]["run_id"].as_u64().unwrap();
-    let doc: Value = ureq::get(&format!("{store_url}/runs/37/{run_id}"))
-        .call()
-        .unwrap()
-        .into_json()
-        .unwrap();
+    let doc: Value = get_json(&format!("{store_url}/runs/37/{run_id}")).await;
     let text = doc["doc"].as_str().unwrap();
     assert!(
         text.contains(&format!("\"skill:37/{skill_id}\"")),
@@ -301,21 +321,13 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
     // A PAGE DOES NOT HEAR ITS OWN INPUT ECHOED (prism ui.rs excludes the sender), so
     // the answering connection is not where the consequence shows up — the STORE is.
     // Reads are bounded: a door that never answers must fail the test, not hang it.
-    let read_run = |run_id: u64| -> Value {
-        let body: Value = ureq::get(&format!("{store_url}/runs/37/{run_id}"))
-            .call()
-            .unwrap()
-            .into_json()
-            .unwrap();
-        serde_json::from_str(body["doc"].as_str().unwrap()).unwrap()
-    };
-    let mut moved = read_run(run_id);
+    let mut moved = read_run(&store_url, run_id).await;
     for _ in 0..50 {
         if moved["entries"].as_array().map(Vec::len).unwrap_or(0) >= 2 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        moved = read_run(run_id);
+        moved = read_run(&store_url, run_id).await;
     }
 
     let run = moved;

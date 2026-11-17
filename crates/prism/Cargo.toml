@@ -40,8 +40,11 @@ tokio-tungstenite = { version = "0.24", features = ["handshake"] }
 aura-config = { path = "../../../aura/crates/config" }
 effector-runtime = { path = "../../../effector/crates/runtime" }
 effector-config = { path = "../../../effector/crates/config" }
-# The e2e fixtures declare their k10r rows over the real HTTP doors.
-ureq = { version = "2", features = ["json"] }
+# The e2e fixtures declare their k10r rows over the real HTTP doors. Async on
+# purpose: a blocking client inside the test's own runtime blocks the executor the
+# server side runs on, and the test hangs instead of failing (0.12, rustls: no
+# OpenSSL to link).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [features]
 default = ["steel", "python", "fjall"]
