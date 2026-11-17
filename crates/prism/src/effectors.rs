@@ -26,6 +26,24 @@ use effector_protocol::{Frame, HostFrame};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
+
+/// Whose resources a remote call may touch. The realm recorded the owner when it dispatched the
+/// call (stamped from the turn's envelope); this plane only parses the text it is given. It does
+/// NOT look at the instance key: that key's shape is ADR-0018's vocabulary and belongs to the
+/// layer that defines it, not to the resource door — the same door was reading it twice, once per
+/// arm, and both copies broke as soon as a mount instance carried a call instead of a turn.
+async fn owner_of_call(realm: &aura_realm::SharedRealm, call_id: &str) -> Option<okm_core::Uuid7> {
+    let owner = {
+        realm
+            .lock()
+            .await
+            .pending_remote
+            .get(call_id)
+            .and_then(|p| p.owner.clone())
+    };
+    owner.and_then(|text| text.parse::<okm_core::Uuid7>().ok())
+}
+
 /// Answer a refused claim with the reason, then let the caller close. Best-effort by
 /// construction: the operator's evidence is worth one frame, never a hang.
 async fn refuse<S>(sink: &mut S, reason: String)
@@ -213,21 +231,7 @@ pub(crate) async fn serve_mounted(
                 seq,
                 write,
             } => {
-                let target = {
-                    let r = realm.lock().await;
-                    r.pending_remote.get(&call_id).map(|p| p.instance.clone())
-                };
-                let owner = target
-                    .as_ref()
-                    .and_then(|inst| match &inst.key {
-                        // The envelope addresses a booth by DEVICE (ADR-0018), so the instance key
-                        // is the device text a page's connection was identified by.
-                        aura_booth::InstanceKey::Named(device) => {
-                            device.parse::<okm_core::Uuid7>().ok()
-                        }
-                        aura_booth::InstanceKey::Singleton => None,
-                    })
-                    .and_then(|device| gw.registry().owner_of(device).ok());
+                let owner = owner_of_call(&realm, &call_id).await;
                 let registry = { realm.lock().await.resources.clone() };
                 let tx = tx.clone();
                 tokio::spawn(async move {
@@ -239,9 +243,11 @@ pub(crate) async fn serve_mounted(
                     };
                     // The registry is the venue's own table (ADR-0048), not a booth's: no instance
                     // has to be in flight, and nothing about a chat venue leaks into a build one.
-                    let (Some(_instance), Some(owner)) = (target, owner) else {
+                    let Some(owner) = owner else {
                         tx.send(refusal(
-                            "no turn in flight owns this call, or its device has no owner".into(),
+                            "no owner is recorded for this call — the realm stamped none when it \
+                             dispatched, so this plane cannot say whose resource is meant"
+                                .into(),
                         ))
                         .ok();
                         return;
@@ -275,23 +281,11 @@ pub(crate) async fn serve_mounted(
                 seq,
                 reference,
             } => {
-                let target = {
-                    let r = realm.lock().await;
-                    r.pending_remote.get(&call_id).map(|p| p.instance.clone())
-                };
-                let owner = target
-                    .as_ref()
-                    .and_then(|inst| match &inst.key {
-                        aura_booth::InstanceKey::Named(device) => {
-                            device.parse::<okm_core::Uuid7>().ok()
-                        }
-                        aura_booth::InstanceKey::Singleton => None,
-                    })
-                    .and_then(|device| gw.registry().owner_of(device).ok());
+                let owner = owner_of_call(&realm, &call_id).await;
                 let registry = { realm.lock().await.resources.clone() };
                 let path_alias = path_alias.clone();
                 tokio::spawn(async move {
-                    let (Some(_instance), Some(owner)) = (target, owner) else {
+                    let Some(owner) = owner else {
                         eprintln!("prism: node '{path_alias}' published {kind}/{seq} with no owner — not recorded");
                         return;
                     };

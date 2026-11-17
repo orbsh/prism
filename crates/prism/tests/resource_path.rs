@@ -114,16 +114,22 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
     // The turn's dispatch: the declaration rides the call's own args, which is where the realm
     // reads the environment from.
     let device_key = device.to_string();
+    let device_text = device_key.clone();
+    let owner_text = user.to_string();
     let realm = engine.realm.clone();
     let call = tokio::spawn(async move {
         let target = aura_booth::InstanceId {
             booth_type: "runner_res".into(),
             key: InstanceKey::Named(device_key),
         };
+        // The envelope a turn arrives with: the plane authenticated this device, so `sender.user`
+        // is what the realm stamps on the activation. Without it the venue has no owner for the
+        // call and says so — which is the point of not inferring one from a key.
         let args = json!({
             "code": "print(1)",
             "args": {"n": 1},
             "resources": [{"kind": "git", "seq": 1}],
+            "sender": {"device": device_text, "user": owner_text},
         });
         aura_realm::Realm::call(&realm, None, target, "execute", args).await
     });
@@ -169,7 +175,7 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
 
     // 3. The publish: a version row, then the pointer. Twice, so the chain is visible.
     let mut published = Vec::new();
-    for (n, reference) in ["main@abc", "main@def"].into_iter().enumerate() {
+    for reference in ["main@abc", "main@def"] {
         socket
             .send(Message::Text(
                 serde_json::to_string(&Frame::Synced {
