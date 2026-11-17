@@ -219,16 +219,16 @@ pub(crate) async fn serve_mounted(
             // it — the caller's terminal value is already decided — so the honest half
             // is recorded here: `landed: false` means the node could not reach the work
             // and that call kept running. Silence must not read as "it stopped".
-            // THE RESOURCE DOOR (ADR-0003 §7). The node names a resource and asks for material for
-            // ONE transfer; whose resource it is comes from here, because devices and their owners
-            // are this plane's registry — the booth that runs the turn never holds a second copy
-            // of that mapping. The answer is the venue's, so the request is a CALL into the booth
-            // instance that dispatched this remote call, and it is SPAWNED for the same reason the
-            // ctx bridge above is: its result arrives as a frame only this loop can read.
+            // THE RESOURCE DOOR (ADR-0003 §7, ADR-0049). The node's script asked for one kind and
+            // this is what reaching it takes; WHO is asking comes from here, because devices and
+            // their tenants are this plane's registry — the booth that runs the turn never holds a
+            // second copy of that mapping. The answer is the venue's, so the request is a CALL into
+            // the booth instance that dispatched this remote call, and it is SPAWNED for the same
+            // reason the ctx bridge above is: its result arrives as a frame only this loop can
+            // read.
             Frame::MaterialRequest {
                 call_id,
                 kind,
-                seq,
                 write,
             } => {
                 let owner = owner_of_call(&realm, &call_id).await;
@@ -238,7 +238,6 @@ pub(crate) async fn serve_mounted(
                     let refusal = |reason: String| Frame::MaterialFailed {
                         call_id: call_id.clone(),
                         kind: kind.clone(),
-                        seq,
                         reason,
                     };
                     // The registry is the venue's own table (ADR-0048), not a booth's: no instance
@@ -252,57 +251,17 @@ pub(crate) async fn serve_mounted(
                         .ok();
                         return;
                     };
-                    let frame = match aura_realm::resources::Id::new(&owner.to_string(), &kind, seq)
-                    {
-                        Ok(id) => match registry.material(&id, write) {
-                            Ok(material) => Frame::Material {
-                                call_id: call_id.clone(),
-                                kind: kind.clone(),
-                                seq,
-                                url: material.url,
-                                credential: material.credential,
-                                mode: material.mode.as_str().to_string(),
-                                at: material.at,
-                            },
-                            Err(e) => refusal(format!("material: {e:#}")),
+                    let frame = match registry.material(&owner.to_string(), &kind, write) {
+                        Ok(material) => Frame::Material {
+                            call_id: call_id.clone(),
+                            kind: kind.clone(),
+                            base: material.base,
+                            credential: material.credential,
+                            mode: material.mode.as_str().to_string(),
                         },
-                        Err(e) => refusal(format!("{e:#}")),
+                        Err(e) => refusal(format!("material: {e:#}")),
                     };
                     tx.send(frame).ok();
-                });
-            }
-            // The node published; the venue records the version and advances the pointer. Fire and
-            // follow: nothing on the wire waits for this, but a failure is logged rather than
-            // swallowed — a lost version is a lost undo.
-            Frame::Synced {
-                call_id,
-                kind,
-                seq,
-                reference,
-            } => {
-                let owner = owner_of_call(&realm, &call_id).await;
-                let registry = { realm.lock().await.resources.clone() };
-                let path_alias = path_alias.clone();
-                tokio::spawn(async move {
-                    let Some(owner) = owner else {
-                        eprintln!("prism: node '{path_alias}' published {kind}/{seq} with no owner — not recorded");
-                        return;
-                    };
-                    let id = match aura_realm::resources::Id::new(&owner.to_string(), &kind, seq) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            eprintln!("prism: version of {kind}/{seq} not recorded: {e:#}");
-                            return;
-                        }
-                    };
-                    // Blocking store work on the runtime's thread is not held by any lock: the
-                    // registry was cloned out of the realm above.
-                    match registry.published(&id, &call_id, &reference, crate::identity::now_ms()) {
-                        Ok((version, previous)) => {
-                            println!("prism: {kind}/{seq} published v{version} (was v{previous})");
-                        }
-                        Err(e) => eprintln!("prism: version of {kind}/{seq} not recorded: {e:#}"),
-                    }
                 });
             }
             Frame::Interrupted { call_id, landed } => {

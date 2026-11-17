@@ -70,27 +70,22 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         .unwrap();
     assert_eq!(live, vec!["runner_res".to_string()]);
 
-    // The resource itself: declared in the venue, addressed by (owner, kind, seq).
-    let id = aura_realm::resources::Id::new(&user.to_string(), "git", 1).unwrap();
+    // What this venue offers for `git`: ONE grant, shared by every tenant, with the prefix this
+    // venue composes on top of it.
     let registry_handle = engine.realm.lock().await.resources.clone();
-    registry_handle
-        .secret(&user.to_string(), 1, "gitea-token", "s3cr3t")
-        .unwrap();
+    registry_handle.secret("git", "s3cr3t").unwrap();
     registry_handle
         .declare(
-            &id,
-            &aura_realm::resources::Row {
+            "git",
+            &aura_realm::resources::Grant {
                 desc: "notes".into(),
-                source: "https://gitea.s/alice/notes.git".into(),
-                at: "main".into(),
-                secret: 1,
+                base: "https://gitea.s".into(),
+                mode: aura_realm::resources::Mode::ReadWrite,
                 secret_name: "gitea-token".into(),
             },
-            aura_realm::resources::Mode::ReadWrite,
             identity::now_ms(),
         )
         .unwrap();
-    assert_eq!(registry_handle.current(&id).unwrap(), 0, "nothing published yet");
 
     // The node dials in over the same socket a real one uses.
     let url = effector_protocol::dial_url(
@@ -141,13 +136,13 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         panic!("the dispatch must reach the node as a Call");
     };
 
-    // 2. The read half: address + the key, minted per call. The node asks by (kind, seq) only.
+    // 2. The ask: the node names a KIND, and the answer is the root IT may reach — the tenant
+    // prefix is composed on this side, never by the script.
     socket
         .send(Message::Text(
             serde_json::to_string(&Frame::MaterialRequest {
                 call_id: call_id.clone(),
                 kind: "git".into(),
-                seq: 1,
                 write: false,
             })
             .unwrap(),
@@ -156,56 +151,41 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         .unwrap();
     let material = match next_frame(&mut socket).await {
         Frame::Material {
-            url,
+            base,
             credential,
             mode,
             ..
-        } => (url, credential, mode),
+        } => (base, credential, mode),
         Frame::MaterialFailed { reason, .. } => panic!("the venue refused: {reason}"),
         other => panic!("unexpected frame: {other:?}"),
     };
-    assert_eq!(material.0, "https://gitea.s/alice/notes.git");
+    assert_eq!(
+        material.0,
+        format!("https://gitea.s/{user}/git"),
+        "the root is the shared base plus the caller's own slice"
+    );
     assert_eq!(material.1.as_deref(), Some("s3cr3t"));
     assert_eq!(material.2, "rw");
 
-    // 3. The publish: a version row, then the pointer. Twice, so the chain is visible.
-    let mut published = Vec::new();
-    for reference in ["main@abc", "main@def"] {
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&Frame::Synced {
-                    call_id: call_id.clone(),
-                    kind: "git".into(),
-                    seq: 1,
-                    reference: reference.into(),
-                })
-                .unwrap(),
-            ))
-            .await
-            .unwrap();
-        // The plane records asynchronously; poll the pointer rather than sleeping a guess. Each
-        // publish must MOVE it, so the poll waits for a value that differs from the one before —
-        // not merely for a non-zero one, which a slow second write would satisfy.
-        let before = published.last().copied().unwrap_or(0);
-        let mut current = before;
-        for _ in 0..300 {
-            current = registry_handle.current(&id).unwrap();
-            if current != before {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    // 3. A kind the venue has not granted is refused by name, not answered with an empty root.
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&Frame::MaterialRequest {
+                call_id: call_id.clone(),
+                kind: "archive".into(),
+                write: false,
+            })
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    match next_frame(&mut socket).await {
+        Frame::MaterialFailed { kind, reason, .. } => {
+            assert_eq!(kind, "archive");
+            assert!(reason.contains("archive"), "the refusal names it: {reason}");
         }
-        published.push(current);
+        other => panic!("expected a refusal, got {other:?}"),
     }
-    assert!(
-        published[1] > published[0],
-        "the second publish is a later version: {published:?}"
-    );
-    assert_eq!(
-        registry_handle.current(&id).unwrap(),
-        published[1],
-        "the pointer names the last publish"
-    );
 
     // The call completes: an answer is what the turn was waiting for.
     socket
@@ -221,23 +201,6 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
     let answered = call.await.expect("the call task");
     assert!(answered.is_ok(), "the dispatch answered: {answered:?}");
 
-    // A read-only resource must refuse the write half — that is what "a leaked read credential
-    // cannot publish" means at this seam.
-    let ro = aura_realm::resources::Id::new(&user.to_string(), "s3", 2).unwrap();
-    registry_handle
-        .declare(
-            &ro,
-            &aura_realm::resources::Row {
-                desc: "inputs".into(),
-                source: "s3://alice/in".into(),
-                ..Default::default()
-            },
-            aura_realm::resources::Mode::ReadOnly,
-            identity::now_ms(),
-        )
-        .unwrap();
-    let refused = registry_handle.material(&ro, true).unwrap_err().to_string();
-    assert!(refused.contains("read-only"), "{refused}");
 }
 
 
@@ -258,29 +221,31 @@ async fn the_admin_face_declares_and_reads_a_resource() {
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });
 
     let body = json!({
-        "owner": "alice", "kind": "git", "seq": 7,
-        "desc": "notes", "source": "https://gitea.s/alice/notes.git", "at": "main",
-        "mode": "rw",
-        "secret": {"name": "gitea-token", "value": "s3cr3t"},
+        "kind": "object", "desc": "artifacts", "base": "s3://test", "mode": "rw",
+        "secret": {"name": "rustfs", "value": "ak:sk"},
     });
     let (status, answer) = http(addr, "POST", "/admin/resources", Some(body.to_string())).await;
-    assert_eq!(status, 201, "the declaration is created: {answer}");
-    assert_eq!(answer["rkind"], "git");
-    assert_eq!(answer["current"], 0, "nothing is published yet");
+    assert_eq!(status, 201, "the grant is created: {answer}");
+    assert_eq!(answer["rkind"], "object");
+    assert_eq!(answer["base"], "s3://test");
 
-    let (status, answer, raw) = http_full(addr, "GET", "/admin/resources/alice/git/7", None).await;
-    assert_eq!(status, 200, "the row reads back: {raw}");
-    assert_eq!(answer["source"], "https://gitea.s/alice/notes.git");
+    let (status, answer, raw) = http_full(addr, "GET", "/admin/resources/object", None).await;
+    assert_eq!(status, 200, "the grant reads back: {raw}");
+    assert_eq!(answer["base"], "s3://test");
     assert_eq!(answer["mode"], 1, "rw is stored as the flag the mint checks");
-    // The key's VALUE is nowhere in the row: a dumped row hands nobody a credential.
-    assert!(!answer.to_string().contains("s3cr3t"), "{answer}");
+    // The credential's VALUE is nowhere in the grant: a dumped grant hands nobody a key.
+    assert!(!answer.to_string().contains("ak:sk"), "{answer}");
 
-    let (status, _) = http(addr, "GET", "/admin/resources/alice/git/7", None).await;
-    assert_eq!(status, 200, "the same path reads the same row");
-    let (status, _) = http(addr, "GET", "/admin/resources/alice/git/8", None).await;
-    assert_eq!(status, 404, "an undeclared resource is absent, not an error");
+    let (status, _) = http(addr, "GET", "/admin/resources/git", None).await;
+    assert_eq!(status, 404, "a kind with no grant is absent, not an error");
+
+    // A credential the node could not sign with is refused here, where it is still visible.
+    let bad = json!({
+        "kind": "object", "base": "s3://test", "secret": {"name": "x", "value": "not-a-pair"},
+    });
+    let (status, answer) = http(addr, "POST", "/admin/resources", Some(bad.to_string())).await;
+    assert_eq!(status, 400, "an unusable credential is refused at the door: {answer}");
 }
-
 
 async fn http_full(
     addr: std::net::SocketAddr,

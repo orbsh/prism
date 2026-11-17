@@ -122,66 +122,52 @@ pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u
 }
 
 
-/// `POST /admin/resources` — declare a resource, and optionally the key it uses:
+/// `POST /admin/resources` — declare what this venue offers for one KIND, and optionally the
+/// credential that reaches it (ADR-0049: a resource is a grant, not a snapshot).
 ///
 /// ```text
-/// { "owner": "<uuid>", "kind": "git", "seq": 1, "desc": "...", "source": "https://…",
-///   "at": "main", "mode": "rw",
-///   "secret": { "name": "gitea-token", "value": "…" }        // optional
+/// { "kind": "object", "desc": "...", "base": "s3://test", "mode": "rw",
+///   "secret": { "name": "rustfs", "value": "access_key:secret_key:region" }   // optional
 /// }
 /// ```
 ///
-/// `owner` is taken from the body for the same reason the node face takes an alias: there are no
-/// accounts behind this surface yet (ADR-0017 §7 step ③ lands them). The secret's VALUE never
-/// enters the row — the row names the entry, and `GET` below cannot read it back.
+/// `GET /admin/resources/<kind>` shows a grant. There is no per-resource route and no version route:
+/// what a script names inside the grant is the script's business, and the store keeps its own
+/// history.
 pub(crate) async fn serve_resources(
     gw: &crate::Gateway,
     method: &str,
     path: &str,
     body: &[u8],
 ) -> Option<Vec<u8>> {
-    use aura_realm::resources::Id;
     let rest = path.strip_prefix("/admin/resources")?;
-    // The query belongs to the URL, not to the path: splitting on it here is what keeps `7?owner=x`
-    // from being read as a sequence number.
+    // The query belongs to the URL, not to the path.
     let rest = rest.split_once('?').map_or(rest, |(head, _)| head);
     let registry = gw.engine.realm.lock().await.resources.clone();
     let response = match (method, rest) {
-        ("POST", "") => match parse_resource(body) {
-            Ok((id, mut row, mode)) => {
-                if !row.secret_name.is_empty() {
-                    match parse_secret(body) {
-                        Ok(Some((name, value))) => {
-                            // The credential's shape is kind-specific too (`object` wants
-                            // `access_key:secret_key[:region]`), and this is the last moment the
-                            // value is visible to anything but the store.
-                            // The row's own shape is the venue's check (it keeps the row); the
-                            // CREDENTIAL is checked here because this is the only place its value
-                            // is ever visible — the venue stores it and never reads it back. The
-                            // shape is `effector_protocol::resource`'s, the same code the node runs
-                            // before it signs a request.
-                            if id.kind == "s3" {
-                                if let Err(e) = effector_protocol::resource::credential_parts(&value)
-                                {
-                                    return Some(plain(400, &e.to_string()));
-                                }
-                            }
-                            // A new secret entry per declaration only when the caller supplies one;
-                            // re-declaring keeps the number it already had.
-                            let seq = row.secret.max(1);
-                            if let Err(e) = registry.secret(&id.owner, seq, &name, &value) {
-                                return Some(plain(500, &e.to_string()));
-                            }
-                            row.secret = seq;
+        ("POST", "") => match parse_grant(body) {
+            Ok((kind, mut grant)) => {
+                match parse_secret(body) {
+                    Ok(Some((name, value))) => {
+                        // The CREDENTIAL's shape is the one thing this plane can still check: it is
+                        // visible here and nowhere else — the venue stores it and never reads it
+                        // back. The rule is `effector_protocol::resource`'s, the same code the node
+                        // runs before it signs a request.
+                        if let Err(e) = credential_shape(&kind, &value) {
+                            return Some(plain(400, &e));
                         }
-                        Ok(None) => {}
-                        Err(e) => return Some(plain(400, &e.to_string())),
+                        if let Err(e) = registry.secret(&kind, &value) {
+                            return Some(plain(500, &e.to_string()));
+                        }
+                        grant.secret_name = name;
                     }
+                    Ok(None) => {}
+                    Err(e) => return Some(plain(400, &e.to_string())),
                 }
-                match registry.declare(&id, &row, mode, crate::identity::now_ms()) {
-                    Ok(()) => match registry.row(&id) {
+                match registry.declare(&kind, &grant, crate::identity::now_ms()) {
+                    Ok(()) => match registry.grant(&kind) {
                         Ok(Some(stored)) => json_response(201, &stored),
-                        Ok(None) => plain(500, "the row vanished after the write"),
+                        Ok(None) => plain(500, "the grant vanished after the write"),
                         Err(e) => plain(500, &e.to_string()),
                     },
                     Err(e) => plain(400, &e.to_string()),
@@ -190,27 +176,14 @@ pub(crate) async fn serve_resources(
             Err(e) => plain(400, &e.to_string()),
         },
         ("GET", other) => {
-            let parts: Vec<&str> = other.trim_start_matches('/').split('/').collect();
-            match parts.as_slice() {
-                // The owner rides the PATH, not a query: this accept loop's head parser hands
-                // handlers a path without the query, and a route that depended on one would be a
-                // 400 nobody can fix by reading the URL.
-                [owner, kind, seq] => match seq.parse::<u64>() {
-                    Ok(seq) => match Id::new(owner, kind, seq) {
-                        Ok(id) => match registry.row(&id) {
-                            Ok(Some(stored)) => {
-                                let mut out = stored;
-                                out["version"] = json!(registry.current(&id).unwrap_or(0));
-                                json_response(200, &out)
-                            }
-                            Ok(None) => plain(404, "no such resource"),
-                            Err(e) => plain(500, &e.to_string()),
-                        },
-                        Err(e) => plain(400, &e.to_string()),
-                    },
-                    Err(_) => plain(400, "the sequence must be a number"),
-                },
-                _ => plain(404, "unknown admin route"),
+            let kind = other.trim_start_matches('/');
+            if kind.is_empty() || kind.contains('/') {
+                return Some(plain(404, "unknown admin route"));
+            }
+            match registry.grant(kind) {
+                Ok(Some(stored)) => json_response(200, &stored),
+                Ok(None) => plain(404, "no such grant"),
+                Err(e) => plain(500, &e.to_string()),
             }
         }
         _ => plain(404, "unknown admin route"),
@@ -218,10 +191,21 @@ pub(crate) async fn serve_resources(
     Some(response)
 }
 
-fn parse_resource(
-    body: &[u8],
-) -> anyhow::Result<(aura_realm::resources::Id, aura_realm::resources::Row, aura_realm::resources::Mode)> {
-    use aura_realm::resources::{Id, Mode, Row};
+/// What a credential must look like for the kind it is declared under. `git` takes whatever the host
+/// issues (a token); `object` takes `access_key:secret_key[:region]`. `archive` is not granted here
+/// yet — the node refuses it by name, and a grant nobody can use is a lie the operator would only
+/// discover at the first task.
+fn credential_shape(kind: &str, value: &str) -> Result<(), String> {
+    match kind {
+        "object" => effector_protocol::resource::credential_parts(value)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+fn parse_grant(body: &[u8]) -> anyhow::Result<(String, aura_realm::resources::Grant)> {
+    use aura_realm::resources::{Grant, Mode};
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| anyhow::anyhow!("body must be JSON: {e}"))?;
     let text = |name: &str| -> anyhow::Result<String> {
@@ -230,32 +214,23 @@ fn parse_resource(
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("`{name}` must be a string"))
     };
-    let id = Id::new(
-        &text("owner")?,
-        &text("kind")?,
-        v.get("seq")
-            .and_then(|x| x.as_u64())
-            .ok_or_else(|| anyhow::anyhow!("`seq` must be a number"))?,
-    )?;
+    let kind = text("kind")?;
     let mode = match v.get("mode").and_then(|x| x.as_str()) {
         Some(text) => Mode::parse(text)?,
         None => Mode::ReadOnly,
     };
     Ok((
-        id,
-        Row {
-            desc: v.get("desc").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            source: text("source")?,
-            at: v.get("at").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            secret: 0,
-            secret_name: v
-                .get("secret")
-                .and_then(|s| s.get("name"))
+        kind,
+        Grant {
+            desc: v
+                .get("desc")
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_string(),
+            base: text("base")?,
+            mode,
+            secret_name: String::new(),
         },
-        mode,
     ))
 }
 
@@ -383,26 +358,34 @@ pub(crate) fn json_response(status: u16, value: &serde_json::Value) -> Vec<u8> {
 
 #[cfg(test)]
 mod resource_surface_tests {
-    use super::{parse_resource, parse_secret};
+    use super::{credential_shape, parse_grant, parse_secret};
 
     #[test]
-    fn a_declaration_needs_an_owner_a_known_kind_and_a_source() {
-        let ok = br#"{"owner":"alice","kind":"git","seq":7,"source":"https://g/x.git","mode":"rw"}"#;
-        let (id, row, mode) = parse_resource(ok).expect("a complete declaration parses");
-        assert_eq!(id.owner, "alice");
-        assert_eq!(id.kind, "git");
-        assert_eq!(id.seq, 7);
-        assert_eq!(row.source, "https://g/x.git");
-        assert_eq!(mode.as_str(), "rw");
+    fn a_grant_needs_a_kind_and_a_base() {
+        let ok = br#"{"kind":"git","base":"https://gitea.s","mode":"rw"}"#;
+        let (kind, grant) = parse_grant(ok).expect("a complete grant parses");
+        assert_eq!(kind, "git");
+        assert_eq!(grant.base, "https://gitea.s");
+        assert_eq!(grant.mode.as_str(), "rw");
 
         // Omitting the mode is read-only: a missing word never grants a write.
-        let bare = br#"{"owner":"alice","kind":"s3","seq":1,"source":"s3://a/in"}"#;
-        assert_eq!(parse_resource(bare).unwrap().2.as_str(), "ro");
+        let bare = br#"{"kind":"object","base":"s3://bucket"}"#;
+        assert_eq!(parse_grant(bare).unwrap().1.mode.as_str(), "ro");
 
-        // A kind the venue cannot serve is refused BY NAME here, before any call runs.
-        let bad = br#"{"owner":"alice","kind":"table","seq":1,"source":"x"}"#;
-        let err = parse_resource(bad).unwrap_err().to_string();
-        assert!(err.contains("table"), "{err}");
+        // A base is what makes a grant reachable; without one there is nothing to declare.
+        let bad = br#"{"kind":"git"}"#;
+        let err = parse_grant(bad).unwrap_err().to_string();
+        assert!(err.contains("base"), "{err}");
+    }
+
+    #[test]
+    fn an_object_credential_has_the_shape_the_node_will_sign_with() {
+        assert!(credential_shape("object", "ak:sk").is_ok());
+        assert!(credential_shape("object", "ak:sk:us-east-1").is_ok());
+        let err = credential_shape("object", "not-a-pair").unwrap_err();
+        assert!(err.contains("access_key:secret_key"), "{err}");
+        // A token for git has no shape this plane can judge.
+        assert!(credential_shape("git", "any-token").is_ok());
     }
 
     #[test]
