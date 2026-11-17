@@ -86,6 +86,9 @@ impl MountDecl {
                 // executor key), not the operation's language.
                 language: self.carrier.clone(),
                 source: self.runner.clone(),
+                // A runner is a DEPLOYMENT'S OWN artifact (effector ADR-0003 §1): it runs with
+                // whatever authority the node grants, unlike code a model wrote a moment ago.
+                requires: None,
                 encoding: self.encoding,
             },
             // No per-type TTL: a mount holds no local executor state, and the
