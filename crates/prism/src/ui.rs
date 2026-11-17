@@ -566,7 +566,13 @@ async fn dispatch(
                 "name": event,
                 // The ADDRESS is a device (ADR-0018: a channel is an application's business) and
                 // the payload is `data` — the shape a booth reads as a delivery, not a request.
+                //
+                // `id` is the uplink's own id, and it must travel: a form's id IS the address of
+                // the step it answers (the run, the step, the pass, the attempt). Dropping it here
+                // left every answer with nothing to answer — the venue saw the event, the booth
+                // saw a payload, and the run waited for a reply nobody could address.
                 "device": device.to_string(),
+                "id": uplink.id.clone(),
                 "sender": {
                     "device": device.to_string(),
                     "user": (!identity::is_anonymous(bound)).then(|| bound.to_string()),
