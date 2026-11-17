@@ -162,16 +162,14 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
             url,
             credential,
             mode,
-            transport,
             ..
-        } => (url, credential, mode, transport),
+        } => (url, credential, mode),
         Frame::MaterialFailed { reason, .. } => panic!("the venue refused: {reason}"),
         other => panic!("unexpected frame: {other:?}"),
     };
     assert_eq!(material.0, "https://gitea.s/alice/notes.git");
     assert_eq!(material.1.as_deref(), Some("s3cr3t"));
     assert_eq!(material.2, "rw");
-    assert_eq!(material.3, "git");
 
     // 3. The publish: a version row, then the pointer. Twice, so the chain is visible.
     let mut published = Vec::new();

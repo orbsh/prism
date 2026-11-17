@@ -261,7 +261,6 @@ pub(crate) async fn serve_mounted(
                                 seq,
                                 url: material.url,
                                 credential: material.credential,
-                                transport: kind.clone(),
                                 mode: material.mode.as_str().to_string(),
                                 at: material.at,
                             },
