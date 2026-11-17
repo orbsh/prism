@@ -152,6 +152,20 @@ pub(crate) async fn serve_resources(
                 if !row.secret_name.is_empty() {
                     match parse_secret(body) {
                         Ok(Some((name, value))) => {
+                            // The credential's shape is kind-specific too (`object` wants
+                            // `access_key:secret_key[:region]`), and this is the last moment the
+                            // value is visible to anything but the store.
+                            // The row's own shape is the venue's check (it keeps the row); the
+                            // CREDENTIAL is checked here because this is the only place its value
+                            // is ever visible — the venue stores it and never reads it back. The
+                            // shape is `effector_protocol::resource`'s, the same code the node runs
+                            // before it signs a request.
+                            if id.kind == "s3" {
+                                if let Err(e) = effector_protocol::resource::credential_parts(&value)
+                                {
+                                    return Some(plain(400, &e.to_string()));
+                                }
+                            }
                             // A new secret entry per declaration only when the caller supplies one;
                             // re-declaring keeps the number it already had.
                             let seq = row.secret.max(1);
