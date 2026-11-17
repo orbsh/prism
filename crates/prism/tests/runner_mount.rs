@@ -135,7 +135,6 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
         class: effector_config::Class::Host,
         control_plane_url: format!("ws://127.0.0.1:{}/effector/runner-node", addr.port()),
         // The policy belongs to the deployment; this test locks the call path.
-        sandbox: false,
         token: "runner-node-token".into(),
         capabilities: effector_config::CapabilitySurface {
             node_alias: "runner-node".into(),

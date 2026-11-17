@@ -365,7 +365,6 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     let node = effector_runtime::remote::run(effector_config::EffectorConfig {
         class: effector_config::Class::Host,
         control_plane_url: format!("ws://127.0.0.1:{}/effector/skill-node", addr.port()),
-        sandbox: false,
         token: "skill-node-token".into(),
         capabilities: effector_config::CapabilitySurface {
             node_alias: "skill-node".into(),

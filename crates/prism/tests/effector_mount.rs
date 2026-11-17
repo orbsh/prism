@@ -59,7 +59,6 @@ fn effector_config(port: u16, alias: &str) -> effector_config::EffectorConfig {
         class: effector_config::Class::Host,
         control_plane_url: format!("ws://127.0.0.1:{port}/effector/{alias}"),
         // The call path, not the sandbox (steel runs in-process).
-        sandbox: true,
         // The plane is `open` here: no registry, and the token only has to be present
         // (effector ADR-0003 puts the check where the registry is).
         token: "mount-test-token".into(),
