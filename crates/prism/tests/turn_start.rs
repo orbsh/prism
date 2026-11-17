@@ -1,5 +1,5 @@
 //! Both doors to a script, end to end (gravity ADR-0004 §3 · ADR-0001): a turn
-//! resolves a skill and runs one step through `invoke_skill`, then runs a SECOND
+//! resolves a skill and starts it as a RUN (`start`, which validates the plan and
 //! code row through `run` — no skill, no step, just the row. Both scripts execute
 //! on a real node, and each one's value has to come back to the model before the
 //! stub will answer.
@@ -8,7 +8,7 @@
 //! doors), prism's gateway, an aura engine with a `runner_py` mount, a real
 //! effector node dialled in over `/effector/<alias>`, and gravity's turn +
 //! provider guests as separate processes. What is stubbed: the LLM (an SSE
-//! server that plays a model which calls `invoke_skill` and then answers).
+//! server that plays a model which calls `start` and then answers).
 //!
 //! The assertion is the MODEL's own view: round 1's request body must carry the
 //! node's result as the tool message. A door that runs the script and loses the
@@ -154,9 +154,9 @@ async fn seed_turn_rows(engine: &aura_engine::Engine, store_url: &str, endpoint:
     );
 }
 
-/// The model, as a stub. Round 0 walks step 0; round 1 REFUSES to serve unless
-/// step 0's value came back, then walks step 1; round 2 REFUSES unless step 1's
-/// value came back, then answers. Two different code rows in one turn is also
+/// The model, as a stub. Round 0 starts the skill as a run; round 1 REFUSES to
+/// serve unless the run's value came back, then runs a bare row; round 2 REFUSES
+/// unless that value came back, then answers. Two different code rows in one turn is also
 /// what makes the turn a COMPOSITION the walk must report (k10r ADR-0016), so
 /// this stub drives both the execution and the write side.
 async fn sse_server(
@@ -202,17 +202,15 @@ async fn sse_server(
                         })
                         .unwrap_or(false)
                 };
-                let invoke = |step: u64| {
+                // A run, not a step: `start` validates the skill's plan and drives
+                // every step the engine can run, so one call covers the plan.
+                let start_run = || {
                     json!({"choices": [{"delta": {"tool_calls": [{
-                        "id": format!("c{step}"),
+                        "id": "s1",
                         "type": "function",
                         "function": {
-                            "name": "invoke_skill",
-                            "arguments": json!({
-                                "skill_id": skill_id,
-                                "step": step,
-                                "arguments": {"n": 4},
-                            }).to_string(),
+                            "name": "start",
+                            "arguments": json!({ "skill_id": skill_id }).to_string(),
                         }
                     }]}}]})
                 };
@@ -242,13 +240,13 @@ async fn sse_server(
                         .unwrap()
                 };
                 let payload = if index == 0 {
-                    invoke(0)
+                    start_run()
                 } else if index == 1 {
                     if !saw(first) {
                         return refusal("step 0's result never reached the model");
                     }
-                    // Step 1 goes through the OTHER door on purpose: two different
-                    // code rows, reached two different ways, in one turn.
+                    // The second row goes through the OTHER door on purpose: two
+                    // different code rows, reached two different ways, in one turn.
                     run_row(bare_code_id)
                 } else if index == 2 {
                     if !saw(second) {
@@ -282,9 +280,9 @@ async fn sse_server(
 // current-thread runtime would park the only worker on its own request (the
 // deadlock this test first hit).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_skill_step_and_a_bare_row_both_run_on_the_node() {
+async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     // What the step's script prints — one JSON document, an arithmetic fact no
-    // stub can fake: the number comes from the payload gravity passed through.
+    // stub can fake: the number comes from the inputs the PLAN declares.
     const PRODUCED: &str = r#"{"sum":7}"#;
     // The second step's own document: a DIFFERENT code row, which is what makes
     // this turn a composition rather than a retry (k10r ADR-0016).
@@ -408,10 +406,18 @@ async fn a_skill_step_and_a_bare_row_both_run_on_the_node() {
             "name": "add-three",
             "title": "adds three",
             "content": "Adds three to a number on this deployment's node.",
-            "steps": json!([
-                { "code_id": code_ids[0], "note": "adds three" },
-                { "code_id": code_ids[1], "note": "doubles and adds one" },
-            ])
+            // A PLAN (gravity ADR-0011): one call step, then the exit. The step's
+            // inputs are data, so the script sees `n` without the model having to
+            // pass it through a per-call argument.
+            "steps": json!({
+                "schema_version": 1,
+                "steps": [
+                    { "id": "add", "kind": "call", "code": code_ids[0],
+                      "inputs": { "n": 4 },
+                      "out_edges": [{ "to": "done" }] },
+                    { "id": "done", "kind": "end" }
+                ]
+            })
             .to_string(),
         }))
         .unwrap()
