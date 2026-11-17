@@ -28,18 +28,17 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
-// NOT RUNNING YET: the gateway serves effector sockets as `code_export::Prefixed` streams, and a
-// plain tungstenite client never completes the register handshake through that wrapper (the test
-// times out waiting for `Registered`). The assertions below are the ones that matter; the fixture
-// needs either that preface or the real `effector_runtime::remote` node, which speaks it.
-#[ignore = "hand-rolled node does not speak code_export::Prefixed yet"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = aura_engine::Engine::start(&aura_config::EngineConfig::default())
-        .await
-        .expect("engine boot");
+    // A code base is required for any remote body: the frame carries an ADDRESS, never the bytes
+    // (ADR-0027). This test's node does not fetch, so the URL only has to exist in the frame.
+    let config = aura_config::EngineConfig {
+        code_base_url: Some("http://127.0.0.1:1/code".into()),
+        ..Default::default()
+    };
+    let engine = aura_engine::Engine::start(&config).await.expect("engine boot");
     Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine.clone(), registry.clone(), prism::nodes::Posture::Open);
@@ -49,7 +48,9 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
 
     // A device and its account: the venue's own rows, which is why the OWNER of a resource is
     // derived here and cannot be claimed by the node.
-    let device = identity::DeviceId::now();
+    // A device exists because this plane minted it — `now()` would only make an id with no row,
+    // and a binding to a row that is not there reads back as nobody.
+    let device = registry.new_device().unwrap();
     let user = identity::UserId::now();
     registry.bind_login(device, user).unwrap();
 
@@ -181,11 +182,14 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
             ))
             .await
             .unwrap();
-        // The plane records asynchronously; poll the pointer rather than sleeping a guess.
-        let mut current = 0;
-        for _ in 0..200 {
+        // The plane records asynchronously; poll the pointer rather than sleeping a guess. Each
+        // publish must MOVE it, so the poll waits for a value that differs from the one before —
+        // not merely for a non-zero one, which a slow second write would satisfy.
+        let before = published.last().copied().unwrap_or(0);
+        let mut current = before;
+        for _ in 0..300 {
             current = registry_handle.current(&id).unwrap();
-            if current != 0 && (n == 1 || current != published_cmp(&published)) {
+            if current != before {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -324,10 +328,6 @@ async fn http(
         .unwrap_or(0);
     let payload = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
     (status, serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null))
-}
-
-fn published_cmp(published: &[u64]) -> u64 {
-    published.last().copied().unwrap_or(0)
 }
 
 async fn next_frame<S>(socket: &mut S) -> Frame

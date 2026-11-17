@@ -342,7 +342,30 @@ fn optional_key(body: &[u8]) -> anyhow::Result<Option<String>> {
             .ok_or_else(|| anyhow::anyhow!("`credential` must be a non-empty string")),
     }
 }
-
+pub(crate) fn json_response(status: u16, value: &serde_json::Value) -> Vec<u8> {
+    let reason = match status {
+        200 => "OK",
+        201 => "Created",
+        400 => "Bad Request",
+        404 => "Not Found",
+        409 => "Conflict",
+        500 => "Internal Server Error",
+        _ => "OK",
+    };
+    // `value` is a `serde_json::Value` built by `json!`: every shape serde can
+    // reject (non-string map keys, NaN floats) is unrepresentable in it, so the
+    // encode is infallible by construction.
+    #[allow(clippy::expect_used)]
+    let body = serde_json::to_vec(value).expect("json! output always serializes");
+    let mut out = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    out.extend_from_slice(&body);
+    out
+}
 
 #[cfg(test)]
 mod resource_surface_tests {
@@ -376,28 +399,4 @@ mod resource_surface_tests {
         assert!(parse_secret(br#"{"secret":{"name":"","value":"v"}}"#).is_err());
     }
 
-}
-pub(crate) fn json_response(status: u16, value: &serde_json::Value) -> Vec<u8> {
-    let reason = match status {
-        200 => "OK",
-        201 => "Created",
-        400 => "Bad Request",
-        404 => "Not Found",
-        409 => "Conflict",
-        500 => "Internal Server Error",
-        _ => "OK",
-    };
-    // `value` is a `serde_json::Value` built by `json!`: every shape serde can
-    // reject (non-string map keys, NaN floats) is unrepresentable in it, so the
-    // encode is infallible by construction.
-    #[allow(clippy::expect_used)]
-    let body = serde_json::to_vec(value).expect("json! output always serializes");
-    let mut out = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    )
-    .into_bytes();
-    out.extend_from_slice(&body);
-    out
 }
