@@ -14,6 +14,8 @@ attrs:
 regions:
   - booth: gravity-model
     label: 对话
+  - booth: admin
+    label: 管理
 
 children:
   # ── 顶栏：三部分 ────────────────────────────────────────────────────────────

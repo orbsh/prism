@@ -27,6 +27,10 @@ pub const DECLARE_EVENT: &str = "ui:admin.declare";
 pub const REVOKE_EVENT: &str = "ui:admin.revoke";
 /// Where the answer goes: the page's frames, addressed to the device that asked.
 const SCREEN_EVENT: &str = "ui:admin.screen";
+/// The venue's "this connection is on island X" broadcast. Every region hears it; this booth draws
+/// only when the island is its own — which is what makes the page appear when the tab is opened,
+/// lazily, instead of at connect time for everyone.
+const CONNECT_EVENT: &str = "ui:connect";
 
 /// The booth type. One instance: the plane is one venue, and a grant is a row in it, not a
 /// per-client view of one.
@@ -67,16 +71,27 @@ pub(crate) async fn install(engine: &aura_engine::Engine) {
         idle_ttl: None,
         max_exec: None,
         hooks: std::collections::BTreeMap::new(),
-        receives: vec![aura_booth::ReceiveDecl {
-            event: format!("{ADMIN_PREFIX}*"),
-            entry: None,
-            resolution: aura_booth::RouteResolution::Singleton,
-            wildcard: true,
-            // A grant is a permission: reading it, granting it and withdrawing it are the plane's
-            // admin face, so an anonymous connection is refused before delivery (the venue checks
-            // the declaration, not the booth).
-            auth: true,
-        }],
+        receives: vec![
+            aura_booth::ReceiveDecl {
+                event: format!("{ADMIN_PREFIX}*"),
+                entry: None,
+                resolution: aura_booth::RouteResolution::Singleton,
+                wildcard: true,
+                // A grant is a permission: reading it, granting it and withdrawing it are the
+                // plane's admin face, so an anonymous connection is refused before delivery (the
+                // venue checks the declaration, not the booth).
+                auth: true,
+            },
+            // WHERE THE PERSON WALKED, in the same broadcast every region gets. Without this the
+            // page exists in the navigation and nowhere else: a tab that opens onto nothing.
+            aura_booth::ReceiveDecl {
+                event: CONNECT_EVENT.to_string(),
+                entry: None,
+                resolution: aura_booth::RouteResolution::Singleton,
+                wildcard: false,
+                auth: false,
+            },
+        ],
         concurrency: aura_booth::Concurrency::Queued,
     };
     match engine.register(booth).await {
@@ -97,6 +112,15 @@ fn answer(resources: &Registry, envelope: &Value) -> anyhow::Result<Vec<Value>> 
             .ok_or_else(|| anyhow::anyhow!("`{name}` must be a string"))
     };
     Ok(match event {
+        // THE PAGE APPEARS WHEN ITS TAB IS OPENED. `connect` carries the island the renderer
+        // reported; the other islands' booths hear the same broadcast and answer nothing.
+        CONNECT_EVENT => {
+            if envelope.get("island").and_then(Value::as_str) != Some(BOOTH) {
+                return Ok(Vec::new());
+            }
+            let rows = rows(resources)?;
+            vec![create_page(), set_list(&rows)]
+        }
         RESOURCES_EVENT => {
             // The page AND its rows in one list: a `create` alone would draw an empty table and
             // wait for a second frame that nothing sends.
@@ -360,6 +384,23 @@ mod tests {
     fn a_form_without_a_kind_says_so() {
         let err = answer(&registry(), &envelope(REVOKE_EVENT, json!({}))).unwrap_err();
         assert!(err.to_string().contains("kind"), "{err}");
+    }
+
+    /// Opening the tab is the trigger: `connect` naming this island paints the page, and the same
+    /// broadcast naming another island paints nothing at all.
+    #[test]
+    fn the_page_appears_when_its_island_is_opened() {
+        let registry = registry();
+        let mine = json!({ "name": CONNECT_EVENT, "device": "d", "island": BOOTH, "data": {} });
+        let ops = answer(&registry, &mine).unwrap();
+        assert_eq!(ops.len(), 2, "create + the list, one answer: {ops:?}");
+        assert_eq!(ops[0]["action"], "create");
+
+        let elsewhere = json!({ "name": CONNECT_EVENT, "device": "d", "island": "gravity-model", "data": {} });
+        assert!(
+            answer(&registry, &elsewhere).unwrap().is_empty(),
+            "the same broadcast for another island is not this page's to draw"
+        );
     }
 
     /// The page is the other door onto the same table, so it applies the same rule: a kind no node

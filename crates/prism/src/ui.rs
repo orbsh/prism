@@ -296,19 +296,14 @@ fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
         // WHAT THE NAVIGATION OFFERS: one item per island the frame declares, labelled by the frame
         // itself. Ids are the booth names, so a click can name its destination without a table.
         for region in shell.regions() {
-            // PROBE (temporary): the navigation rows are what the shell's select renders when it
-            // traps; skip them so the rest of the frame can be measured.
-            if std::env::var("PROBE_NO_NAV").is_ok() {
-                continue;
-            }
             ops.push(json!({
                 "action": "append",
                 "slot": NAV_SLOT,
                 "data": {
-                    // PROBE (temporary): the simplest possible row — id and type only — to tell
-                    // whether the trap is about what the row CARRIES or about rendering rows at all.
                     "id": region.booth,
                     "type": "text",
+                    "attrs": {"class": ["--nav-item"]},
+                    "bind": {"value": {"kind": "default", "default": region.label}},
                 },
             }));
             // The page a navigation item switches to: the SAME id, holding the region's binding.
