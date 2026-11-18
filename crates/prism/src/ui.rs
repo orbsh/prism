@@ -309,7 +309,11 @@ fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
                 "slot": PAGES_SLOT,
                 "data": {
                     "id": region.booth,
-                    "type": "case",
+                    // A PLACEHOLDER, not a `case`: only a placeholder renders the node tree a
+                    // source slot holds (fluxen `components/case.rs:53`); a `case` treats its
+                    // binding as a name and draws its static children, which is why the first
+                    // version of this row drew an empty box.
+                    "type": "placeholder",
                     "attrs": {"class": ["maximize", "col"]},
                     "bind": {"value": {"kind": "source", "source": format!("{}{}", crate::shell::ISLAND, region.booth)}},
                 },
@@ -443,11 +447,24 @@ pub(crate) fn forward(
     // told and no booth can enumerate. The name is the event's first segment (`ui:gravity-model.…`
     // ⇒ `gravity-model`), NOT the aura booth type: a page's name for a surface is the page's
     // business, and the engine is not something the renderer knows about.
-    let island_of = name.split('.').next().unwrap_or("");
-    eprintln!("prism: DEBUG view `{name}` island_of={island_of:?} islands={islands:?}");
-    let ops = match name.split('.').next() {
+    // The booth STATES its region (`island` in the envelope). Deriving it from the event name was
+    // the first attempt and it was wrong: an event says what HAPPENED (`ui:layout`,
+    // `ui:turn.done`), and most names carry no booth segment at all — the ones that do
+    // (`ui:gravity-model.screen`) are the exception, not the rule.
+    //
+    // A name the frame does not declare gets no namespace and a warning: either the deployment is
+    // inconsistent (two spellings of one region) or the booth is writing outside its island, and
+    // both are worth seeing rather than silently drawing into a slot nobody binds.
+    let ops = match payload.get("island").and_then(Value::as_str) {
         Some(whose) if islands.iter().any(|i| i == whose) => namespace(ops, whose),
-        _ => ops,
+        Some(unknown) => {
+            eprintln!(
+                "prism: view `{name}` claims island `{unknown}`, which the frame does not declare \
+                 ({islands:?}) — its slots keep their bare names"
+            );
+            ops
+        }
+        None => ops,
     };
     if ops.is_empty() {
         eprintln!("prism: view event `{name}` carried nothing deliverable");
@@ -471,6 +488,7 @@ pub(crate) fn forward(
         let _ = c.tx.send(ops.clone());
         sent += 1;
     }
+
     if sent == 0 {
         // AN ACCOUNT WITH NO SCREEN AWAKE. The frame is not lost: the venue holds it for that
         // account and hands it over when one of their devices proves itself (`flush_missed`).

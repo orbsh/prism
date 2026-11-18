@@ -140,6 +140,8 @@ async fn an_islands_slots_arrive_namespaced() {
         "ui:gravity-model.layout",
         serde_json::json!({
             "name": "ui:gravity-model.layout",
+            // The booth says which region this surface belongs to; the event name cannot.
+            "island": "gravity-model",
             "data": [{"action": "set", "slot": "pages", "data": {"type": "case"}}],
         }),
     )
@@ -285,6 +287,11 @@ async fn the_frame_gets_its_viewer_and_its_navigation() {
     assert_eq!(
         pages[0]["data"]["bind"]["value"]["source"], "island:gravity-model",
         "the row shows the region — the frame declared it, the venue supplied the row"
+    );
+    assert_eq!(
+        pages[0]["data"]["type"], "placeholder",
+        "a PLACEHOLDER renders the node tree a source slot holds; a `case` would draw its own \
+         (empty) children and the region would stay blank — the bug this row exists to prevent"
     );
     assert_eq!(
         nav[0]["data"]["bind"]["value"]["default"], "对话",

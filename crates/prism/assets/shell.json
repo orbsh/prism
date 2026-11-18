@@ -1,44 +1,117 @@
 {
   "type": "case",
-  "attrs": { "class": ["maximize", "col"] },
-  "regions": [{ "booth": "gravity-model", "label": "对话" }],
+  "attrs": {
+    "class": [
+      "maximize",
+      "col"
+    ]
+  },
+  "regions": [
+    {
+      "booth": "gravity-model",
+      "label": "对话"
+    }
+  ],
   "children": [
     {
       "type": "case",
-      "attrs": { "class": ["--head", "nogrow", "horizontal", "center", "box", "gap"] },
+      "attrs": {
+        "class": [
+          "--head",
+          "nogrow",
+          "horizontal",
+          "center",
+          "box",
+          "gap"
+        ]
+      },
       "children": [
         {
           "type": "text",
-          "attrs": { "class": ["nogrow"] },
-          "bind": { "value": { "kind": "default", "default": "this deployment" } }
+          "attrs": {
+            "class": [
+              "nogrow"
+            ]
+          },
+          "bind": {
+            "value": {
+              "kind": "default",
+              "default": "this deployment"
+            }
+          }
         },
         {
           "type": "select",
-          "attrs": { "horizontal": true, "class": ["main"] },
+          "attrs": {
+            "horizontal": true,
+            "class": [
+              "main"
+            ]
+          },
           "bind": {
-            "value": { "kind": "local", "slot": "page", "path": "/data", "default": "gravity-model" },
-            "options": { "kind": "source", "source": "nav" }
+            "value": {
+              "kind": "local",
+              "slot": "page",
+              "path": "/data",
+              "default": "gravity-model"
+            },
+            "options": {
+              "kind": "source",
+              "source": "nav"
+            }
           }
         },
         {
           "type": "text",
-          "attrs": { "class": ["nogrow", "--user"] },
-          "bind": { "value": { "kind": "source", "source": "user" } }
+          "attrs": {
+            "class": [
+              "nogrow",
+              "--user"
+            ]
+          },
+          "bind": {
+            "value": {
+              "kind": "source",
+              "source": "user"
+            }
+          }
         },
         {
           "type": "placeholder",
           "id": "auth-region",
-          "attrs": { "class": ["--auth"] },
-          "bind": { "value": { "kind": "source", "source": "auth" } }
+          "attrs": {
+            "class": [
+              "--auth"
+            ]
+          },
+          "bind": {
+            "value": {
+              "kind": "source",
+              "source": "auth"
+            }
+          }
         }
       ]
     },
     {
       "type": "pages",
-      "attrs": { "class": ["main", "shrink"] },
+      "attrs": {
+        "class": [
+          "main",
+          "shrink"
+        ]
+      },
       "bind": {
-        "value": { "kind": "source", "source": "pages" },
-        "select": { "kind": "local", "slot": "page", "path": "/data", "default": "gravity-model" }
+        "value": {
+          "kind": "source",
+          "source": "pages"
+        },
+        "select": {
+          "kind": "local",
+          "slot": "page",
+          "path": "/data",
+          "default": "gravity-model"
+        }
       },
       "display": "dom"
     }
