@@ -192,7 +192,7 @@ pub struct Gateway {
     /// it over when a device of theirs proves the account again. Bounded on purpose: a returning
     /// device needs where things STAND, not every step that led there — and a booth redraws its
     /// screen as a whole, so the newest frames supersede the oldest ones held here.
-    missed: Arc<Mutex<HashMap<identity::UserId, Held>>>,
+    missed: Arc<Mutex<HashMap<(identity::UserId, String), Held>>>,
 }
 
 /// How many increments the venue holds behind the last whole screen before the oldest go.
@@ -392,16 +392,34 @@ impl Gateway {
     /// none of their screens was awake, so whoever is awake at this moment missed them all — and
     /// once one screen has them the debt is settled (a booth draws its next screen whole).
     pub(crate) async fn flush_missed(&self, device: identity::DeviceId, user: identity::UserId) {
-        let held = {
+        let held: Vec<Held> = {
             let mut missed = self.missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            missed.remove(&user)
+            let booths: Vec<String> = missed
+                .keys()
+                .filter(|(who, _)| *who == user)
+                .map(|(_, booth)| booth.clone())
+                .collect();
+            booths
+                .into_iter()
+                .filter_map(|booth| missed.remove(&(user, booth)))
+                .collect()
         };
-        let Some(held) = held else { return };
-        let (data, drawn) = held.frames();
+        if held.is_empty() {
+            return;
+        }
+        let mut data: Vec<HeldFrame> = Vec::new();
+        let mut drawn: Vec<HeldFrame> = Vec::new();
+        for held in held {
+            let (frames, screen) = held.frames();
+            data.extend(frames);
+            if let Some(screen) = screen {
+                drawn.extend(screen);
+            }
+        }
         eprintln!(
             "prism: handing {} held frames to the account's device ({} drawn from a whole screen)",
-            data.len() + drawn.as_ref().map_or(0, Vec::len),
-            drawn.as_ref().map_or(0, Vec::len)
+            data.len() + drawn.len(),
+            drawn.len()
         );
         {
             let conns = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -409,13 +427,8 @@ impl Gateway {
                 if *c.user.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != user {
                     continue;
                 }
-                for (_name, ops) in &data {
+                for (_name, ops) in data.iter().chain(drawn.iter()) {
                     let _ = c.tx.send(ops.clone());
-                }
-                if let Some(frames) = &drawn {
-                    for (_name, ops) in frames {
-                        let _ = c.tx.send(ops.clone());
-                    }
                 }
             }
         }
@@ -559,9 +572,13 @@ impl Gateway {
             },
         );
         let missed = std::sync::Arc::clone(&self.missed);
-        let defer: ui::Defer = std::sync::Arc::new(move |user, name, ops| {
+        // The queue is the ACCOUNT's and the BOOTH's: a frame is owed to the person, but it can
+        // only be drawn by the booth that owns the region it targets — and a booth's screen is what
+        // says where things stand. Keying by both is what lets one booth's screen arrive without
+        // flushing another's frames onto a screen that is not there yet.
+        let defer: ui::Defer = std::sync::Arc::new(move |booth, user, name, ops| {
             let mut held = missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            held.entry(user).or_default().push(name, ops);
+            held.entry((user, booth.to_string())).or_default().push(name, ops);
         });
         // The islands the frame declares are handed to the view leg: that is the whole of what an
         // application needs to be namespaced, and the venue is the only party that knows the list.

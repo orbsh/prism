@@ -189,7 +189,11 @@ pub(crate) type PeerDeliver = Arc<dyn Fn(Option<&Reach>, Option<&str>, &str, Val
 
 /// Where a frame goes when its account has no screen awake: the venue's held queue for that
 /// account (`Gateway::flush_missed` hands it back when one signs in).
-pub(crate) type Defer = Arc<dyn Fn(identity::UserId, &str, Vec<content::Content<Value>>) + Send + Sync>;
+/// Where a frame goes when its account has no screen awake. The BOOTH travels with it: a frame is
+/// owed to the person, but only the booth that owns the region can draw it, and its own screen is
+/// what says where things stand (`ctx.origin`, stamped by the venue at emit time).
+pub(crate) type Defer =
+    Arc<dyn Fn(&str, identity::UserId, &str, Vec<content::Content<Value>>) + Send + Sync>;
 
 /// Install the venue's one subscription: what the application emits as a VIEW event is
 /// pushed to the renderers (and, as data, to a program). A Rust body because the venue is IN this process — the frames go
@@ -210,13 +214,17 @@ pub(crate) async fn install(
     let handler_defer = Arc::clone(&defer);
     let booth = aura_booth::BoothType {
         name: RENDERER_BOOTH.to_string(),
-        body: aura_booth::Body::Rust(Arc::new(move |_ctx, args| {
+        body: aura_booth::Body::Rust(Arc::new(move |ctx, args| {
             let conns = Arc::clone(&handler_conns);
             let peers = Arc::clone(&handler_peers);
             let defer = Arc::clone(&handler_defer);
             let islands = Arc::clone(&handler_islands);
+            // WHO SPOKE. The venue stamps the emitting booth on the queued row (aura's
+            // `ctx.origin`), so a frame is attributed here without any application writing its own
+            // name into its payloads — and the held queue can be keyed by booth.
+            let origin = ctx.origin.clone();
             Box::pin(async move {
-                forward(&conns, &peers, &defer, &islands, args);
+                forward(&conns, &peers, &defer, &islands, origin.as_deref(), args);
                 Ok(Value::Null)
             })
         })),
@@ -335,8 +343,16 @@ fn namespace(ops: Vec<Content<Value>>, island: &str) -> Vec<Content<Value>> {
     }
     ops.into_iter()
         .map(|op| match op {
+            // A `set` with the EMPTY slot is "my surface": the booth has nothing to call it, and
+            // the venue is the only party that knows what the page calls it. Every other operation
+            // treats empty as "no address" and leaves it alone — `create`'s empty slot is the page
+            // root, and renaming it would help an application replace the frame.
             Content::Set(mut x) => {
-                x.slot = one(&x.slot, island);
+                x.slot = if x.slot.is_empty() {
+                    format!("{}{island}", crate::shell::ISLAND)
+                } else {
+                    one(&x.slot, island)
+                };
                 Content::Set(x)
             }
             Content::Append(mut x) => {
@@ -365,6 +381,7 @@ pub(crate) fn forward(
     peers: &PeerDeliver,
     defer: &Defer,
     islands: &[String],
+    origin: Option<&str>,
     payload: Value,
 ) {
     // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
@@ -426,6 +443,8 @@ pub(crate) fn forward(
     // told and no booth can enumerate. The name is the event's first segment (`ui:gravity-model.…`
     // ⇒ `gravity-model`), NOT the aura booth type: a page's name for a surface is the page's
     // business, and the engine is not something the renderer knows about.
+    let island_of = name.split('.').next().unwrap_or("");
+    eprintln!("prism: DEBUG view `{name}` island_of={island_of:?} islands={islands:?}");
     let ops = match name.split('.').next() {
         Some(whose) if islands.iter().any(|i| i == whose) => namespace(ops, whose),
         _ => ops,
@@ -459,7 +478,7 @@ pub(crate) fn forward(
         match reach.as_ref() {
             Some(Reach::User(u)) if !awake && !identity::is_anonymous(*u) => {
                 eprintln!("prism: view event `{name}` held for {u}: no screen of that account is awake");
-                defer(*u, &name, ops);
+                defer(origin.unwrap_or_default(), *u, &name, ops);
             }
             _ => eprintln!(
                 "prism: view event `{name}` reached no renderer (address {reach:?}, sender {sender:?})"
@@ -832,6 +851,7 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) {
     let event = format!("{UI_PREFIX}{fact}");
     let envelope = json!({ "name": event, "device": device.to_string(), "data": data });
+    // `emit` already logs a delivery failure (Gateway::emit); nothing to add here.
     gw.emit(&event, envelope).await;
 }
 
@@ -909,11 +929,12 @@ mod tests {
         );
     }
 
-    /// Two exceptions, both deliberate. The empty slot is `create`'s address for the layout root —
-    /// renaming it would help an application replace the page. An explicit `island:` prefix is the
-    /// escape hatch for writing into a region whose name this booth was told.
+    /// Two exceptions and one rule of their own. A `set` into the EMPTY slot is "my surface" — the
+    /// booth has no name for it, so the venue supplies one. `create`'s empty slot is the page ROOT
+    /// and is left alone, because renaming it would help an application replace the frame. An
+    /// explicit `island:` prefix is the escape hatch for a region whose name this booth was told.
     #[test]
-    fn the_root_and_an_explicit_region_are_left_alone() {
+    fn my_surface_gets_a_name_and_the_root_does_not() {
         let ops: Vec<Content<Value>> = serde_json::from_value(json!([
             {"action": "create", "slot": "", "data": {}},
             {"action": "set", "slot": "", "data": {}},
@@ -922,8 +943,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             slots(namespace(ops, "gravity-model")),
-            vec!["", "", "island:admin/notice"],
-            "the page's root and a named region are not this island's to rename"
+            vec!["", "island:gravity-model", "island:admin/notice"],
+            "the root stays the root; the empty slot of a `set` is this island's surface"
         );
     }
 }
