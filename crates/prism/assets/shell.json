@@ -52,6 +52,7 @@
             "value": {
               "kind": "local",
               "slot": "page",
+              "report": "island",
               "path": "/data",
               "default": "gravity-model"
             },

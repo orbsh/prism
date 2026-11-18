@@ -718,7 +718,12 @@ async fn dispatch(
         // same `connect` a fresh page gets — so the booth that owns that island draws it, lazily,
         // and the ones the person is not looking at say nothing at all.
         "island" => {
-            let chosen = crate::text_field(&json!(data), "booth");
+            // The payload is the value this click chose: a renderer reports the bare value
+            // (fluxen ADR 0028 — a report states what happened, it is not something a slot
+            // subscribes to), while a program may still send `{booth: ...}`. Both are the same
+            // fact; the deployment names it.
+            let chosen = crate::text_field(&json!(data), "booth")
+                .or_else(|| data.as_str().map(str::to_string));
             let known = chosen
                 .as_ref()
                 .filter(|b| gw.deployment.shell.as_ref().is_some_and(|s| s.islands().contains(b)));
