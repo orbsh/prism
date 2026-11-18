@@ -46,14 +46,12 @@ impl Shell {
     /// said nothing, because it looks finished.
     pub fn open(file: &Path) -> anyhow::Result<Self> {
         let raw = std::fs::read_to_string(file).map_err(|e| {
-            anyhow::anyhow!("PRISM_SHELL '{}' is unreadable: {e}", file.display())
+            anyhow::anyhow!("frame '{}' is unreadable: {e}", file.display())
         })?;
-        let root: Value = serde_json::from_str(&raw).map_err(|e| {
-            anyhow::anyhow!("PRISM_SHELL '{}' is not JSON: {e}", file.display())
-        })?;
+        let root: Value = parse(file, &raw)?;
         if !root.is_object() {
             anyhow::bail!(
-                "PRISM_SHELL '{}' must be ONE accrete node (an object), not a list of actions",
+                "frame '{}' must be ONE accrete node (an object), not a list of actions",
                 file.display()
             );
         }
@@ -63,13 +61,26 @@ impl Shell {
         })
     }
 
-    /// Read the frame from `PRISM_SHELL`. Absent is legal and means the old arrangement: whichever
-    /// application answers `ui:connect` draws the whole page.
+    /// Where the frame comes from: `PRISM_SHELL` if the operator said so, otherwise `shell.yaml`
+    /// (or `.yml`) BESIDE THE EXECUTABLE — a deployment that ships the binary and its frame
+    /// together needs no configuration at all. Nothing found is legal and means the old
+    /// arrangement: whichever application answers `ui:connect` draws the whole page.
     pub fn from_env() -> anyhow::Result<Option<Self>> {
-        match std::env::var("PRISM_SHELL").ok().filter(|s| !s.trim().is_empty()) {
-            Some(path) => Ok(Some(Self::open(Path::new(path.trim()))?)),
-            None => Ok(None),
+        if let Some(path) = std::env::var("PRISM_SHELL").ok().filter(|s| !s.trim().is_empty()) {
+            return Ok(Some(Self::open(Path::new(path.trim()))?));
         }
+        let beside = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        if let Some(dir) = beside {
+            for name in ["shell.yaml", "shell.yml"] {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Ok(Some(Self::open(&candidate)?));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// The frame as the renderer takes it: one `create`, the document as its data. A `create` and
@@ -163,6 +174,24 @@ impl Shell {
     }
 }
 
+/// JSON or YAML, by extension. YAML because a frame is a document a person edits — comments and
+/// no quoting on every key; JSON because that is what every frame written before this existed as,
+/// and moving a deployment to the new spelling should not force a rewrite of the old one.
+fn parse(file: &Path, raw: &str) -> anyhow::Result<Value> {
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("yaml" | "yml") => serde_yaml::from_str(raw).map_err(|e| {
+            anyhow::anyhow!("frame '{}' is not YAML: {e}", file.display())
+        }),
+        _ => serde_json::from_str(raw).map_err(|e| {
+            anyhow::anyhow!("frame '{}' is not JSON: {e}", file.display())
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -247,7 +276,7 @@ mod tests {
     /// typo in it is not a documentation problem — it is the reference deployment failing to boot.
     #[test]
     fn the_reference_frame_opens() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/shell.json");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/shell.yaml");
         let shell = Shell::open(&path).expect("the reference frame is valid");
         let islands = shell.islands();
         assert!(!islands.is_empty(), "the reference frame declares a region");

@@ -920,7 +920,14 @@ fn notice_row(data: &Value) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("something went wrong")
         .to_string();
-    json!({ "id": okm_core::Uuid7::now().to_string(), "type": "text", "text": text })
+    // A text node carries no words of its own: what it says comes from its binding (fluxen's
+    // `text` reads `bind["value"]`), which is also why a row can be a text node without the venue
+    // inventing a layout.
+    json!({
+        "id": okm_core::Uuid7::now().to_string(),
+        "type": "text",
+        "bind": { "value": { "kind": "default", "default": text } },
+    })
 }
 
 /// The identity fact: who this connection is, and the credential that keeps saying so. Ids travel
