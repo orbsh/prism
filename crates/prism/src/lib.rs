@@ -58,6 +58,7 @@ pub mod effectors;
 pub mod identity;
 pub mod mounts;
 pub mod nodes;
+pub mod resources_ui;
 pub mod ui;
 
 use aura_booth::{call::Waited, InstanceId, InstanceKey};
@@ -373,6 +374,9 @@ impl Gateway {
             },
         );
         ui::install(&self.engine, std::sync::Arc::clone(&self.ui_conns), peers).await;
+        // The grant surface is the PLANE's own page (ADR-0049): a resource belongs to the venue, so
+        // no application can list what this venue offers — and none should be able to.
+        resources_ui::install(&self.engine).await;
         match self.posture {
             nodes::Posture::Required => {
                 eprintln!("prism: identity posture: `required` (ed25519 handshake gates effectors — ADR-0015)")
