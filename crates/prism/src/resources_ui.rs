@@ -105,6 +105,14 @@ fn answer(resources: &Registry, envelope: &Value) -> anyhow::Result<Vec<Value>> 
         }
         DECLARE_EVENT => {
             let kind = text("kind")?;
+            // The same door rule `/admin/resources` applies: a kind no node can move is refused
+            // here too, or this page becomes the way around the refusal. The credential is checked
+            // against the shape its kind needs, once, before anything is stored.
+            let secret = data
+                .get("secret")
+                .and_then(Value::as_str)
+                .filter(|v| !v.is_empty());
+            crate::admin::declaration_shape(&kind, secret).map_err(anyhow::Error::msg)?;
             let mode = match data.get("mode").and_then(Value::as_str) {
                 Some(m) => aura_realm::resources::Mode::parse(m)?,
                 None => aura_realm::resources::Mode::ReadOnly,
@@ -126,10 +134,8 @@ fn answer(resources: &Registry, envelope: &Value) -> anyhow::Result<Vec<Value>> 
             resources.declare(&kind, &grant, crate::identity::now_ms())?;
             // The key is handed in as a VALUE once and lives in its own table; the page never sees
             // it again, which is why the row can only ever show `secret_name`.
-            if let Some(value) = data.get("secret").and_then(Value::as_str) {
-                if !value.is_empty() {
-                    resources.secret(&kind, value)?;
-                }
+            if let Some(value) = secret {
+                resources.secret(&kind, value)?;
             }
             vec![set_list(&rows(resources)?), notice(&format!("declared `{kind}`"))]
         }
@@ -354,5 +360,26 @@ mod tests {
     fn a_form_without_a_kind_says_so() {
         let err = answer(&registry(), &envelope(REVOKE_EVENT, json!({}))).unwrap_err();
         assert!(err.to_string().contains("kind"), "{err}");
+    }
+
+    /// The page is the other door onto the same table, so it applies the same rule: a kind no node
+    /// can move is refused here, and the refusal names it. Without this the page would be the way
+    /// around the API's check — which is exactly how `archive` stayed declarable.
+    #[test]
+    fn the_page_refuses_a_kind_no_node_can_move() {
+        let registry = registry();
+        let err = answer(
+            &registry,
+            &envelope(
+                DECLARE_EVENT,
+                json!({ "kind": "archive", "base": "ssh://git.example/team", "mode": "ro" }),
+            ),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("archive"), "{err}");
+        assert!(
+            registry.declared().unwrap().is_empty(),
+            "a refused declaration leaves no row"
+        );
     }
 }

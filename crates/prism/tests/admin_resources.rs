@@ -57,6 +57,30 @@ async fn request(
     (status, serde_json::from_str(body_part).unwrap_or(serde_json::Value::Null))
 }
 
+/// The same request, keeping the body as text: refusals are sentences, not JSON.
+async fn raw(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> (u16, String) {
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}",
+        body.to_string().len()
+    );
+    s.write_all(head.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).await.unwrap();
+    let resp = String::from_utf8_lossy(&buf).into_owned();
+    let status: u16 = resp[9..12].parse().unwrap();
+    let text = resp
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    (status, text)
+}
+
 #[tokio::test]
 async fn grants_are_listed_read_and_withdrawn() {
     let addr = boot().await;
@@ -110,5 +134,52 @@ async fn grants_are_listed_read_and_withdrawn() {
     assert_eq!(
         status, 404,
         "withdrawing what is not there is not a success: silence would hide a typo"
+    );
+}
+
+/// A declaration the venue cannot serve is refused at the door, by name.
+///
+/// `archive` is a word in the resource protocol — a node refuses it BY NAME — and that is exactly why
+/// it must not be declared: the operator would get a 201, a listing entry, and a task that fails
+/// later saying the node cannot move it. The check runs whether or not a credential comes with the
+/// declaration; the empty-secret path is the door it used to slip through.
+#[tokio::test]
+async fn a_kind_no_node_can_move_is_refused_at_the_door() {
+    let addr = boot().await;
+
+    for kind in ["archive", "ftp"] {
+        let (status, text) = raw(
+            addr,
+            "POST",
+            "/admin/resources",
+            json!({
+                "kind": kind,
+                "base": "ssh://git.example/team",
+                "mode": "ro",
+                "secret": { "name": "K", "value": "v" }
+            }),
+        )
+        .await;
+        assert_eq!(status, 400, "{text}");
+        assert!(text.contains(kind), "the refusal names the kind: {text}");
+
+        // No credential: the same refusal, not a pass.
+        let (status, text) = raw(
+            addr,
+            "POST",
+            "/admin/resources",
+            json!({ "kind": kind, "base": "ssh://git.example/team", "mode": "ro" }),
+        )
+        .await;
+        assert_eq!(status, 400, "{text}");
+        assert!(text.contains(kind), "the refusal names the kind: {text}");
+    }
+
+    let (status, body) = request(addr, "GET", "/admin/resources", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body,
+        json!([]),
+        "a refused declaration leaves no row and no credential: {body}"
     );
 }

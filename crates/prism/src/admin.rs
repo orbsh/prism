@@ -151,11 +151,11 @@ pub(crate) async fn serve_resources(
             Ok((kind, mut grant)) => {
                 match parse_secret(body) {
                     Ok(Some((name, value))) => {
-                        // The CREDENTIAL's shape is the one thing this plane can still check: it is
-                        // visible here and nowhere else — the venue stores it and never reads it
-                        // back. The rule is `effector_protocol::resource`'s, the same code the node
-                        // runs before it signs a request.
-                        if let Err(e) = credential_shape(&kind, &value) {
+                        // The credential is visible here and nowhere else — the venue stores it and
+                        // never reads it back, so this door is the only place its shape can be
+                        // checked. The rule is `effector_protocol::resource`'s, the same code the
+                        // node runs before it signs a request.
+                        if let Err(e) = declaration_shape(&kind, Some(&value)) {
                             return Some(plain(400, &e));
                         }
                         if let Err(e) = registry.secret(&kind, &value) {
@@ -163,7 +163,13 @@ pub(crate) async fn serve_resources(
                         }
                         grant.secret_name = name;
                     }
-                    Ok(None) => {}
+                    // A declaration with no credential still has to be servable: the KIND is checked
+                    // either way, or `archive` would slip in through the empty-secret door.
+                    Ok(None) => {
+                        if let Err(e) = declaration_shape(&kind, None) {
+                            return Some(plain(400, &e));
+                        }
+                    }
                     Err(e) => return Some(plain(400, &e.to_string())),
                 }
                 match registry.declare(&kind, &grant, crate::identity::now_ms()) {
@@ -224,13 +230,26 @@ pub(crate) async fn serve_resources(
     Some(response)
 }
 
-/// What a credential must look like for the kind it is declared under. `git` takes whatever the host
-/// issues (a token); `object` takes `access_key:secret_key[:region]`. `archive` is not granted here
-/// yet — the node refuses it by name, and a grant nobody can use is a lie the operator would only
-/// discover at the first task.
-fn credential_shape(kind: &str, value: &str) -> Result<(), String> {
-    match kind {
-        "object" => effector_protocol::resource::credential_parts(value)
+/// What a declaration must satisfy before it is stored — asked of every kind, with or without a
+/// credential attached.
+///
+/// First: is this a KIND anything can move? The protocol's list answers, and it is the same list the
+/// node checks before it signs a request. `archive` is refused by the node BY NAME and is not
+/// declared here either: a grant for it would fail at the first task, which is the lie a management
+/// surface must not tell.
+///
+/// Second: does the credential have the shape its kind needs? `git` takes whatever the host issues
+/// (a token); `object` takes `access_key:secret_key[:region]`.
+pub(crate) fn declaration_shape(kind: &str, value: Option<&str>) -> Result<(), String> {
+    if !effector_protocol::resource::is_kind(kind) {
+        return Err(format!(
+            "`{kind}` is not a resource kind this venue serves ({}); a node refuses it by name, so a \
+             grant for it would only fail at the first task",
+            effector_protocol::resource::KINDS.join(", ")
+        ));
+    }
+    match (kind, value) {
+        ("object", Some(v)) => effector_protocol::resource::credential_parts(v)
             .map(|_| ())
             .map_err(|e| e.to_string()),
         _ => Ok(()),
@@ -391,7 +410,7 @@ pub(crate) fn json_response(status: u16, value: &serde_json::Value) -> Vec<u8> {
 
 #[cfg(test)]
 mod resource_surface_tests {
-    use super::{credential_shape, parse_grant, parse_secret};
+    use super::{declaration_shape, parse_grant, parse_secret};
 
     #[test]
     fn a_grant_needs_a_kind_and_a_base() {
@@ -413,12 +432,17 @@ mod resource_surface_tests {
 
     #[test]
     fn an_object_credential_has_the_shape_the_node_will_sign_with() {
-        assert!(credential_shape("object", "ak:sk").is_ok());
-        assert!(credential_shape("object", "ak:sk:us-east-1").is_ok());
-        let err = credential_shape("object", "not-a-pair").unwrap_err();
+        assert!(declaration_shape("object", Some("ak:sk")).is_ok());
+        assert!(declaration_shape("object", Some("ak:sk:us-east-1")).is_ok());
+        let err = declaration_shape("object", Some("not-a-pair")).unwrap_err();
         assert!(err.contains("access_key:secret_key"), "{err}");
         // A token for git has no shape this plane can judge.
-        assert!(credential_shape("git", "any-token").is_ok());
+        assert!(declaration_shape("git", Some("any-token")).is_ok());
+        // …but the KIND is judged for every declaration, credential or not: `archive` is a word
+        // the node refuses by name, and a grant for it would only fail at the first task.
+        let err = declaration_shape("archive", None).unwrap_err();
+        assert!(err.contains("archive"), "{err}");
+        assert!(declaration_shape("git", None).is_ok());
     }
 
     #[test]
