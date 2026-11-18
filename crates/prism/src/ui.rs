@@ -897,9 +897,30 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 /// `{device, user}`) and `notice` (what failed: `{detail}`).
 async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) {
     let event = format!("{UI_PREFIX}{fact}");
+    // A NOTICE IS A ROW. `notice` is a list slot the page lays out as a rack, so a fresh notice is
+    // APPENDED with its own id instead of replacing the last one — and no row is ever taken back:
+    // the floating window is the one that lets each row expire (its rack's business), while a plain
+    // rack on the same slot still shows every notice the device has seen. Everything else the venue
+    // says is a fact about now, and takes the value slot named by the fact.
+    let data = if fact == NOTICE_EVENT {
+        json!([{ "action": "append", "slot": NOTICE_EVENT, "data": notice_row(&data) }])
+    } else {
+        data
+    };
     let envelope = json!({ "name": event, "device": device.to_string(), "data": data });
     // `emit` already logs a delivery failure (Gateway::emit); nothing to add here.
     gw.emit(&event, envelope).await;
+}
+
+/// A notice row: an id (row identity lives in the data, the rack's rule) and the words. A text node
+/// is the least the venue can say — the frame's row template decides how it looks.
+fn notice_row(data: &Value) -> Value {
+    let text = data
+        .get("detail")
+        .and_then(Value::as_str)
+        .unwrap_or("something went wrong")
+        .to_string();
+    json!({ "id": okm_core::Uuid7::now().to_string(), "type": "text", "text": text })
 }
 
 /// The identity fact: who this connection is, and the credential that keeps saying so. Ids travel
