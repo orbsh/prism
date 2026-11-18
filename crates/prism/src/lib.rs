@@ -235,6 +235,9 @@ impl Held {
             self.data.push_back((name.to_string(), ops));
             while self.data.len() > MISSED_CAP {
                 self.data.pop_front();
+                eprintln!(
+                    "prism: an account's held data frames passed {MISSED_CAP}: the oldest is dropped"
+                );
             }
             return;
         }
@@ -246,6 +249,10 @@ impl Held {
         self.after.push_back((name.to_string(), ops));
         while self.after.len() > MISSED_CAP {
             self.after.pop_front();
+            eprintln!(
+                "prism: an account's held layout frames passed {MISSED_CAP}: the oldest is dropped \
+                 (a screen behind them still replays from itself)"
+            );
         }
     }
 
@@ -359,6 +366,14 @@ impl Gateway {
                 if islands.contains(&chosen) {
                     return Some(chosen);
                 }
+                // SILENT FALLBACKS ARE INDISTINGUISHABLE FROM LOST STATE. The person left this
+                // account on an island this deployment no longer declares (renamed, removed, a
+                // different frame): they get the default, and the log says why, so "it opened on
+                // the wrong page" has an answer instead of a shrug.
+                eprintln!(
+                    "prism: this account last stood on island `{chosen}`, which this frame does not \
+                     declare ({islands:?}) — opening the first"
+                );
             }
         }
         islands.first().cloned()
