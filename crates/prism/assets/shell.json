@@ -1,0 +1,28 @@
+{
+  "type": "case",
+  "attrs": { "class": ["maximize", "col"] },
+  "children": [
+    {
+      "type": "case",
+      "attrs": { "class": ["--head", "nogrow", "horizontal", "center", "box", "gap"] },
+      "children": [
+        {
+          "type": "text",
+          "attrs": { "class": ["nogrow"] },
+          "bind": { "value": { "kind": "default", "default": "this deployment" } }
+        },
+        {
+          "type": "placeholder",
+          "id": "auth-region",
+          "attrs": { "class": ["--auth"] },
+          "bind": { "value": { "kind": "source", "source": "auth" } }
+        }
+      ]
+    },
+    {
+      "type": "case",
+      "attrs": { "class": ["maximize", "col"] },
+      "bind": { "value": { "kind": "source", "source": "island:gravity_turn" } }
+    }
+  ]
+}

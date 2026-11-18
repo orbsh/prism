@@ -59,13 +59,14 @@ pub mod identity;
 pub mod mounts;
 pub mod nodes;
 pub mod resources_ui;
+pub mod shell;
 pub mod ui;
 
 use aura_booth::{call::Waited, InstanceId, InstanceKey};
 use aura_engine::Engine;
 use futures_util::{SinkExt, StreamExt};
 use prism_protocol::{Codec, Frame};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWriteExt;
@@ -141,13 +142,20 @@ pub(crate) fn clean_alias(raw: &str) -> anyhow::Result<String> {
 #[derive(Default)]
 pub struct Deployment {
     pub assets: Option<assets::AssetRoot>,
+    /// The page frame (ADR-0019): navigation, the regions islands draw into. A FILE because a frame
+    /// is data and its owner is the operator; absent means the old arrangement (the application that
+    /// answers `ui:connect` draws the whole page).
+    pub shell: Option<shell::Shell>,
 }
 
 impl Deployment {
     /// Read the fact from the environment. A declared-but-broken fact is a boot error (the
     /// operator must see it), never a silent downgrade to "no UI".
     pub fn from_env() -> anyhow::Result<Self> {
-        Ok(Self { assets: assets::AssetRoot::from_env()? })
+        Ok(Self {
+            assets: assets::AssetRoot::from_env()?,
+            shell: shell::Shell::from_env()?,
+        })
     }
 
     /// One line per configured face, for the boot log.
@@ -155,6 +163,9 @@ impl Deployment {
         let mut lines = Vec::new();
         if let Some(a) = &self.assets {
             lines.push(a.describe());
+        }
+        if let Some(s) = &self.shell {
+            lines.push(s.describe());
         }
         lines
     }
@@ -175,7 +186,17 @@ pub struct Gateway {
     /// and the auth field a `login` writes. Keeping them apart is what lets one leg speak
     /// Accrete without teaching the peer leg about it.
     ui_conns: ui::UiConns,
+    /// WHAT AN ABSENT ACCOUNT MISSED. A conversation is addressed to a person (ADR-0018 §3), and a
+    /// person whose screens are all shut has nowhere to hear it. The venue is the only layer that
+    /// knows both the address and who is connected, so it holds the tail for that account and hands
+    /// it over when a device of theirs proves the account again. Bounded on purpose: a returning
+    /// device needs where things STAND, not every step that led there — and a booth redraws its
+    /// screen as a whole, so the newest frames supersede the oldest ones held here.
+    missed: Arc<Mutex<HashMap<identity::UserId, VecDeque<(String, Vec<content::Content<serde_json::Value>>)>>>>,
 }
+
+/// How many frames the venue holds for one absent account before the oldest go.
+const MISSED_CAP: usize = 64;
 
 /// The handshake extras read in accept_hdr (before the upgrade
 /// consumes the request): the codec selector and the device echo.
@@ -193,6 +214,25 @@ impl Gateway {
     /// operator decision the type system refuses to invent — there is
     /// no `Default`, no optional; the binary reads `PRISM_IDENTITY`
     /// (`required` | `open`) and refuses to boot without it.
+    /// Hand frames to every renderer connection of one device.
+    ///
+    /// Used by the SHELL, and by nothing else: the frame a page lives in is the venue's own speech
+    /// (ADR-0019), drawn before any application says anything — and an application cannot draw it,
+    /// because the frame holds regions belonging to booths it cannot see.
+    pub(crate) fn ui_frames(
+        &self,
+        device: identity::DeviceId,
+        frames: Vec<content::Content<serde_json::Value>>,
+    ) {
+        let conns = match self.ui_conns.lock() {
+            Ok(c) => c,
+            Err(e) => e.into_inner(),
+        };
+        for conn in conns.values().filter(|c| c.device == device) {
+            let _ = conn.tx.send(frames.clone());
+        }
+    }
+
     pub fn new(engine: Engine, registry: identity::Registry, posture: nodes::Posture) -> Arc<Self> {
         Self::with_deployment(engine, registry, posture, Deployment::default())
     }
@@ -212,6 +252,7 @@ impl Gateway {
             conns: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             ui_conns: Arc::new(Mutex::new(HashMap::new())),
+            missed: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -241,6 +282,28 @@ impl Gateway {
             ui::UiConn { tx, device, user: Arc::clone(&user) },
         );
         (id, user)
+    }
+
+    /// Hand an account's held frames to the screens of that account which are awake now.
+    /// The held queue is the ACCOUNT's, not the device's: every frame in it was deferred because
+    /// none of their screens was awake, so whoever is awake at this moment missed them all — and
+    /// once one screen has them the debt is settled (a booth draws its next screen whole).
+    pub(crate) fn flush_missed(&self, user: identity::UserId) {
+        let held = {
+            let mut missed = self.missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            missed.remove(&user)
+        };
+        let Some(held) = held else { return };
+        eprintln!("prism: handing {} held frames to the account's device", held.len());
+        let conns = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for c in conns.values() {
+            if *c.user.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != user {
+                continue;
+            }
+            for (_name, ops) in &held {
+                let _ = c.tx.send(ops.clone());
+            }
+        }
     }
 
     /// Emit into the default realm, fire and forget. A failure is a LOG, not a reply: the
@@ -373,7 +436,16 @@ impl Gateway {
                 }
             },
         );
-        ui::install(&self.engine, std::sync::Arc::clone(&self.ui_conns), peers).await;
+        let missed = std::sync::Arc::clone(&self.missed);
+        let defer: ui::Defer = std::sync::Arc::new(move |user, name, ops| {
+            let mut held = missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let queue = held.entry(user).or_default();
+            queue.push_back((name.to_string(), ops));
+            while queue.len() > MISSED_CAP {
+                queue.pop_front();
+            }
+        });
+        ui::install(&self.engine, std::sync::Arc::clone(&self.ui_conns), peers, defer).await;
         // The grant surface is the PLANE's own page (ADR-0049): a resource belongs to the venue, so
         // no application can list what this venue offers — and none should be able to.
         resources_ui::install(&self.engine).await;
@@ -882,6 +954,9 @@ impl Gateway {
                 if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
                     auth_set(&conn.user, user_id);
                 }
+                // A signature-in makes its screen owed whatever the account missed while nobody
+                // of theirs was awake.
+                self.flush_missed(user_id);
                 self.send_to(
                     id,
                     Frame::new(

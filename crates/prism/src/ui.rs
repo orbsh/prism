@@ -171,19 +171,30 @@ pub(crate) fn reached(
 /// the data shape — one emit, two legs (`gravity ADR-0009`'s two renderings).
 pub(crate) type PeerDeliver = Arc<dyn Fn(Option<&Reach>, Option<&str>, &str, Value) + Send + Sync>;
 
+/// Where a frame goes when its account has no screen awake: the venue's held queue for that
+/// account (`Gateway::flush_missed` hands it back when one signs in).
+pub(crate) type Defer = Arc<dyn Fn(identity::UserId, &str, Vec<content::Content<Value>>) + Send + Sync>;
+
 /// Install the venue's one subscription: what the application emits as a VIEW event is
 /// pushed to the renderers (and, as data, to a program). A Rust body because the venue is IN this process — the frames go
 /// to sockets it owns, not over a carrier, and no script has to learn about sockets.
-pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers: PeerDeliver) {
+pub(crate) async fn install(
+    engine: &aura_engine::Engine,
+    conns: UiConns,
+    peers: PeerDeliver,
+    defer: Defer,
+) {
     let handler_conns = Arc::clone(&conns);
     let handler_peers = Arc::clone(&peers);
+    let handler_defer = Arc::clone(&defer);
     let booth = aura_booth::BoothType {
         name: RENDERER_BOOTH.to_string(),
         body: aura_booth::Body::Rust(Arc::new(move |_ctx, args| {
             let conns = Arc::clone(&handler_conns);
             let peers = Arc::clone(&handler_peers);
+            let defer = Arc::clone(&handler_defer);
             Box::pin(async move {
-                forward(&conns, &peers, args);
+                forward(&conns, &peers, &defer, args);
                 Ok(Value::Null)
             })
         })),
@@ -221,7 +232,7 @@ pub(crate) async fn install(engine: &aura_engine::Engine, conns: UiConns, peers:
 /// injected into the slot named by the event. The frames are the renderer's vocabulary — the
 /// venue does not interpret them, which is why it can forward a layout, an append and a patch
 /// alike.
-pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
+pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, defer: &Defer, payload: Value) {
     // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
     // name is consumed by the dispatcher), so the emitter states it: `name` is the recipient
     // event, marked with the same `ui:` prefix as the emit itself. The venue strips the
@@ -281,12 +292,16 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
     }
     let conns = conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sent = 0usize;
+    let mut awake = false;
     for c in conns.values() {
         let here = c.device.to_string();
         let user = *c
             .user
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if reached(reach.as_ref(), c.device, user) {
+            awake = true;
+        }
         if sender.as_ref() == Some(&here) || !reached(reach.as_ref(), c.device, user) {
             continue;
         }
@@ -294,9 +309,18 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, payload: Value) {
         sent += 1;
     }
     if sent == 0 {
-        eprintln!(
-            "prism: view event `{name}` reached no renderer (address {reach:?}, sender {sender:?})"
-        );
+        // AN ACCOUNT WITH NO SCREEN AWAKE. The frame is not lost: the venue holds it for that
+        // account and hands it over when one of their devices proves itself (`flush_missed`).
+        // A DEVICE address has no such owner — that screen is simply gone — so it is only a log.
+        match reach.as_ref() {
+            Some(Reach::User(u)) if !awake && !identity::is_anonymous(*u) => {
+                eprintln!("prism: view event `{name}` held for {u}: no screen of that account is awake");
+                defer(*u, &name, ops);
+            }
+            _ => eprintln!(
+                "prism: view event `{name}` reached no renderer (address {reach:?}, sender {sender:?})"
+            ),
+        }
     }
 }
 
@@ -311,6 +335,11 @@ pub(crate) async fn serve(
     let (mut write, mut read) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Content<Value>>>();
     let (id, user) = gw.register_ui(tx, device, user0);
+    // A device whose token still names the account is that account's screen from the first frame;
+    // whatever arrived while no screen of theirs was awake is owed to it now.
+    if !identity::is_anonymous(user0) {
+        gw.flush_missed(user0);
+    }
 
     // The connection starts the clock. A device that was silent past the window is told so on the
     // wire (a notice with a reason, not silence): its token still NAMED it — that is how its alias
@@ -361,8 +390,32 @@ pub(crate) async fn serve(
     // source to name, and a venue with no such booth draws nothing while the connection stays up.
     // Said through `say` like the identity fact, so the envelope names the recipient event: a bare
     // payload is dropped by `forward` (this venue's one speech path).
+    // THE FRAME COMES FIRST (ADR-0019). A page lives in a shell the operator wrote: navigation, and
+    // one empty region per island. The regions exist BEFORE any boat is asked to fill them, because
+    // a booth that answers `ui:connect` with a `set` needs the slot to be there — and a booth cannot
+    // draw the frame itself, since it holds regions belonging to booths it cannot see.
+    if let Some(shell) = &gw.deployment.shell {
+        gw.ui_frames(device, ops_of(vec![shell.create()], "shell"));
+    }
     eprintln!("prism: renderer leg: device {device} connect -> emit `{UI_PREFIX}{CONNECT_EVENT}`");
-    say(&gw, device, CONNECT_EVENT, json!({ "device": device.to_string() })).await;
+    // The payload says which arrangement this is. An application that cannot tell has to guess
+    // between "draw the whole page" and "fill my region", and guessing wrong draws nothing at all.
+    // The payload says which arrangement this is. An application that cannot tell has to guess
+    // between "draw the whole page" and "fill my region", and guessing wrong draws nothing at all —
+    // or, worse, erases the frame and every other island in it.
+    let connect = format!("{UI_PREFIX}{CONNECT_EVENT}");
+    let envelope = json!({
+        "name": connect,
+        "device": device.to_string(),
+        // TOP LEVEL for the same reason `shell` is top level on every other delivery (the dispatch):
+        // one question, one place, whichever event carries it.
+        "shell": gw.deployment.shell.is_some(),
+        "data": {
+            "device": device.to_string(),
+            "islands": gw.deployment.shell.as_ref().map(|s| s.islands()).unwrap_or_default(),
+        },
+    });
+    gw.emit(&connect, envelope).await;
 
     while let Some(msg) = read.next().await {
         let bytes = match msg? {
@@ -449,6 +502,9 @@ async fn dispatch(
             match gw.login_op(op, device, &data).await {
                 Ok((user_id, fresh)) => {
                     crate::auth_set(user, user_id);
+                    // Proving the account makes this screen its owner: whatever arrived while no
+                    // screen of theirs was awake is owed here, before anything else is said.
+                    gw.flush_missed(user_id);
                     // Two speeches, both facts: `token` carries what only it can (the ROTATED
                     // credential the page must keep — the old one is dead the moment this is
                     // issued), and `login` is the lifecycle event an application binds to.
@@ -564,6 +620,11 @@ async fn dispatch(
             }
             let envelope = json!({
                 "name": event,
+                // WHETHER A FRAME WAS ALREADY DRAWN (ADR-0019). Every delivery says it, not just the
+                // connect: a booth that redraws the whole page inside a shell erases the frame and
+                // every other island in it, and it cannot discover that from the page — the page is
+                // not a party it talks to.
+                "shell": gw.deployment.shell.is_some(),
                 // The ADDRESS is a device (ADR-0018: a channel is an application's business) and
                 // the payload is `data` — the shape a booth reads as a delivery, not a request.
                 //

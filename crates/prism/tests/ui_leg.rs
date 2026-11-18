@@ -189,7 +189,10 @@ async fn assets_are_plain_downloads_on_the_shared_loop() {
     let bundle = tempfile::tempdir().unwrap();
     std::fs::write(bundle.path().join("index.html"), "<!doctype html><div id=main></div>").unwrap();
     std::fs::write(bundle.path().join("ui_leptos-abc123.js"), "console.log(1)").unwrap();
-    let (addr, _gw) = boot(Deployment { assets: Some(AssetRoot::open(bundle.path()).unwrap()) })
+    let (addr, _gw) = boot(Deployment {
+            assets: Some(AssetRoot::open(bundle.path()).unwrap()),
+            shell: None,
+        })
     .await;
 
     // Hashed asset: content-typed and immutable for a year.
@@ -744,4 +747,71 @@ async fn a_cancel_sets_the_stop_bit_on_the_senders_own_instance() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("the venue never set the stop bit for {device}");
+}
+
+/// A frame for an account with no screen awake is HELD, not dropped: the venue is the only layer
+/// that knows both the address and who is connected, so it holds the tail and hands it over the
+/// moment a device of that account proves itself again. Nobody else ever sees it.
+#[tokio::test]
+async fn a_frame_for_an_asleep_account_waits_for_its_next_device() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut one = open_ui(addr).await;
+    let _connected = read_connected(&mut one).await;
+    send_uplink(
+        &mut one,
+        json!({"dest": "signup", "data": {"login_name": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let landed = recv_named(&mut one, ["token", "login"]).await;
+    let user = landed["login"]["user"].as_str().expect("the account").to_string();
+
+    // The account signs out: it exists, and no screen of it is awake.
+    send_uplink(&mut one, json!({"dest": "logout", "data": {}})).await;
+    for _ in 0..2 {
+        // `token` and `logout` — drain them so the next reads start clean.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
+    }
+
+    // Addressed to the account while nothing of theirs is awake.
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "ui:sync",
+        json!({"name": "ui:sync", "user": user, "data": {"mark": "while-asleep"}}),
+    )
+    .await
+    .expect("emit ui:sync");
+
+    // A neighbour that never signs in must not be handed the account's frames.
+    let mut stranger = open_ui(addr).await;
+    let _connected = read_connected(&mut stranger).await;
+
+    // Signing in again settles the debt on that screen.
+    send_uplink(
+        &mut one,
+        json!({"dest": "login", "data": {"login_name": "ada", "password": "correct horse"}}),
+    )
+    .await;
+
+    let mut seen = None;
+    for _ in 0..6 {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one))
+            .await
+            .expect("the held frame reaches the account's device");
+        if frame.0 == "sync" {
+            seen = Some(frame.2);
+            break;
+        }
+    }
+    assert_eq!(
+        seen.as_ref().and_then(|d| d["mark"].as_str()),
+        Some("while-asleep"),
+        "the frame held for the account arrived: {seen:?}"
+    );
+
+    // The anonymous socket beside it heard nothing: a held frame is the account's, not the venue's.
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    send_uplink(&mut stranger, json!({"dest": "echo_frame", "data": op})).await;
+    let ops = recv_ops(&mut stranger).await;
+    assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
 }
