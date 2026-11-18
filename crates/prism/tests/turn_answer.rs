@@ -309,12 +309,15 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
     // An empty log is OMITTED from the document (no `entries` key at all).
     assert_eq!(run["entries"].as_array().map_or(0, Vec::len), 0, "{run}");
 
-    // THE ANSWER. Addressed by the form's own id; the model is not in this at all.
+    // THE ANSWER. Addressed by the form's own id; the model is not in this at all. The payload is
+    // the FIELD MAP a form's uplink carries — `{field: {data, payload}}`, where `data` is what the
+    // person chose — because the venue wraps a caller's args under `data` and the booth unwraps
+    // that one wrapper, not a second one (a plan reads `$.ask.branch`, never `$.ask.branch.data`).
     send(
         &mut ws,
         &prism_protocol::Frame::new(
             "ui:run.answer",
-            json!({ "id": format!("{run_id}/ask/0/0"), "data": { "branch": "left" } }),
+            json!({ "id": format!("{run_id}/ask/0/0"), "branch": { "data": "left" } }),
         ),
     )
     .await;
