@@ -105,6 +105,11 @@ pub const USER_SLOT: &str = "user";
 /// The navigation's items — the same rows the pager switches between, so a click cannot name a
 /// page that is not there.
 pub const NAV_SLOT: &str = "nav";
+
+/// The module a region shows until its booth has drawn: a spinner, because an empty region and a
+/// broken one look the same and neither says which it is. Served from the renderer bundle (fluxen's
+/// ADR-0007 module contract: mount/update/resize/unmount, the module owns its own loop).
+pub const LOADING_MODULE: &str = "/assets/loading.js";
 /// The pager: one row per island, each row a case bound to that island's region. Switching is LOCAL
 /// (the pager and the navigation read the same `page` value), so it costs no round trip — nothing
 /// about a click needs to reach the venue.
@@ -291,14 +296,19 @@ fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
         // WHAT THE NAVIGATION OFFERS: one item per island the frame declares, labelled by the frame
         // itself. Ids are the booth names, so a click can name its destination without a table.
         for region in shell.regions() {
+            // PROBE (temporary): the navigation rows are what the shell's select renders when it
+            // traps; skip them so the rest of the frame can be measured.
+            if std::env::var("PROBE_NO_NAV").is_ok() {
+                continue;
+            }
             ops.push(json!({
                 "action": "append",
                 "slot": NAV_SLOT,
                 "data": {
+                    // PROBE (temporary): the simplest possible row — id and type only — to tell
+                    // whether the trap is about what the row CARRIES or about rendering rows at all.
                     "id": region.booth,
                     "type": "text",
-                    "attrs": {"class": ["--nav-item"]},
-                    "bind": {"value": {"kind": "default", "default": region.label}},
                 },
             }));
             // The page a navigation item switches to: the SAME id, holding the region's binding.
@@ -309,13 +319,27 @@ fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
                 "slot": PAGES_SLOT,
                 "data": {
                     "id": region.booth,
-                    // A PLACEHOLDER, not a `case`: only a placeholder renders the node tree a
-                    // source slot holds (fluxen `components/case.rs:53`); a `case` treats its
-                    // binding as a name and draws its static children, which is why the first
-                    // version of this row drew an empty box.
+                    // A `frame` bound to the island's slot: when the booth has drawn, the slot
+                    // holds a tree and this renders it; until then — and if the booth never
+                    // answers — its `children` are what shows. This row declares none, so the
+                    // region is blank until its booth draws. (fluxen ADR-0027 merged the old
+                    // `case`/`placeholder` pair into `frame`: one container, binding optional.)
                     "type": "frame",
                     "attrs": {"class": ["maximize", "col"]},
                     "bind": {"value": {"kind": "source", "source": format!("{}{}", crate::shell::ISLAND, region.booth)}},
+                    // UNTIL THE BOOTH DRAWS. A `frame` renders its `children` whenever the slot it
+                    // mirrors is empty (fluxen ADR-0027), so this is the region's default content —
+                    // one canvas, no wrapper: the spinner centres itself.
+                    "children": [{
+                        "type": "canvas",
+                        "url": LOADING_MODULE,
+                        "attrs": {"class": ["maximize"]},
+                        // A canvas carries a PAYLOAD or it does not exist: an empty one is
+                        // collapsed and never mounted (fluxen ADR-0012), so a spinner with no
+                        // data would be an invisible node. The size rides the payload — the
+                        // module's only knob, and the same fact for every region.
+                        "bind": {"value": {"kind": "default", "default": {"size": "32px"}}},
+                    }],
                 },
             }));
         }

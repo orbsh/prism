@@ -95,14 +95,27 @@ async fn the_frame_is_drawn_from_the_file_before_the_application_is_asked() {
     // create). Reading until the create is what makes this order-independent without hiding it —
     // the assertion below fails if it never comes.
     let mut created = None;
-    for _ in 0..4 {
+    let mut seen: Vec<Value> = Vec::new();
+    // The frame itself, then the rows the venue fills beside it (`user`, `nav`, `pages`): the
+    // assertions below cover both, so the loop reads until it has both rather than stopping at the
+    // first thing it recognises.
+    for _ in 0..8 {
         let frame = recv_json(&mut ws).await;
         let Some(ops) = frame.as_array() else { continue };
-        if let Some(op) = ops
-            .iter()
-            .find(|op| op.get("action").and_then(Value::as_str) == Some("create"))
-        {
-            created = Some(op.clone());
+        seen.extend(ops.iter().cloned());
+        if created.is_none() {
+            if let Some(op) = ops
+                .iter()
+                .find(|op| op.get("action").and_then(Value::as_str) == Some("create"))
+            {
+                created = Some(op.clone());
+            }
+        }
+        let rows = seen.iter().any(|op| {
+            op.get("slot").and_then(Value::as_str) == Some("pages")
+                && op.get("action").and_then(Value::as_str) == Some("append")
+        });
+        if created.is_some() && rows {
             break;
         }
     }
@@ -118,6 +131,29 @@ async fn the_frame_is_drawn_from_the_file_before_the_application_is_asked() {
     assert_eq!(
         children[1]["type"], "pages",
         "the body is the pager: rows come from a list slot, never from static children"
+    );
+
+    // A region's row is the venue's, and it carries its own default content: until the booth draws,
+    // the frame mirrors an empty slot and shows what is in `children` — one canvas, no wrapper.
+    let row = seen
+        .iter()
+        .find(|op| {
+            op.get("slot").and_then(Value::as_str) == Some("pages")
+                && op.get("action").and_then(Value::as_str) == Some("append")
+        })
+        .expect("the venue supplies one row per region");
+    assert_eq!(row["data"]["type"], "frame", "{row}");
+    assert_eq!(
+        row["data"]["bind"]["value"]["source"], "island:gravity-model",
+        "the row mirrors the region's own slot: {row}"
+    );
+    assert_eq!(
+        row["data"]["children"][0]["type"], "canvas",
+        "the region says something while nothing is drawn in it: {row}"
+    );
+    assert_eq!(
+        row["data"]["children"][0]["url"], "/assets/loading.js",
+        "one module, the same for every region: {row}"
     );
 }
 
