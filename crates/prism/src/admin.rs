@@ -131,9 +131,11 @@ pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u
 /// }
 /// ```
 ///
-/// `GET /admin/resources/<kind>` shows a grant. There is no per-resource route and no version route:
-/// what a script names inside the grant is the script's business, and the store keeps its own
-/// history.
+/// `GET /admin/resources` lists every declared grant; `GET /admin/resources/<kind>` shows one;
+/// `DELETE /admin/resources/<kind>` withdraws it — the grant row AND its credential, because a key
+/// nobody can reach through is worse than no key (a later declaration would silently inherit it).
+/// There is no per-resource route and no version route: what a script names inside the grant is the
+/// script's business, and the store keeps its own history.
 pub(crate) async fn serve_resources(
     gw: &crate::Gateway,
     method: &str,
@@ -175,6 +177,20 @@ pub(crate) async fn serve_resources(
             }
             Err(e) => plain(400, &e.to_string()),
         },
+        // The LISTING (`GET /admin/resources`). A management surface that can only be read one kind
+        // at a time is a surface you cannot operate from: "what is declared here" is the first
+        // question an operator asks, and answering it by guessing the kinds is not an answer.
+        ("GET", "") => match registry.declared() {
+            Ok(rows) => json_response(
+                200,
+                &serde_json::Value::Array(
+                    rows.into_iter()
+                        .map(|(kind, row)| serde_json::json!({ "kind": kind, "grant": row }))
+                        .collect(),
+                ),
+            ),
+            Err(e) => plain(500, &e.to_string()),
+        },
         ("GET", other) => {
             let kind = other.trim_start_matches('/');
             if kind.is_empty() || kind.contains('/') {
@@ -183,6 +199,23 @@ pub(crate) async fn serve_resources(
             match registry.grant(kind) {
                 Ok(Some(stored)) => json_response(200, &stored),
                 Ok(None) => plain(404, "no such grant"),
+                Err(e) => plain(500, &e.to_string()),
+            }
+        }
+        // WITHDRAW (`DELETE /admin/resources/<kind>`). Both rows go: the grant and its credential.
+        // Keeping the key would leave something nobody can reach through — and something a later
+        // re-declare would silently inherit, which is the opposite of "withdrawn".
+        ("DELETE", other) => {
+            let kind = other.trim_start_matches('/');
+            if kind.is_empty() || kind.contains('/') {
+                return Some(plain(404, "unknown admin route"));
+            }
+            match registry.grant(kind) {
+                Ok(None) => plain(404, "no such grant"),
+                Ok(Some(_)) => match registry.revoke(kind) {
+                    Ok(()) => json_response(200, &serde_json::json!({ "revoked": kind })),
+                    Err(e) => plain(500, &e.to_string()),
+                },
                 Err(e) => plain(500, &e.to_string()),
             }
         }
