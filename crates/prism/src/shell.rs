@@ -242,4 +242,15 @@ mod tests {
         );
         assert_eq!(shell.islands(), vec!["gravity-model"]);
     }
+
+    /// The SHIPPED frame opens. It is the file a deployment is told to point `PRISM_SHELL` at, so a
+    /// typo in it is not a documentation problem — it is the reference deployment failing to boot.
+    #[test]
+    fn the_reference_frame_opens() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/shell.json");
+        let shell = Shell::open(&path).expect("the reference frame is valid");
+        let islands = shell.islands();
+        assert!(!islands.is_empty(), "the reference frame declares a region");
+        assert!(shell.describe().contains("page frame"));
+    }
 }
