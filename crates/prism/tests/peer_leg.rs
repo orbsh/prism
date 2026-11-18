@@ -209,7 +209,7 @@ async fn a_user_address_reaches_the_programs_of_that_account() {
     let _ = recv_json(&mut one).await;
     send_json(
         &mut one,
-        json!({"ev": "signup", "args": {"username": "ada", "password": "correct horse"}}),
+        json!({"ev": "signup", "args": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let landed = recv_json(&mut one).await;
@@ -223,7 +223,7 @@ async fn a_user_address_reaches_the_programs_of_that_account() {
     let _ = recv_json(&mut two).await;
     send_json(
         &mut two,
-        json!({"ev": "login", "args": {"username": "ada", "password": "correct horse"}}),
+        json!({"ev": "login", "args": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let landed = recv_json(&mut two).await;
@@ -283,7 +283,7 @@ async fn a_device_list_belongs_to_the_account() {
 
     send_json(
         &mut one,
-        json!({"ev": "signup", "args": {"username": "ada", "password": "correct horse"}}),
+        json!({"ev": "signup", "args": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let _ = recv_json(&mut one).await;
@@ -292,7 +292,7 @@ async fn a_device_list_belongs_to_the_account() {
     let _ = recv_json(&mut two).await;
     send_json(
         &mut two,
-        json!({"ev": "login", "args": {"username": "ada", "password": "correct horse"}}),
+        json!({"ev": "login", "args": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let _ = recv_json(&mut two).await;

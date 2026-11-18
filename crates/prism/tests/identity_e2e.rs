@@ -96,7 +96,7 @@ async fn signup_then_sender_sees_identity() {
     assert_eq!(ident.device.len(), 36, "a uuid's text form");
 
     send(&mut ws, &Frame::new("signup", serde_json::json!(
-        {"username": "alice", "password": "correct-horse", "nickname": "Alice"}))).await;
+        {"login_name": "alice", "password": "correct-horse", "nickname": "Alice"}))).await;
     let f = recv(&mut ws).await;
     assert_eq!(f.ev, "signup.result");
     let uid = f.args["user_id"].as_str().expect("user id is text").to_string();
@@ -117,7 +117,7 @@ async fn reconnect_restores_the_binding_through_the_token_only() {
     let addr = boot().await;
     let (mut ws, ident) = connect(addr).await;
     send(&mut ws, &Frame::new("signup", serde_json::json!(
-        {"username": "bob", "password": "correct-horse"}))).await;
+        {"login_name": "bob", "password": "correct-horse"}))).await;
     let f = recv(&mut ws).await;
     let uid = f.args["user_id"].as_str().unwrap().to_string();
     let token = f.args["token"].as_str().unwrap().to_string();
@@ -154,12 +154,12 @@ async fn broadcast_auth_predicate() {
     let (mut anon, _) = connect(addr).await;
     let (mut auth, _) = connect(addr).await;
     send(&mut auth, &Frame::new("login", serde_json::json!(
-        {"username": "carol", "password": "correct-horse"}))).await;
+        {"login_name": "carol", "password": "correct-horse"}))).await;
     // no such account yet → error value, still anonymous
     let f = recv(&mut auth).await;
     assert_eq!(f.ev, "error");
     send(&mut auth, &Frame::new("signup", serde_json::json!(
-        {"username": "carol", "password": "correct-horse"}))).await;
+        {"login_name": "carol", "password": "correct-horse"}))).await;
     assert_eq!(recv(&mut auth).await.ev, "signup.result");
 
     send(&mut anon, &Frame::new("broadcast", serde_json::json!({"to": "auth", "n": 1}))).await;
@@ -184,14 +184,14 @@ async fn login_failure_is_indistinguishable_value() {
     let addr = boot().await;
     let (mut ws, _) = connect(addr).await;
     send(&mut ws, &Frame::new("signup", serde_json::json!(
-        {"username": "dave", "password": RIGHT}))).await;
+        {"login_name": "dave", "password": RIGHT}))).await;
     assert_eq!(recv(&mut ws).await.ev, "signup.result");
 
     send(&mut ws, &Frame::new("login", serde_json::json!(
-        {"username": "dave", "password": WRONG}))).await;
+        {"login_name": "dave", "password": WRONG}))).await;
     let f1 = recv(&mut ws).await;
     send(&mut ws, &Frame::new("login", serde_json::json!(
-        {"username": "ghost", "password": WRONG}))).await;
+        {"login_name": "ghost", "password": WRONG}))).await;
     let f2 = recv(&mut ws).await;
     assert_eq!(f1.ev, "error");
     assert_eq!(f1.args["message"], f2.args["message"], "enumeration-free");
@@ -201,12 +201,12 @@ async fn login_failure_is_indistinguishable_value() {
 
 /// Duplicate signup is an error VALUE, connection usable after.
 #[tokio::test]
-async fn username_taken() {
+async fn login_name_taken() {
     let addr = boot().await;
     let (mut ws, _) = connect(addr).await;
     for expect in ["signup.result", "error"] {
         send(&mut ws, &Frame::new("signup", serde_json::json!(
-            {"username": "eve", "password": "correct-horse"}))).await;
+            {"login_name": "eve", "password": "correct-horse"}))).await;
         let f = recv(&mut ws).await;
         assert_eq!(f.ev, expect);
     }
@@ -253,7 +253,7 @@ async fn declared_auth_event_requires_a_bound_user() {
 
     // After signup the declared handler answers through the same socket.
     send(&mut ws, &Frame::new("signup", serde_json::json!(
-        {"username": "frank", "password": "correct-horse"}))).await;
+        {"login_name": "frank", "password": "correct-horse"}))).await;
     let uid = recv(&mut ws).await.args["user_id"].as_str().unwrap().to_string();
     send(&mut ws, &Frame::new("echo_priv", serde_json::json!({"secret": 1}))).await;
     let f = recv(&mut ws).await;
@@ -269,7 +269,7 @@ async fn logout_clears_binding_and_auth_field() {
     let addr = boot().await;
     let (mut ws, _) = connect(addr).await;
     send(&mut ws, &Frame::new("signup", serde_json::json!(
-        {"username": "grace", "password": "correct-horse"}))).await;
+        {"login_name": "grace", "password": "correct-horse"}))).await;
     let f = recv(&mut ws).await;
     let token = f.args["token"].as_str().unwrap().to_string();
 
@@ -299,7 +299,7 @@ async fn revocation_kicks_connection_and_kills_trust() {
     let (addr, gw) = boot_gw().await;
     let (mut ws, ident) = connect(addr).await;
     send(&mut ws, &Frame::new("signup", serde_json::json!(
-        {"username": "malory", "password": "correct-horse"}))).await;
+        {"login_name": "malory", "password": "correct-horse"}))).await;
     let f = recv(&mut ws).await;
     let uid = f.args["user_id"].as_str().unwrap().to_string();
     let token = f.args["token"].as_str().unwrap().to_string();
@@ -336,7 +336,7 @@ async fn revocation_kicks_connection_and_kills_trust() {
 
     // Fresh login re-earns the device: the auth field lives again, with a NEW token.
     send(&mut ws2, &Frame::new("login", serde_json::json!(
-        {"username": "malory", "password": "correct-horse"}))).await;
+        {"login_name": "malory", "password": "correct-horse"}))).await;
     let f = recv(&mut ws2).await;
     assert_eq!(f.ev, "login.result");
     assert_eq!(f.args["user_id"], serde_json::json!(uid));

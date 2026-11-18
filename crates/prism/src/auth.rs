@@ -9,7 +9,7 @@
 //!
 //! The shipped implementation keeps two tables in prism's own okm instance:
 //!
-//! - `Account` (ns 50) — username + nickname, with `by_name` for the exact login lookup;
+//! - `Account` (ns 50) — login_name + nickname, with `by_name` for the exact login lookup;
 //! - `Credential` (ns 55) — the argon2id verifier, keyed by USER ID.
 //!
 //! They are two tables because a verifier is not profile data: a listing, a dump or an export of
@@ -62,10 +62,10 @@ pub const AUTH_REQUIRED: &str = "ui:auth.required";
 /// here — see `Credential`.
 #[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
 #[ok_ref(Uuid7)]
-#[ok_index(by_name { fields(username) })]
+#[ok_index(by_name { fields(login_name) })]
 #[ok_ns(50)]
 pub struct Account {
-    pub username: String,
+    pub login_name: String,
     pub nickname: String,
 }
 
@@ -95,12 +95,12 @@ impl AuthStore {
     /// Create the account and its verifier; returns the user id the venue will bind. The verifier is
     /// written FIRST: a half-finished registration then leaves an orphan hash rather than an account
     /// whose name is taken and which nobody can ever log into.
-    pub fn register(&self, username: &str, nickname: &str, password: &str) -> anyhow::Result<UserId> {
-        if username.is_empty() || password.is_empty() {
-            return Err(anyhow!("username and password are required"));
+    pub fn register(&self, login_name: &str, nickname: &str, password: &str) -> anyhow::Result<UserId> {
+        if login_name.is_empty() || password.is_empty() {
+            return Err(anyhow!("a login name and a password are required"));
         }
-        if self.find_account(username)?.is_some() {
-            return Err(anyhow!("username taken"));
+        if self.find_account(login_name)?.is_some() {
+            return Err(anyhow!("that login name is taken"));
         }
         let id = Uuid7::now();
         let creds = Collection::<_, UserId, Credential>::new(self.store.clone());
@@ -108,16 +108,16 @@ impl AuthStore {
         let accounts = Collection::<_, UserId, Account>::new(self.store.clone());
         accounts.put(
             &id,
-            &Account { username: username.to_string(), nickname: nickname.to_string() },
+            &Account { login_name: login_name.to_string(), nickname: nickname.to_string() },
         )?;
         Ok(id)
     }
 
-    /// Prove a credential and name the user. An unknown username and a wrong password answer the SAME
+    /// Prove a credential and name the user. An unknown login name and a wrong password answer the SAME
     /// error: the venue does not turn this door into an account directory.
-    pub fn verify(&self, username: &str, password: &str) -> anyhow::Result<UserId> {
+    pub fn verify(&self, login_name: &str, password: &str) -> anyhow::Result<UserId> {
         let (user, _) = self
-            .find_account(username)?
+            .find_account(login_name)?
             .ok_or_else(|| anyhow!("invalid credentials"))?;
         let cred = Collection::<_, UserId, Credential>::new(self.store.clone())
             .get_row(&user)?
@@ -126,7 +126,7 @@ impl AuthStore {
         Ok(user)
     }
 
-    /// The name to show for a user: the nickname, else the username, else nothing (a booth swapped for
+    /// The name to show for a user: the nickname, else the login_name, else nothing (a booth swapped for
     /// an external IdP may have no row here at all — the screen then says "you").
     pub fn display_name(&self, user: UserId) -> anyhow::Result<Option<String>> {
         let Some(account) =
@@ -134,16 +134,16 @@ impl AuthStore {
         else {
             return Ok(None);
         };
-        Ok(Some(if account.nickname.is_empty() { account.username } else { account.nickname }))
+        Ok(Some(if account.nickname.is_empty() { account.login_name } else { account.nickname }))
     }
 
     /// Username → (id, row). The text lives in the index; the row verifies an exact match, because an
     /// index hit may be a prefix collision.
-    pub fn find_account(&self, username: &str) -> anyhow::Result<Option<(UserId, Account)>> {
+    pub fn find_account(&self, login_name: &str) -> anyhow::Result<Option<(UserId, Account)>> {
         let t = Collection::<_, UserId, Account>::new(self.store.clone());
-        for hit in t.scan::<AccountByName>(username.as_bytes()) {
+        for hit in t.scan::<AccountByName>(login_name.as_bytes()) {
             let (_, key, row) = hit?;
-            if let Some(account) = row.filter(|a| a.username == username) {
+            if let Some(account) = row.filter(|a| a.login_name == login_name) {
                 return Ok(Some((key.decoded, account)));
             }
         }
@@ -223,15 +223,15 @@ async fn handle(store: FjallStore, args: Value) -> anyhow::Result<Value> {
     let store = AuthStore::new(store);
     match op {
         OP_VERIFY => {
-            let (username, password) = (field("username")?, field("password")?);
-            let user = tokio::task::spawn_blocking(move || store.verify(&username, &password)).await??;
+            let (login_name, password) = (field("login_name")?, field("password")?);
+            let user = tokio::task::spawn_blocking(move || store.verify(&login_name, &password)).await??;
             Ok(json!({ "user": user.to_string() }))
         }
         OP_REGISTER => {
-            let (username, password) = (field("username")?, field("password")?);
+            let (login_name, password) = (field("login_name")?, field("password")?);
             let nickname = args.get("nickname").and_then(Value::as_str).unwrap_or("").to_string();
             let user = tokio::task::spawn_blocking(move || {
-                store.register(&username, &nickname, &password)
+                store.register(&login_name, &nickname, &password)
             })
             .await??;
             Ok(json!({ "user": user.to_string() }))
@@ -323,7 +323,7 @@ fn form(dest: &str, children: Vec<Value>) -> Value {
 fn login_screen(mode: &str) -> Value {
     let signup = mode == "signup";
     let mut children = vec![text(if signup { "create an account" } else { "sign in" })];
-    children.push(input("username", "text", "username"));
+    children.push(input("login_name", "text", ""));
     children.push(input("password", "password", "password"));
     if signup {
         children.push(input("nickname", "text", "how you are shown"));
@@ -385,7 +385,7 @@ mod tests {
         );
     }
 
-    /// One error for both halves of a failed login, and a taken username is refused.
+    /// One error for both halves of a failed login, and a taken login_name is refused.
     #[test]
     fn a_wrong_password_and_an_unknown_name_read_the_same() {
         let s = store();
@@ -393,6 +393,6 @@ mod tests {
         let wrong = s.verify("alice", "nope").unwrap_err().to_string();
         let ghost = s.verify("ghost", "nope").unwrap_err().to_string();
         assert_eq!(wrong, ghost, "enumeration-free");
-        assert!(s.register("alice", "", "other").is_err(), "username is unique");
+        assert!(s.register("alice", "", "other").is_err(), "login_name is unique");
     }
 }

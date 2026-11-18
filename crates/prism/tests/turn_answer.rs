@@ -261,7 +261,7 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
         &mut ws,
         &prism_protocol::Frame::new(
             "signup",
-            json!({ "username": "alice", "password": "pw" }),
+            json!({ "login_name": "alice", "password": "pw" }),
         ),
     )
     .await;

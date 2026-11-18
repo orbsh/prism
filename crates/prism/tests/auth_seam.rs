@@ -110,11 +110,11 @@ async fn the_booth_draws_the_login_screen_and_the_signed_in_line() {
     // Signing up is the same screen with one more field, and the venue's answer lands as the
     // signed-in line — the booth reads its own account row for the name. The payload is written the
     // way a PAGE writes it: every field is `{data, payload}` (fluxen's form shape), not a bare string.
-    // A venue that read only the flat shape refused real pages with "needs `username`".
+    // A venue that read only the flat shape refused real pages with "needs `login_name`".
     send_uplink(
         &mut ws,
         serde_json::json!({"dest": "signup", "data": {
-            "username": {"data": "ada", "payload": null},
+            "login_name": {"data": "ada", "payload": null},
             "password": {"data": "pw-ada", "payload": null},
             "nickname": {"data": "Ada", "payload": null},
         }}),
@@ -201,7 +201,7 @@ async fn a_venue_without_an_auth_booth_refuses_login_and_still_serves() {
     let (mut ws, _) = connect(addr, "").await;
 
     for ev in ["login", "signup"] {
-        send(&mut ws, &Frame::new(ev, serde_json::json!({"username": "a", "password": "b"}))).await;
+        send(&mut ws, &Frame::new(ev, serde_json::json!({"login_name": "a", "password": "b"}))).await;
         let f = recv(&mut ws).await;
         assert_eq!(f.ev, "error", "a login with no booth is an error VALUE, not a close");
         let message = f.args["message"].as_str().unwrap_or_default();
@@ -227,7 +227,7 @@ async fn a_swapped_auth_booth_names_the_user_and_prism_binds_it() {
 
     send(
         &mut ws,
-        &Frame::new("login", serde_json::json!({"username": "ada", "password": "open sesame"})),
+        &Frame::new("login", serde_json::json!({"login_name": "ada", "password": "open sesame"})),
     )
     .await;
     let f = recv(&mut ws).await;
@@ -243,7 +243,7 @@ async fn a_swapped_auth_booth_names_the_user_and_prism_binds_it() {
 
     // A wrong password is the booth's refusal, relayed as the standard error value.
     let (mut ws3, _) = connect(addr, "").await;
-    send(&mut ws3, &Frame::new("login", serde_json::json!({"username": "ada", "password": "nope"}))).await;
+    send(&mut ws3, &Frame::new("login", serde_json::json!({"login_name": "ada", "password": "nope"}))).await;
     let f = recv(&mut ws3).await;
     assert_eq!(f.ev, "error");
     assert_eq!(f.args["message"].as_str(), Some("invalid credentials"));

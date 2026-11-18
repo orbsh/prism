@@ -17,7 +17,7 @@
 //!   Job, InstanceId stay identity-free. The result returns to the
 //!   CALLING connection as `{ev: "<type>.result", args}`; failures are
 //!   `{ev: "error"}` VALUES, never a close.
-//! - `{"ev": "signup"|"login", args: {username, password, nickname?}}`
+//! - `{"ev": "signup"|"login", args: {login_name, password, nickname?}}`
 //!   — business events on the same socket (§4: login is an ordinary
 //!   event), answered `signup.result`/`login.result {user_id}` and
 //!   setting the connection's auth field (§3's per-connection field,
@@ -90,7 +90,7 @@ struct Conn {
 /// fills it.
 pub(crate) type AuthField = Arc<std::sync::Mutex<identity::UserId>>;
 
-/// A text argument from either kind of caller. A PROGRAM sends `{"username": "ada"}`; a PAGE sends the
+/// A text argument from either kind of caller. A PROGRAM sends `{"login_name": "ada"}`; a PAGE sends the
 /// form's own envelope — fluxen builds every field as `{data, payload}` (`data` is the field's value,
 /// `payload` an optional declared one). One unwrap at the entry keeps that difference out of the login
 /// policy, exactly as gravity's `save` unwraps it for its own rows.
@@ -834,7 +834,7 @@ impl Gateway {
     ) -> anyhow::Result<(identity::UserId, identity::TokenId)> {
         let mut payload = serde_json::Map::new();
         payload.insert("op".into(), serde_json::Value::String(op.to_string()));
-        for key in ["username", "password", "nickname"] {
+        for key in ["login_name", "password", "nickname"] {
             if let Some(v) = text_field(args, key) {
                 payload.insert(key.into(), serde_json::Value::String(v));
             }

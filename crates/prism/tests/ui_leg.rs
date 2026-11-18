@@ -293,7 +293,7 @@ async fn a_silent_connection_crosses_the_window_and_a_login_reopens_it() {
     // Bind the device so the connection carries a user worth losing.
     send_uplink(
         &mut ws,
-        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+        json!({"dest": "signup", "data": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let landed = recv_named(&mut ws, ["token", "login"]).await;
@@ -309,7 +309,7 @@ async fn a_silent_connection_crosses_the_window_and_a_login_reopens_it() {
     // The auth verb is not gated: a login on the same connection names the SAME device.
     send_uplink(
         &mut ws,
-        json!({"dest": "login", "data": {"username": "ada", "password": "correct horse"}}),
+        json!({"dest": "login", "data": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let again = recv_named(&mut ws, ["token", "login"]).await;
@@ -439,7 +439,7 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     // signup on the leg: the account is prism's, and the answer is a fact, not a verb.
     send_uplink(
         &mut ws,
-        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+        json!({"dest": "signup", "data": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let landed = recv_named(&mut ws, ["token", "login"]).await;
@@ -495,7 +495,7 @@ async fn revocation_kicks_the_renderer_leg_too() {
     let device = read_connected(&mut ws).await;
 
     // Bind an account so this connection carries an auth field worth clearing.
-    send_uplink(&mut ws, json!({"dest": "signup", "data": {"username": "grace", "password": "p"}})).await;
+    send_uplink(&mut ws, json!({"dest": "signup", "data": {"login_name": "grace", "password": "p"}})).await;
     recv_named(&mut ws, ["token", "login"]).await;
 
     let resp = post_json(addr, "/admin/revoke", json!({"device_id": device})).await;
@@ -599,7 +599,7 @@ async fn a_user_address_reaches_every_live_device_of_that_account() {
     let _one = read_connected(&mut one).await;
     send_uplink(
         &mut one,
-        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+        json!({"dest": "signup", "data": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let landed = recv_named(&mut one, ["token", "login"]).await;
@@ -613,7 +613,7 @@ async fn a_user_address_reaches_every_live_device_of_that_account() {
     let _two = read_connected(&mut two).await;
     send_uplink(
         &mut two,
-        json!({"dest": "login", "data": {"username": "ada", "password": "correct horse"}}),
+        json!({"dest": "login", "data": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     let second = recv_named(&mut two, ["token", "login"]).await;
@@ -695,7 +695,7 @@ async fn a_page_can_ask_for_its_accounts_devices() {
 
     send_uplink(
         &mut ws,
-        json!({"dest": "signup", "data": {"username": "ada", "password": "correct horse"}}),
+        json!({"dest": "signup", "data": {"login_name": "ada", "password": "correct horse"}}),
     )
     .await;
     recv_named(&mut ws, ["token", "login"]).await;

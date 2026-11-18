@@ -32,7 +32,7 @@
 //!   the window restores nothing either — and the device is still named, which is what lets a login
 //!   keep its alias instead of minting a new device every timeout.
 //! - an **account** is a user id the auth booth vouches for; this module only ever records that a
-//!   device is bound to one (`bind_login`). Where the username and its verifier live, and how they
+//!   device is bound to one (`bind_login`). Where the login_name and its verifier live, and how they
 //!   are proven, is the auth booth's business (`auth.rs`) — the venue holds no password.
 //!
 //! Live auth state stays where it was (§3): a per-connection field in the gateway, never a second

@@ -470,7 +470,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
         &mut ws,
         &prism_protocol::Frame::new(
             "signup",
-            json!({ "username": "alice", "password": "pw" }),
+            json!({ "login_name": "alice", "password": "pw" }),
         ),
     )
     .await;
