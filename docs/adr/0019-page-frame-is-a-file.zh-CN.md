@@ -20,7 +20,8 @@
 
 - `PRISM_SHELL` 指向一个 JSON 文件，内容是一个 accrete 文档。prism 在启动时读它（读不了、或里面是一串动作，都是启动错误，不是静默降级为「没有外框」），并在每条渲染连接上推一个 `create`，其 data 就是该文档——**先于** `ui:connect`，因为用 `set` 回答的 booth 需要一个已经存在的 slot。
 - 区域在该文件里声明为 `{"bind": {"value": {"kind": "source", "source": "island:<booth 类型>"}}}`。slot 名就是地址：没有映射表、没有注册，没有任何会与文件不一致的东西。部署改了 booth 名，改的就是一个字符串。
-- 平面发出的每一条投递都在顶层带 `shell: true|false`。收到 `true` 的 booth 把界面写进 `island:<自己的类型>`；收到 `false` 时照旧画整页。booth 从不猜，因为猜错是静默的：外框里的一个 `create` 会替换根节点，把导航和同页其他 island 一起擦掉。
+- **前缀是平面的，不是 booth 的。** 被托管时，booth 用**空 slot** 指自己这块界面，内部名字照写裸名（`pages`、`notice`）；视图腿把该 booth 帧里每个 slot 改写成 `island:<页面给它的名字>/<slot>`，其中页面给的名字是事件名的第一段（`ui:gravity-model.layout` ⇒ `gravity-model`）——不是 aura 的 booth 类型，页面不认识引擎。已经写成 `island:…` 的 slot 原样通过：要写进别人的区域，得知道那个名字，而没有 booth 会被告诉它。
+- 平面发出的每一条投递都在顶层带 `shell: true|false`：`true` 表示外框已由平面画出，此时一个 `create` 会替换根节点、把导航和同页其他 island 一起擦掉；`false` 表示照旧由 booth 画整页。
 - 不设 `PRISM_SHELL` 是合法的，含义是旧安排。`crates/prism/assets/shell.json` 是参考外框。
 
 ## 考虑并否决
@@ -32,6 +33,6 @@
 ## 后果
 
 - 外框的主人是运维，不是 booth。改导航就是改文件、重启 prism，不牵涉任何 crate。
-- island 就是一次普通的 `set`，写进文件写下的名字。于是隔离单元与更新单元是同一个对象：一个 booth 够不到另一个的区域，渲染器重画的恰好是绑定该 slot 的节点。
+- island 就是一次普通的 `set`，写进平面推导出的名字。于是隔离单元与更新单元是同一个对象：渲染器重画的恰好是绑定该 slot 的节点；而隔离是**机制**而不是纪律——写 `pages` 的应用拿到的是 `island:<它的名字>/pages`，要够到别人的区域，得写出一个没人给过它的名字。
 - 地址约定取代了配置，而启动日志会说明它找到了什么（`prism: page frame ← … (islands: …)`），所以一个本意要有导航的部署会说出口。
 - gravity 的外框与屏幕仍然用代码构造那棵树，只有**地址**由标志决定。树本身仍归 gravity —— 这是对的：应用在自己的区域里画什么，是它自己的事。

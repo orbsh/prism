@@ -192,11 +192,72 @@ pub struct Gateway {
     /// it over when a device of theirs proves the account again. Bounded on purpose: a returning
     /// device needs where things STAND, not every step that led there — and a booth redraws its
     /// screen as a whole, so the newest frames supersede the oldest ones held here.
-    missed: Arc<Mutex<HashMap<identity::UserId, VecDeque<(String, Vec<content::Content<serde_json::Value>>)>>>>,
+    missed: Arc<Mutex<HashMap<identity::UserId, Held>>>,
 }
 
-/// How many frames the venue holds for one absent account before the oldest go.
+/// How many increments the venue holds behind the last whole screen before the oldest go.
 const MISSED_CAP: usize = 64;
+
+/// One frame waiting for an account: the event it was sent as, and its operations.
+type HeldFrame = (String, Vec<content::Content<serde_json::Value>>);
+
+/// WHAT AN ABSENT ACCOUNT IS OWED, split where a screen begins. A frame that redraws a whole
+/// screen or region (`create` at the root, `set` on an `island:` slot) already CONTAINS every
+/// increment before it, so a replay starts there and drops what came earlier — replaying a screen
+/// is replaying a state; replaying the log that led to it is guessing at one.
+#[derive(Default)]
+pub(crate) struct Held {
+    /// DATA frames (an `inject` into a vals slot): a slot's value stands on its own, so these are
+    /// owed as they came, whatever the screen did meanwhile.
+    data: VecDeque<HeldFrame>,
+    /// The newest frame that redrew a whole screen or region, when one was held.
+    screen: Option<HeldFrame>,
+    /// Layout increments after that screen.
+    after: VecDeque<HeldFrame>,
+}
+
+impl Held {
+    /// Does this frame redraw a whole screen or region? Its first operation says so: a `create`
+    /// on the empty (root) slot, or a `set` on the slot an island occupies.
+    fn redraws_whole(ops: &[content::Content<serde_json::Value>]) -> bool {
+        match ops.first() {
+            Some(content::Content::Create(influx)) => influx.slot.is_empty(),
+            Some(content::Content::Set(influx)) => influx.slot.starts_with("island:"),
+            _ => false,
+        }
+    }
+
+    fn push(&mut self, name: &str, ops: Vec<content::Content<serde_json::Value>>) {
+        // A page's payload that is not an operation list arrives as ONE `inject` — a slot value,
+        // not a step in drawing the tree. It is owed whatever the layout did.
+        let is_data = matches!(ops.as_slice(), [content::Content::Inject(_)]);
+        if is_data {
+            self.data.push_back((name.to_string(), ops));
+            while self.data.len() > MISSED_CAP {
+                self.data.pop_front();
+            }
+            return;
+        }
+        if Self::redraws_whole(&ops) {
+            self.screen = Some((name.to_string(), ops));
+            self.after.clear();
+            return;
+        }
+        self.after.push_back((name.to_string(), ops));
+        while self.after.len() > MISSED_CAP {
+            self.after.pop_front();
+        }
+    }
+
+    /// What the account is owed: the slot values as they came, then — only when a whole screen
+    /// was held — where the screen stood and what moved since.
+    fn frames(self) -> (Vec<HeldFrame>, Option<Vec<HeldFrame>>) {
+        let data: Vec<HeldFrame> = self.data.into_iter().collect();
+        let mut drawn: Vec<HeldFrame> = self.screen.into_iter().collect();
+        drawn.extend(self.after);
+        (data, if drawn.is_empty() { None } else { Some(drawn) })
+    }
+}
 
 /// The handshake extras read in accept_hdr (before the upgrade
 /// consumes the request): the codec selector and the device echo.
@@ -288,22 +349,41 @@ impl Gateway {
     /// The held queue is the ACCOUNT's, not the device's: every frame in it was deferred because
     /// none of their screens was awake, so whoever is awake at this moment missed them all — and
     /// once one screen has them the debt is settled (a booth draws its next screen whole).
-    pub(crate) fn flush_missed(&self, user: identity::UserId) {
+    pub(crate) async fn flush_missed(&self, device: identity::DeviceId, user: identity::UserId) {
         let held = {
             let mut missed = self.missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             missed.remove(&user)
         };
         let Some(held) = held else { return };
-        eprintln!("prism: handing {} held frames to the account's device", held.len());
-        let conns = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        for c in conns.values() {
-            if *c.user.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != user {
-                continue;
-            }
-            for (_name, ops) in &held {
-                let _ = c.tx.send(ops.clone());
+        let (data, drawn) = held.frames();
+        eprintln!(
+            "prism: handing {} held frames to the account's device ({} drawn from a whole screen)",
+            data.len() + drawn.as_ref().map_or(0, Vec::len),
+            drawn.as_ref().map_or(0, Vec::len)
+        );
+        {
+            let conns = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for c in conns.values() {
+                if *c.user.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != user {
+                    continue;
+                }
+                for (_name, ops) in &data {
+                    let _ = c.tx.send(ops.clone());
+                }
+                if let Some(frames) = &drawn {
+                    for (_name, ops) in frames {
+                        let _ = c.tx.send(ops.clone());
+                    }
+                }
             }
         }
+        // LAYOUT WITHOUT A SCREEN BEHIND IT. The frames are replayed as they came — that is what
+        // the absent screen would have drawn in order — but nothing here can promise the result
+        // equals the live screen, because the booth never said where the screen started. A booth
+        // that wants an exact replay emits its page as ONE whole-region frame (`set` on its
+        // `island:` slot, or `create` at the root) instead of a bag of appends; `ask_to_redraw` is
+        // here for a deployment that would rather redraw than replay.
+        let _ = device;
     }
 
     /// Emit into the default realm, fire and forget. A failure is a LOG, not a reply: the
@@ -439,13 +519,24 @@ impl Gateway {
         let missed = std::sync::Arc::clone(&self.missed);
         let defer: ui::Defer = std::sync::Arc::new(move |user, name, ops| {
             let mut held = missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let queue = held.entry(user).or_default();
-            queue.push_back((name.to_string(), ops));
-            while queue.len() > MISSED_CAP {
-                queue.pop_front();
-            }
+            held.entry(user).or_default().push(name, ops);
         });
-        ui::install(&self.engine, std::sync::Arc::clone(&self.ui_conns), peers, defer).await;
+        // The islands the frame declares are handed to the view leg: that is the whole of what an
+        // application needs to be namespaced, and the venue is the only party that knows the list.
+        let islands = self
+            .deployment
+            .shell
+            .as_ref()
+            .map(|s| s.islands())
+            .unwrap_or_default();
+        ui::install(
+            &self.engine,
+            std::sync::Arc::clone(&self.ui_conns),
+            peers,
+            defer,
+            islands,
+        )
+        .await;
         // The grant surface is the PLANE's own page (ADR-0049): a resource belongs to the venue, so
         // no application can list what this venue offers — and none should be able to.
         resources_ui::install(&self.engine).await;
@@ -956,7 +1047,7 @@ impl Gateway {
                 }
                 // A signature-in makes its screen owed whatever the account missed while nobody
                 // of theirs was awake.
-                self.flush_missed(user_id);
+                self.flush_missed(device, user_id).await;
                 self.send_to(
                     id,
                     Frame::new(

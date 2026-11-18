@@ -22,7 +22,7 @@
     {
       "type": "case",
       "attrs": { "class": ["maximize", "col"] },
-      "bind": { "value": { "kind": "source", "source": "island:gravity_turn" } }
+      "bind": { "value": { "kind": "source", "source": "island:gravity-model" } }
     }
   ]
 }

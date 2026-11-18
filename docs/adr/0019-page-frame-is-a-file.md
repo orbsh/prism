@@ -20,7 +20,8 @@ A front-end meta-framework solves this by bundling: it packs several stacks into
 
 - `PRISM_SHELL` names a JSON file holding one accrete document. prism reads it at boot (an unreadable file or a list-of-actions is a boot error, not a silent no-shell), and on every renderer connection pushes one `create` whose data is that document — **before** `ui:connect` is said, because a booth that answers with a `set` needs the slot to exist.
 - A region is declared in that file as `{"bind": {"value": {"kind": "source", "source": "island:<booth type>"}}}`. The slot name IS the address: no mapping table, no registration, nothing that can disagree with the file. A deployment that renames a booth renames one string.
-- Every delivery the venue makes carries `shell: true|false` at top level. A booth that receives `true` writes its surface into `island:<its own type>`; on `false` it draws the whole page as before. The booth never guesses, because guessing wrong is silent: a `create` inside a frame replaces the root and erases the navigation and every other island with it.
+- **The prefix is the venue's, not the booth's.** A hosted booth addresses its own surface with the EMPTY slot and its own names (`pages`, `notice`); the view leg rewrites every slot of that booth's frames to `island:<the page's name for it>/<slot>`, where the page's name is the first segment of the event (`ui:gravity-model.layout` ⇒ `gravity-model`) — not the aura booth type, which is not something a page knows. A slot already written as `island:…` passes through unchanged: writing into another region takes knowing its name, and no booth is told one.
+- Every delivery carries `shell: true|false` at top level: `true` means the venue drew the frame, so a `create` here would replace the root and erase the navigation and every other island in it; `false` means the booth is the page, as before.
 - Absent `PRISM_SHELL` is legal and means the old arrangement. `crates/prism/assets/shell.json` is the reference frame.
 
 ## Considered and rejected
@@ -32,6 +33,6 @@ A front-end meta-framework solves this by bundling: it packs several stacks into
 ## Consequences
 
 - The frame's owner is the operator, not a booth. Changing navigation is editing a file and restarting prism — no crate is involved.
-- An island is an ordinary `set` into a name the file wrote. That means the isolation unit and the update unit are the same object: a booth cannot reach another's region, and the renderer re-renders exactly the nodes bound to the slot it wrote.
+- An island is an ordinary `set` into a name the venue derived. That means the isolation unit and the update unit are the same object: the renderer re-renders exactly the nodes bound to the slot it wrote. And the isolation is a MECHANISM rather than a discipline — an application that writes `pages` gets `island:<its name>/pages`, so reaching another island's region requires spelling a name nobody gave it.
 - The address convention replaces configuration, and the boot log states what it found (`prism: page frame ← … (islands: …)`), so a deployment that meant to have navigation says so.
 - gravity's shell and screen still build the tree in code; only its ADDRESS is chosen by the flag. The tree remains gravity's business, which is correct — what an application draws inside its region is its own.

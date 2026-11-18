@@ -37,11 +37,11 @@ const FRAME: &str = r#"{
   "type": "case",
   "children": [
     {"type": "placeholder", "bind": {"value": {"kind": "source", "source": "auth"}}},
-    {"type": "case", "bind": {"value": {"kind": "source", "source": "island:gravity_turn"}}}
+    {"type": "case", "bind": {"value": {"kind": "source", "source": "island:gravity-model"}}}
   ]
 }"#;
 
-async fn boot(frame: &str) -> std::net::SocketAddr {
+async fn boot(frame: &str) -> (std::net::SocketAddr, std::sync::Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("shell.json");
     std::fs::write(&file, frame).unwrap();
@@ -59,10 +59,11 @@ async fn boot(frame: &str) -> std::net::SocketAddr {
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let serving = gw.clone();
     tokio::spawn(async move {
-        let _ = gw.serve(listener).await;
+        let _ = serving.serve(listener).await;
     });
-    addr
+    (addr, gw)
 }
 
 async fn recv_json(ws: &mut WsClient) -> Value {
@@ -80,7 +81,7 @@ use futures_util::StreamExt;
 
 #[tokio::test]
 async fn the_frame_is_drawn_from_the_file_before_the_application_is_asked() {
-    let addr = boot(FRAME).await;
+    let (addr, _gw) = boot(FRAME).await;
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/channel?codec=json"))
         .await
         .expect("/channel upgrades");
@@ -106,7 +107,51 @@ async fn the_frame_is_drawn_from_the_file_before_the_application_is_asked() {
     let children = create["data"]["children"].as_array().expect("a case has children");
     assert_eq!(children.len(), 2, "{}", create["data"]);
     assert_eq!(
-        children[1]["bind"]["value"]["source"], "island:gravity_turn",
+        children[1]["bind"]["value"]["source"], "island:gravity-model",
         "the region an island draws into is declared by the FILE, not by the venue"
+    );
+}
+
+/// The other half of the convention (ADR-0019): an island writes its BARE names and the venue puts
+/// them in its namespace. The booth never spells `island:…` — the prefix is the venue's, and the
+/// reason it is the venue's is that a booth spelling it would have to be told a name it should not
+/// need, and could then spell someone else's.
+#[tokio::test]
+async fn an_islands_slots_arrive_namespaced() {
+    let (addr, gw) = boot(FRAME).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/channel?codec=json"))
+        .await
+        .expect("/channel upgrades");
+
+    // No address: a broadcast reaches every live renderer. The booth's own uplink would name a
+    // device; the venue's rewriting is the same either way, which is what this test is about.
+    aura_realm::Realm::emit(
+        &gw.engine.realm,
+        None,
+        "ui:gravity-model.layout",
+        serde_json::json!({
+            "name": "ui:gravity-model.layout",
+            "data": [{"action": "set", "slot": "pages", "data": {"type": "case"}}],
+        }),
+    )
+    .await
+    .expect("emit");
+
+    let mut landed = None;
+    for _ in 0..40 {
+        let frame = recv_json(&mut ws).await;
+        let Some(ops) = frame.as_array() else { continue };
+        if let Some(op) = ops
+            .iter()
+            .find(|op| op.get("action").and_then(Value::as_str) == Some("set"))
+        {
+            landed = Some(op.clone());
+            break;
+        }
+    }
+    let op = landed.expect("the application's frame reached the page");
+    assert_eq!(
+        op["slot"], "island:gravity-model/pages",
+        "the page's name for the surface namespaces every slot the booth writes: {op}"
     );
 }

@@ -183,7 +183,12 @@ pub(crate) async fn install(
     conns: UiConns,
     peers: PeerDeliver,
     defer: Defer,
+    islands: Vec<String>,
 ) {
+    // The islands this deployment's frame declares. Passed as a value, not read per event: the
+    // frame is fixed at boot, so recomputing it per delivery would only give the same answer
+    // slower — and a frame that changed mid-life would silently move every subsequent frame.
+    let handler_islands = std::sync::Arc::new(islands);
     let handler_conns = Arc::clone(&conns);
     let handler_peers = Arc::clone(&peers);
     let handler_defer = Arc::clone(&defer);
@@ -193,8 +198,9 @@ pub(crate) async fn install(
             let conns = Arc::clone(&handler_conns);
             let peers = Arc::clone(&handler_peers);
             let defer = Arc::clone(&handler_defer);
+            let islands = Arc::clone(&handler_islands);
             Box::pin(async move {
-                forward(&conns, &peers, &defer, args);
+                forward(&conns, &peers, &defer, &islands, args);
                 Ok(Value::Null)
             })
         })),
@@ -232,7 +238,57 @@ pub(crate) async fn install(
 /// injected into the slot named by the event. The frames are the renderer's vocabulary — the
 /// venue does not interpret them, which is why it can forward a layout, an append and a patch
 /// alike.
-pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, defer: &Defer, payload: Value) {
+/// One island's frame, with its slots moved into the island's namespace.
+///
+/// The EMPTY slot is left alone: it is `create`'s address for the layout root (fluxen's
+/// convention), and an application that creates a root inside a frame is doing the one thing the
+/// shell exists to prevent — the venue does not help it by renaming the target.
+///
+/// An explicit `island:` prefix is left alone too. That is the escape hatch, and it is deliberately
+/// not symmetrical with the default: a booth may write into a region whose name it was TOLD, and
+/// that name is the only thing standing between two applications' slots.
+fn namespace(ops: Vec<Content<Value>>, island: &str) -> Vec<Content<Value>> {
+    fn one(slot: &str, island: &str) -> String {
+        if slot.is_empty() || slot.starts_with(crate::shell::ISLAND) {
+            slot.to_string()
+        } else {
+            format!("{}{island}/{slot}", crate::shell::ISLAND)
+        }
+    }
+    ops.into_iter()
+        .map(|op| match op {
+            Content::Set(mut x) => {
+                x.slot = one(&x.slot, island);
+                Content::Set(x)
+            }
+            Content::Append(mut x) => {
+                x.slot = one(&x.slot, island);
+                Content::Append(x)
+            }
+            Content::Remove(mut x) => {
+                x.slot = one(&x.slot, island);
+                Content::Remove(x)
+            }
+            Content::Patch(mut x) => {
+                x.slot = one(&x.slot, island);
+                Content::Patch(x)
+            }
+            Content::Inject(mut x) => {
+                x.slot = one(&x.slot, island);
+                Content::Inject(x)
+            }
+            other => other,
+        })
+        .collect()
+}
+
+pub(crate) fn forward(
+    conns: &UiConns,
+    peers: &PeerDeliver,
+    defer: &Defer,
+    islands: &[String],
+    payload: Value,
+) {
     // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
     // name is consumed by the dispatcher), so the emitter states it: `name` is the recipient
     // event, marked with the same `ui:` prefix as the emit itself. The venue strips the
@@ -286,6 +342,16 @@ pub(crate) fn forward(conns: &UiConns, peers: &PeerDeliver, defer: &Defer, paylo
         Value::Array(frames) => ops_of(frames, "view"),
         other => inject(&name, &name, other),
     };
+    // A NAMESPACE THE APPLICATIONS CANNOT SPELL (ADR-0019). An island booth addresses its own
+    // slots by their bare names (`pages`, `notice`) and the venue puts the prefix on — so writing
+    // into ANOTHER island's region takes knowing its name on the page, which is a fact no booth is
+    // told and no booth can enumerate. The name is the event's first segment (`ui:gravity-model.…`
+    // ⇒ `gravity-model`), NOT the aura booth type: a page's name for a surface is the page's
+    // business, and the engine is not something the renderer knows about.
+    let ops = match name.split('.').next() {
+        Some(whose) if islands.iter().any(|i| i == whose) => namespace(ops, whose),
+        _ => ops,
+    };
     if ops.is_empty() {
         eprintln!("prism: view event `{name}` carried nothing deliverable");
         return;
@@ -338,7 +404,7 @@ pub(crate) async fn serve(
     // A device whose token still names the account is that account's screen from the first frame;
     // whatever arrived while no screen of theirs was awake is owed to it now.
     if !identity::is_anonymous(user0) {
-        gw.flush_missed(user0);
+        gw.flush_missed(device, user0).await;
     }
 
     // The connection starts the clock. A device that was silent past the window is told so on the
@@ -504,7 +570,7 @@ async fn dispatch(
                     crate::auth_set(user, user_id);
                     // Proving the account makes this screen its owner: whatever arrived while no
                     // screen of theirs was awake is owed here, before anything else is said.
-                    gw.flush_missed(user_id);
+                    gw.flush_missed(device, user_id).await;
                     // Two speeches, both facts: `token` carries what only it can (the ROTATED
                     // credential the page must keep — the old one is dead the moment this is
                     // issued), and `login` is the lifecycle event an application binds to.
@@ -701,4 +767,67 @@ fn inject(slot: &str, name: &str, data: Value) -> Vec<Content<Value>> {
     })]
 }
 
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+    use super::*;
+    use serde_json::json;
+
+    fn slots(ops: Vec<Content<Value>>) -> Vec<String> {
+        ops.into_iter()
+            .map(|op| match op {
+                Content::Create(x) => x.slot,
+                Content::Set(x) => x.slot,
+                Content::Append(x) => x.slot,
+                Content::Remove(x) => x.slot,
+                Content::Patch(x) => x.slot,
+                Content::Inject(x) => x.slot,
+                other => panic!("unexpected op: {other:?}"),
+            })
+            .collect()
+    }
+
+    /// The default: an application writes its bare names and the venue puts them in its namespace.
+    /// Five operations, because a namespace that only covered `set` would let `append` write into
+    /// another island's list — the same hole with a different door.
+    #[test]
+    fn every_operation_is_namespaced_not_just_set() {
+        let ops: Vec<Content<Value>> = serde_json::from_value(json!([
+            {"action": "set", "slot": "pages", "data": {}},
+            {"action": "append", "slot": "notice", "position": 0, "data": {}},
+            {"action": "remove", "slot": "notice", "id": "1"},
+            {"action": "patch", "slot": "scene", "path": "/nodes", "op": "replace", "value": 1},
+            {"action": "inject", "slot": "messages", "data": {}},
+        ]))
+        .unwrap();
+        assert_eq!(
+            slots(namespace(ops, "gravity-model")),
+            vec![
+                "island:gravity-model/pages",
+                "island:gravity-model/notice",
+                "island:gravity-model/notice",
+                "island:gravity-model/scene",
+                "island:gravity-model/messages",
+            ]
+        );
+    }
+
+    /// Two exceptions, both deliberate. The empty slot is `create`'s address for the layout root —
+    /// renaming it would help an application replace the page. An explicit `island:` prefix is the
+    /// escape hatch for writing into a region whose name this booth was told.
+    #[test]
+    fn the_root_and_an_explicit_region_are_left_alone() {
+        let ops: Vec<Content<Value>> = serde_json::from_value(json!([
+            {"action": "create", "slot": "", "data": {}},
+            {"action": "set", "slot": "", "data": {}},
+            {"action": "set", "slot": "island:admin/notice", "data": {}},
+        ]))
+        .unwrap();
+        assert_eq!(
+            slots(namespace(ops, "gravity-model")),
+            vec!["", "", "island:admin/notice"],
+            "the page's root and a named region are not this island's to rename"
+        );
+    }
+}

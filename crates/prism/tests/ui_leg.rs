@@ -815,3 +815,101 @@ async fn a_frame_for_an_asleep_account_waits_for_its_next_device() {
     let ops = recv_ops(&mut stranger).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
 }
+
+/// A replay starts at the last WHOLE screen, not at the oldest frame held: a screen is a value
+/// that already contains everything before it, so the increments that led to it are not replayed.
+#[tokio::test]
+async fn a_replay_starts_at_the_last_whole_screen() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut one = open_ui(addr).await;
+    let _connected = read_connected(&mut one).await;
+    send_uplink(
+        &mut one,
+        json!({"dest": "signup", "data": {"login_name": "ada", "password": "correct horse"}}),
+    )
+    .await;
+    let landed = recv_named(&mut one, ["token", "login"]).await;
+    let user = landed["login"]["user"].as_str().expect("the account").to_string();
+    send_uplink(&mut one, json!({"dest": "logout", "data": {}})).await;
+    for _ in 0..2 {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
+    }
+
+    let emit = |name: &str, data: Value| {
+        let name = name.to_string();
+        let who = user.clone();
+        let realm = &gw.engine.realm;
+        async move {
+            let event = format!("ui:{name}");
+            aura_realm::Realm::emit(
+                realm,
+                None,
+                &event,
+                json!({"name": format!("ui:{name}"), "user": who, "data": data}),
+            )
+            .await
+            .expect("emit a held frame");
+        }
+    };
+    // An increment, then a whole screen (which contains it), then one more increment.
+    emit(
+        "inc_before",
+        json!([{"action": "append", "slot": "rows", "data": {"id": "before-screen", "type": "case"}}]),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    emit(
+        "redraw",
+        json!([
+            {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["maximize"]}}},
+            {"action": "append", "slot": "rows", "data": {"id": "inside-screen", "type": "case"}},
+        ]),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    emit(
+        "inc_after",
+        json!([{"action": "append", "slot": "rows", "data": {"id": "after-screen", "type": "case"}}]),
+    )
+    .await;
+
+    send_uplink(
+        &mut one,
+        json!({"dest": "login", "data": {"login_name": "ada", "password": "correct horse"}}),
+    )
+    .await;
+
+    // The venue's own speech (the rotated token, the login fact) arrives on the same leg; the
+    // replay is the operation lists, read as they come.
+    let mut replayed: Vec<Value> = Vec::new();
+    for _ in 0..8 {
+        let Ok(ops) = tokio::time::timeout(std::time::Duration::from_secs(5), recv_ops(&mut one)).await
+        else {
+            break;
+        };
+        if ops.iter().any(|op| op["action"] == "inject") {
+            continue;
+        }
+        let text = serde_json::to_string(&ops).unwrap_or_default();
+        replayed.push(Value::Array(ops));
+        if text.contains("after-screen") {
+            break;
+        }
+    }
+    let text = serde_json::to_string(&replayed).unwrap();
+    assert!(
+        !text.contains("before-screen"),
+        "an increment the screen already contains is not replayed: {text}"
+    );
+    assert!(text.contains("inside-screen"), "the screen is replayed: {text}");
+    assert!(text.contains("after-screen"), "what moved since is replayed: {text}");
+    let screen = replayed
+        .iter()
+        .find(|f| serde_json::to_string(f).unwrap_or_default().contains("inside-screen"))
+        .expect("the whole screen came back");
+    assert_eq!(
+        screen[0]["action"].as_str(),
+        Some("create"),
+        "the replay starts at the screen: {text}"
+    );
+}
