@@ -158,7 +158,7 @@ fn create_page() -> Value {
         "action": "create",
         "slot": "",
         "data": {
-            "type": "case",
+            "type": "frame",
             "attrs": { "class": ["main", "col", "gap", "scrolly"] },
             "children": [
                 text("resources"),
@@ -166,7 +166,7 @@ fn create_page() -> Value {
                 declare_form(),
                 revoke_form(),
                 json!({
-                    "type": "case",
+                    "type": "frame",
                     "attrs": { "class": ["col", "gap"] },
                     "bind": { "value": { "kind": "source", "source": LIST_SLOT } },
                     "children": [],
@@ -184,7 +184,7 @@ fn set_list(rows: &[(String, Value)]) -> Value {
         "action": "set",
         "slot": LIST_SLOT,
         "data": {
-            "type": "case",
+            "type": "frame",
             "attrs": { "class": ["col", "gap"] },
             "children": rows.iter().map(|(kind, grant)| row(kind, grant)).collect::<Vec<_>>(),
         },

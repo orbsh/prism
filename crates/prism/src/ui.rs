@@ -313,7 +313,7 @@ fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
                     // source slot holds (fluxen `components/case.rs:53`); a `case` treats its
                     // binding as a name and draws its static children, which is why the first
                     // version of this row drew an empty box.
-                    "type": "placeholder",
+                    "type": "frame",
                     "attrs": {"class": ["maximize", "col"]},
                     "bind": {"value": {"kind": "source", "source": format!("{}{}", crate::shell::ISLAND, region.booth)}},
                 },

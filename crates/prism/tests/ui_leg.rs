@@ -269,8 +269,8 @@ async fn connect_is_an_event_and_the_application_answers_it() {
         None,
         "ui:layout",
         json!({"name": "ui:layout", "device": device, "data": [
-            {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["from-event"]}}},
-            {"action": "set", "slot": "graph", "data": {"type": "case"}},
+            {"action": "create", "slot": "", "data": {"type": "frame", "attrs": {"class": ["from-event"]}}},
+            {"action": "set", "slot": "graph", "data": {"type": "frame"}},
         ]}),
     )
     .await
@@ -411,7 +411,7 @@ async fn an_uplink_dispatches_to_the_booth_named_by_the_event() {
     // The booth's answer IS the operation the caller sent: an answer that is not an operation
     // is data, and data has no path down this leg — a booth that wants the page to see
     // something emits `ui:<name>`. So the drawn frame here proves the dispatch happened.
-    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["echoed"]}}});
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "frame", "attrs": {"class": ["echoed"]}}});
     send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops.len(), 1, "{ops:?}");
@@ -558,7 +558,7 @@ async fn a_view_event_does_not_echo_back_to_its_sender() {
     .await
     .expect("emit ui:chat");
     // Nothing comes back, so the next message on this socket is the answer to our own uplink.
-    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "frame", "attrs": {"class": ["mine"]}}});
     send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
@@ -585,7 +585,7 @@ async fn a_view_event_for_another_device_is_not_drawn_here() {
     .expect("emit view");
     // Ours, not theirs: the next message answers our own uplink, which proves nothing was
     // drawn from the other device's event.
-    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "frame", "attrs": {"class": ["mine"]}}});
     send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
@@ -652,7 +652,7 @@ async fn a_user_address_reaches_every_live_device_of_that_account() {
 
     // The anonymous one: its next message answers its OWN uplink, which is what "nothing was
     // delivered here" looks like on a leg that has no silence.
-    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "frame", "attrs": {"class": ["mine"]}}});
     send_uplink(&mut three, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut three).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
@@ -674,7 +674,7 @@ async fn a_malformed_address_reaches_nobody_rather_than_everybody() {
     )
     .await
     .expect("emit ui:typo");
-    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "frame", "attrs": {"class": ["mine"]}}});
     send_uplink(&mut ws, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut ws).await;
     assert_eq!(
@@ -810,7 +810,7 @@ async fn a_frame_for_an_asleep_account_waits_for_its_next_device() {
     );
 
     // The anonymous socket beside it heard nothing: a held frame is the account's, not the venue's.
-    let op = json!({"action": "set", "slot": "graph", "data": {"type": "case", "attrs": {"class": ["mine"]}}});
+    let op = json!({"action": "set", "slot": "graph", "data": {"type": "frame", "attrs": {"class": ["mine"]}}});
     send_uplink(&mut stranger, json!({"dest": "echo_frame", "data": op})).await;
     let ops = recv_ops(&mut stranger).await;
     assert_eq!(ops[0]["data"]["attrs"]["class"][0], "mine", "{ops:?}");
@@ -854,22 +854,22 @@ async fn a_replay_starts_at_the_last_whole_screen() {
     // An increment, then a whole screen (which contains it), then one more increment.
     emit(
         "inc_before",
-        json!([{"action": "append", "slot": "rows", "data": {"id": "before-screen", "type": "case"}}]),
+        json!([{"action": "append", "slot": "rows", "data": {"id": "before-screen", "type": "frame"}}]),
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     emit(
         "redraw",
         json!([
-            {"action": "create", "slot": "", "data": {"type": "case", "attrs": {"class": ["maximize"]}}},
-            {"action": "append", "slot": "rows", "data": {"id": "inside-screen", "type": "case"}},
+            {"action": "create", "slot": "", "data": {"type": "frame", "attrs": {"class": ["maximize"]}}},
+            {"action": "append", "slot": "rows", "data": {"id": "inside-screen", "type": "frame"}},
         ]),
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     emit(
         "inc_after",
-        json!([{"action": "append", "slot": "rows", "data": {"id": "after-screen", "type": "case"}}]),
+        json!([{"action": "append", "slot": "rows", "data": {"id": "after-screen", "type": "frame"}}]),
     )
     .await;
 

@@ -1,5 +1,5 @@
 {
-  "type": "case",
+  "type": "frame",
   "attrs": {
     "class": [
       "maximize",
@@ -14,7 +14,7 @@
   ],
   "children": [
     {
-      "type": "case",
+      "type": "frame",
       "attrs": {
         "class": [
           "--head",
@@ -77,7 +77,7 @@
           }
         },
         {
-          "type": "placeholder",
+          "type": "frame",
           "id": "auth-region",
           "attrs": {
             "class": [

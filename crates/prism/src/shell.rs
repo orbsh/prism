@@ -183,11 +183,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = write(
             &dir,
-            r#"{"type":"case","children":[
-                {"type":"placeholder","bind":{"value":{"kind":"source","source":"auth"}}},
-                {"type":"case","bind":{"value":{"kind":"source","source":"island:gravity_turn"}}},
-                {"type":"case","children":[
-                    {"type":"case","attrs":{"label":"资源"},
+            r#"{"type": "frame","children":[
+                {"type": "frame","bind":{"value":{"kind":"source","source":"auth"}}},
+                {"type": "frame","bind":{"value":{"kind":"source","source":"island:gravity_turn"}}},
+                {"type": "frame","children":[
+                    {"type": "frame","attrs":{"label":"资源"},
                      "bind":{"value":{"kind":"source","source":"island:admin"}}}
                 ]}
             ]}"#,
@@ -232,7 +232,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = write(
             &dir,
-            r#"{"type":"case","regions":[{"booth":"gravity-model","label":"对话"}],
+            r#"{"type": "frame","regions":[{"booth":"gravity-model","label":"对话"}],
                 "children":[{"type":"pages","bind":{"value":{"kind":"source","source":"pages"}}}]}"#,
         );
         let shell = Shell::open(&file).unwrap();

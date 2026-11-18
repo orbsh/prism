@@ -35,10 +35,10 @@ use tokio_tungstenite::WebSocketStream;
 type WsClient = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
 const FRAME: &str = r#"{
-  "type": "case",
+  "type": "frame",
   "regions": [{"booth": "gravity-model", "label": "对话"}],
   "children": [
-    {"type": "placeholder", "bind": {"value": {"kind": "source", "source": "auth"}}},
+    {"type": "frame", "bind": {"value": {"kind": "source", "source": "auth"}}},
     {"type": "pages", "bind": {
       "value": {"kind": "source", "source": "pages"},
       "select": {"kind": "local", "slot": "page", "path": "/data", "default": "gravity-model"}
@@ -142,7 +142,7 @@ async fn an_islands_slots_arrive_namespaced() {
             "name": "ui:gravity-model.layout",
             // The booth says which region this surface belongs to; the event name cannot.
             "island": "gravity-model",
-            "data": [{"action": "set", "slot": "pages", "data": {"type": "case"}}],
+            "data": [{"action": "set", "slot": "pages", "data": {"type": "frame"}}],
         }),
     )
     .await
@@ -177,10 +177,10 @@ async fn an_islands_slots_arrive_namespaced() {
 #[tokio::test]
 async fn a_page_opens_on_the_first_island_and_moves_on_request() {
     const TWO: &str = r#"{
-      "type": "case",
+      "type": "frame",
       "children": [
-        {"type": "case", "bind": {"value": {"kind": "source", "source": "island:alpha"}}},
-        {"type": "case", "bind": {"value": {"kind": "source", "source": "island:beta"}}}
+        {"type": "frame", "bind": {"value": {"kind": "source", "source": "island:alpha"}}},
+        {"type": "frame", "bind": {"value": {"kind": "source", "source": "island:beta"}}}
       ]
     }"#;
     let (addr, _gw) = boot(TWO).await;
@@ -289,9 +289,9 @@ async fn the_frame_gets_its_viewer_and_its_navigation() {
         "the row shows the region — the frame declared it, the venue supplied the row"
     );
     assert_eq!(
-        pages[0]["data"]["type"], "placeholder",
-        "a PLACEHOLDER renders the node tree a source slot holds; a `case` would draw its own \
-         (empty) children and the region would stay blank — the bug this row exists to prevent"
+        pages[0]["data"]["type"], "frame",
+        "a FRAME bound to a source renders the node tree that slot holds (fluxen ADR 0027: the old \
+         static-only `case` is gone, and a row that only carried a name drew nothing)"
     );
     assert_eq!(
         nav[0]["data"]["bind"]["value"]["default"], "对话",
