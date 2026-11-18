@@ -82,6 +82,27 @@ impl Shell {
     /// cannot do without: naming an application's slots (ADR-0019), and telling the page what its
     /// navigation should contain.
     pub fn regions(&self) -> Vec<Region> {
+        // A frame DECLARES its regions in one place (`regions: [{booth, label}]`), and nothing is
+        // rendered from that declaration: the pager's rows are supplied by the venue, because a
+        // page's rows can only come from a list slot (fluxen \`pages\`) — a static child would be a
+        // second way to put something on screen and the wrong one.
+        //
+        // The older spelling — an actual node bound to \`island:<booth>\` — is still read, so a frame
+        // written before this field existed keeps working.
+        if let Some(list) = self.root.get("regions").and_then(Value::as_array) {
+            return list
+                .iter()
+                .filter_map(|r| {
+                    let booth = r.get("booth")?.as_str()?.to_string();
+                    let label = r
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&booth)
+                        .to_string();
+                    Some(Region { booth, label })
+                })
+                .collect();
+        }
         fn walk(node: &Value, out: &mut Vec<Region>) {
             match node {
                 Value::Object(map) => {
@@ -200,5 +221,25 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("ONE accrete node"), "{err}");
+    }
+
+    /// The declared form: `regions: [{booth, label}]`, which renders nothing. The pager's rows come
+    /// from a list slot (fluxen `pages`), so a declaration that also drew something would be a
+    /// second way to put a page on the screen — and the one that cannot be switched away from.
+    #[test]
+    fn a_frame_can_declare_its_regions_without_drawing_them() {
+        let dir = std::env::temp_dir().join(format!("prism-shell-regions-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = write(
+            &dir,
+            r#"{"type":"case","regions":[{"booth":"gravity-model","label":"对话"}],
+                "children":[{"type":"pages","bind":{"value":{"kind":"source","source":"pages"}}}]}"#,
+        );
+        let shell = Shell::open(&file).unwrap();
+        assert_eq!(
+            shell.regions(),
+            vec![Region { booth: "gravity-model".into(), label: "对话".into() }]
+        );
+        assert_eq!(shell.islands(), vec!["gravity-model"]);
     }
 }

@@ -36,10 +36,13 @@ type WsClient = WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
 
 const FRAME: &str = r#"{
   "type": "case",
+  "regions": [{"booth": "gravity-model", "label": "对话"}],
   "children": [
     {"type": "placeholder", "bind": {"value": {"kind": "source", "source": "auth"}}},
-    {"type": "case", "attrs": {"label": "对话"},
-     "bind": {"value": {"kind": "source", "source": "island:gravity-model"}}}
+    {"type": "pages", "bind": {
+      "value": {"kind": "source", "source": "pages"},
+      "select": {"kind": "local", "slot": "page", "path": "/data", "default": "gravity-model"}
+    }}
   ]
 }"#;
 
@@ -109,8 +112,12 @@ async fn the_frame_is_drawn_from_the_file_before_the_application_is_asked() {
     let children = create["data"]["children"].as_array().expect("a case has children");
     assert_eq!(children.len(), 2, "{}", create["data"]);
     assert_eq!(
-        children[1]["bind"]["value"]["source"], "island:gravity-model",
-        "the region an island draws into is declared by the FILE, not by the venue"
+        create["data"]["regions"][0]["booth"], "gravity-model",
+        "the region is declared by the FILE, and the declaration renders nothing"
+    );
+    assert_eq!(
+        children[1]["type"], "pages",
+        "the body is the pager: rows come from a list slot, never from static children"
     );
 }
 
@@ -245,6 +252,7 @@ async fn the_frame_gets_its_viewer_and_its_navigation() {
 
     let mut user = None;
     let mut nav = Vec::new();
+    let mut pages = Vec::new();
     for _ in 0..10 {
         let frame = recv_json(&mut ws).await;
         let Some(ops) = frame.as_array() else { continue };
@@ -252,10 +260,11 @@ async fn the_frame_gets_its_viewer_and_its_navigation() {
             match op["action"].as_str() {
                 Some("set") if op["slot"] == "user" => user = Some(op.clone()),
                 Some("append") if op["slot"] == "nav" => nav.push(op.clone()),
+                Some("append") if op["slot"] == "pages" => pages.push(op.clone()),
                 _ => {}
             }
         }
-        if user.is_some() && !nav.is_empty() {
+        if user.is_some() && !nav.is_empty() && !pages.is_empty() {
             break;
         }
     }
@@ -269,6 +278,14 @@ async fn the_frame_gets_its_viewer_and_its_navigation() {
     assert!(shown.contains("guest"), "{user}");
 
     assert_eq!(nav.len(), 1, "one item per island the frame declares: {nav:?}");
+    // The pager's row: the same id as the navigation item (so a click can only name a page that
+    // exists), holding the binding that shows the region.
+    assert_eq!(pages.len(), 1, "one page per island: {pages:?}");
+    assert_eq!(pages[0]["data"]["id"], "gravity-model");
+    assert_eq!(
+        pages[0]["data"]["bind"]["value"]["source"], "island:gravity-model",
+        "the row shows the region — the frame declared it, the venue supplied the row"
+    );
     assert_eq!(
         nav[0]["data"]["bind"]["value"]["default"], "对话",
         "the label comes from the FRAME (its attrs.label), not from a table the venue keeps"

@@ -102,7 +102,14 @@ pub const RENDERER_BOOTH: &str = "renderer";
 /// never told), and what the navigation offers (the islands the frame declares). A frame that
 /// wanted these to be static would have to know the user and the deployment.
 pub const USER_SLOT: &str = "user";
+/// The navigation's items — the same rows the pager switches between, so a click cannot name a
+/// page that is not there.
 pub const NAV_SLOT: &str = "nav";
+/// The pager: one row per island, each row a case bound to that island's region. Switching is LOCAL
+/// (the pager and the navigation read the same `page` value), so it costs no round trip — nothing
+/// about a click needs to reach the venue.
+pub const PAGES_SLOT: &str = "pages";
+pub const PAGE_SLOT: &str = "page";
 
 /// The marker on every UI-facing name, both directions (ADR 0023's rule applied here): a page
 /// may only ever address, and be addressed by, `ui:<name>`. Anything else is internal.
@@ -284,6 +291,19 @@ fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
                     "type": "text",
                     "attrs": {"class": ["--nav-item"]},
                     "bind": {"value": {"kind": "default", "default": region.label}},
+                },
+            }));
+            // The page a navigation item switches to: the SAME id, holding the region's binding.
+            // The frame declares a region; the venue supplies the row that shows it — so a
+            // deployment writes neither the switch nor the mapping, and cannot get them out of step.
+            ops.push(json!({
+                "action": "append",
+                "slot": PAGES_SLOT,
+                "data": {
+                    "id": region.booth,
+                    "type": "case",
+                    "attrs": {"class": ["maximize", "col"]},
+                    "bind": {"value": {"kind": "source", "source": format!("{}{}", crate::shell::ISLAND, region.booth)}},
                 },
             }));
         }

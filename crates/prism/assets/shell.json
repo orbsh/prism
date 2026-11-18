@@ -1,6 +1,7 @@
 {
   "type": "case",
   "attrs": { "class": ["maximize", "col"] },
+  "regions": [{ "booth": "gravity-model", "label": "对话" }],
   "children": [
     {
       "type": "case",
@@ -12,10 +13,12 @@
           "bind": { "value": { "kind": "default", "default": "this deployment" } }
         },
         {
-          "type": "rack",
-          "attrs": { "class": ["main", "horizontal", "gap"], "view": { "layout": "adaptive" } },
-          "bind": { "value": { "kind": "source", "source": "nav" } },
-          "item": [{ "type": "text", "attrs": { "class": ["--nav-item"] } }]
+          "type": "select",
+          "attrs": { "horizontal": true, "class": ["main"] },
+          "bind": {
+            "value": { "kind": "local", "slot": "page", "path": "/data", "default": "gravity-model" },
+            "options": { "kind": "source", "source": "nav" }
+          }
         },
         {
           "type": "text",
@@ -31,9 +34,13 @@
       ]
     },
     {
-      "type": "case",
-      "attrs": { "class": ["maximize", "col"], "label": "对话" },
-      "bind": { "value": { "kind": "source", "source": "island:gravity-model" } }
+      "type": "pages",
+      "attrs": { "class": ["main", "shrink"] },
+      "bind": {
+        "value": { "kind": "source", "source": "pages" },
+        "select": { "kind": "local", "slot": "page", "path": "/data", "default": "gravity-model" }
+      },
+      "display": "dom"
     }
   ]
 }
