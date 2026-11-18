@@ -210,11 +210,14 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
         "the frame's islands, in document order: {opened}"
     );
 
-    // Walking to the second island is answered with the same fact, naming the new one.
+    // Walking to the second island is answered with the same fact, naming the new one — in the
+    // shape a renderer actually reports it: a `select` whose binding carries `report` sends the
+    // VALUE ITSELF (fluxen's `BindVariant::Local.report`, ADR-0028), not an object with a field
+    // named after our intent.
     ws.send(Ws::Text(
         serde_json::to_string(&serde_json::json!({
             "dest": "island",
-            "data": {"booth": "beta"}
+            "data": "beta"
         }))
         .unwrap()
         .into(),
