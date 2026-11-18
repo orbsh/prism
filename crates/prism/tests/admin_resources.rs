@@ -139,15 +139,15 @@ async fn grants_are_listed_read_and_withdrawn() {
 
 /// A declaration the venue cannot serve is refused at the door, by name.
 ///
-/// `archive` is a word in the resource protocol — a node refuses it BY NAME — and that is exactly why
-/// it must not be declared: the operator would get a 201, a listing entry, and a task that fails
-/// later saying the node cannot move it. The check runs whether or not a credential comes with the
-/// declaration; the empty-secret path is the door it used to slip through.
+/// A declaration the venue cannot serve is refused at the door, by name: a kind no node implements,
+/// and a credential that is not the shape its kind needs. The check runs whether or not a credential
+/// comes with the declaration — the empty-secret path is the door that used to slip through.
 #[tokio::test]
 async fn a_kind_no_node_can_move_is_refused_at_the_door() {
     let addr = boot().await;
 
-    for kind in ["archive", "ftp"] {
+    // Names no node implements: refused by name, with or without a credential.
+    for kind in ["ftp", "nfs"] {
         let (status, text) = raw(
             addr,
             "POST",
@@ -175,11 +175,41 @@ async fn a_kind_no_node_can_move_is_refused_at_the_door() {
         assert!(text.contains(kind), "the refusal names the kind: {text}");
     }
 
+    // The other half of the same rule: a kind a node DOES move, with a credential that is not its
+    // shape. The kind is legal, so a check that only looked at kinds would pass this through.
+    let (status, text) = raw(
+        addr,
+        "POST",
+        "/admin/resources",
+        json!({
+            "kind": "archive",
+            "base": "file:///srv/archives",
+            "mode": "rw",
+            "secret": { "name": "ARCHIVE", "value": "ak:sk" }
+        }),
+    )
+    .await;
+    assert_eq!(status, 400, "{text}");
+    assert!(text.contains("archive"), "{text}");
+
+    // And the legal declaration is accepted, so the door is a rule rather than a wall.
+    let (status, body) = request(
+        addr,
+        "POST",
+        "/admin/resources",
+        Some(json!({
+            "kind": "archive",
+            "base": "file:///srv/archives",
+            "mode": "rw",
+            "secret": { "name": "ARCHIVE", "value": "a-repository-password" }
+        })),
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+
     let (status, body) = request(addr, "GET", "/admin/resources", None).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(
-        body,
-        json!([]),
-        "a refused declaration leaves no row and no credential: {body}"
-    );
+    let rows = body.as_array().expect("a listing is an array");
+    assert_eq!(rows.len(), 1, "only the accepted declaration is stored: {body}");
+    assert_eq!(rows[0]["kind"], "archive");
 }

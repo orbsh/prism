@@ -164,7 +164,7 @@ pub(crate) async fn serve_resources(
                         grant.secret_name = name;
                     }
                     // A declaration with no credential still has to be servable: the KIND is checked
-                    // either way, or `archive` would slip in through the empty-secret door.
+                    // either way, or a name nobody implements slips in through the empty-secret door.
                     Ok(None) => {
                         if let Err(e) = declaration_shape(&kind, None) {
                             return Some(plain(400, &e));
@@ -234,9 +234,9 @@ pub(crate) async fn serve_resources(
 /// credential attached.
 ///
 /// First: is this a KIND anything can move? The protocol's list answers, and it is the same list the
-/// node checks before it signs a request. `archive` is refused by the node BY NAME and is not
-/// declared here either: a grant for it would fail at the first task, which is the lie a management
-/// surface must not tell.
+/// node checks before it signs a request — so a name outside it (an operator's typo, a mechanism
+/// nobody implemented) is refused here rather than failing at the first task, which is the lie a
+/// management surface must not tell.
 ///
 /// Second: does the credential have the shape its kind needs? `git` takes whatever the host issues
 /// (a token); `object` takes `access_key:secret_key[:region]`.
@@ -250,6 +250,11 @@ pub(crate) fn declaration_shape(kind: &str, value: Option<&str>) -> Result<(), S
     }
     match (kind, value) {
         ("object", Some(v)) => effector_protocol::resource::credential_parts(v)
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+        // An archive's credential is a repository PASSWORD, and — for a repository in a store —
+        // the signing triple in front of it. The same code the node runs before it opens one.
+        ("archive", Some(v)) => effector_protocol::resource::archive_credential(v)
             .map(|_| ())
             .map_err(|e| e.to_string()),
         _ => Ok(()),
@@ -438,9 +443,15 @@ mod resource_surface_tests {
         assert!(err.contains("access_key:secret_key"), "{err}");
         // A token for git has no shape this plane can judge.
         assert!(declaration_shape("git", Some("any-token")).is_ok());
-        // …but the KIND is judged for every declaration, credential or not: `archive` is a word
-        // the node refuses by name, and a grant for it would only fail at the first task.
-        let err = declaration_shape("archive", None).unwrap_err();
+        // The KIND is judged for every declaration, credential or not: a name no node moves is
+        // refused at this door rather than failing at the first task.
+        let err = declaration_shape("ftp", None).unwrap_err();
+        assert!(err.contains("ftp"), "{err}");
+        // …and `archive` is a kind a node moves now, so what gets judged is its credential: a
+        // repository password, optionally behind the store's signing triple.
+        assert!(declaration_shape("archive", None).is_ok(), "no credential yet is legal");
+        assert!(declaration_shape("archive", Some("a-repository-password")).is_ok());
+        let err = declaration_shape("archive", Some("ak:sk")).unwrap_err();
         assert!(err.contains("archive"), "{err}");
         assert!(declaration_shape("git", None).is_ok());
     }

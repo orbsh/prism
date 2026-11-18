@@ -405,7 +405,7 @@ mod tests {
 
     /// The page is the other door onto the same table, so it applies the same rule: a kind no node
     /// can move is refused here, and the refusal names it. Without this the page would be the way
-    /// around the API's check — which is exactly how `archive` stayed declarable.
+    /// around the API's check.
     #[test]
     fn the_page_refuses_a_kind_no_node_can_move() {
         let registry = registry();
@@ -413,11 +413,11 @@ mod tests {
             &registry,
             &envelope(
                 DECLARE_EVENT,
-                json!({ "kind": "archive", "base": "ssh://git.example/team", "mode": "ro" }),
+                json!({ "kind": "ftp", "base": "ssh://git.example/team", "mode": "ro" }),
             ),
         )
         .unwrap_err();
-        assert!(err.to_string().contains("archive"), "{err}");
+        assert!(err.to_string().contains("ftp"), "{err}");
         assert!(
             registry.declared().unwrap().is_empty(),
             "a refused declaration leaves no row"
