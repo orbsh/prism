@@ -20,6 +20,7 @@
 )]
 
 use aura_engine::Engine;
+use futures_util::SinkExt;
 use prism::{
     identity::Registry,
     nodes::Posture,
@@ -154,4 +155,73 @@ async fn an_islands_slots_arrive_namespaced() {
         op["slot"], "island:gravity-model/pages",
         "the page's name for the surface namespaces every slot the booth writes: {op}"
     );
+}
+
+/// WHERE THE PAGE OPENS, and how it moves: `ui:connect` names the island (the shell's FIRST unless
+/// the account chose one), and walking to another island is answered with the same `connect` — so a
+/// booth draws lazily, when the person is looking at it, and says nothing otherwise.
+#[tokio::test]
+async fn a_page_opens_on_the_first_island_and_moves_on_request() {
+    const TWO: &str = r#"{
+      "type": "case",
+      "children": [
+        {"type": "case", "bind": {"value": {"kind": "source", "source": "island:alpha"}}},
+        {"type": "case", "bind": {"value": {"kind": "source", "source": "island:beta"}}}
+      ]
+    }"#;
+    let (addr, _gw) = boot(TWO).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/channel?codec=json"))
+        .await
+        .expect("/channel upgrades");
+
+    let mut opened = None;
+    for _ in 0..6 {
+        let frame = recv_json(&mut ws).await;
+        let Some(ops) = frame.as_array() else { continue };
+        if let Some(op) = ops
+            .iter()
+            .find(|op| op.get("action").and_then(Value::as_str) == Some("inject"))
+        {
+            if op.get("name").and_then(Value::as_str) == Some("connect") {
+                opened = Some(op["data"].clone());
+                break;
+            }
+        }
+    }
+    let opened = opened.expect("the page is told which island it opens on");
+    assert_eq!(opened["island"].as_str(), Some("alpha"), "{opened}");
+    assert_eq!(
+        opened["islands"],
+        serde_json::json!(["alpha", "beta"]),
+        "the frame's islands, in document order: {opened}"
+    );
+
+    // Walking to the second island is answered with the same fact, naming the new one.
+    ws.send(Ws::Text(
+        serde_json::to_string(&serde_json::json!({
+            "dest": "island",
+            "data": {"booth": "beta"}
+        }))
+        .unwrap()
+        .into(),
+    ))
+    .await
+    .expect("the uplink goes out");
+
+    let mut moved = None;
+    for _ in 0..6 {
+        let frame = recv_json(&mut ws).await;
+        let Some(ops) = frame.as_array() else { continue };
+        if let Some(op) = ops
+            .iter()
+            .find(|op| op.get("action").and_then(Value::as_str) == Some("inject"))
+        {
+            if op.get("name").and_then(Value::as_str) == Some("connect") {
+                moved = Some(op["data"].clone());
+                break;
+            }
+        }
+    }
+    let moved = moved.expect("the walk is answered");
+    assert_eq!(moved["island"].as_str(), Some("beta"), "{moved}");
 }

@@ -96,6 +96,16 @@ pub struct Token {
 
 use __OkmIndex_Token_by_device as TokenByDevice;
 
+/// Which island a person last looked at (prism instance, ns 56): one booth type per ACCOUNT — they
+/// are one person across their machines, so the next screen opens where they left off, on whatever
+/// device they pick up. Absent means "the shell's first island".
+#[derive(DocumentEncode, Clone, PartialEq, Debug, Default)]
+#[ok_ref(Uuid7)]
+#[ok_ns(56)]
+pub struct LastIsland {
+    pub booth: String,
+}
+
 /// The activity table (prism instance, ns 54): the clock, one scalar per device. It is a table of
 /// its own because it is written on the MESSAGE path — a read-modify-write of the device row per
 /// message would race the alias and the binding (two writers, one row, one lost update). The device
@@ -150,6 +160,23 @@ impl Registry {
     /// handle, one process ever opens it.
     pub fn nodes(&self) -> crate::nodes::NodeStore {
         crate::nodes::NodeStore::new(self.store.clone())
+    }
+
+    /// Which island this account last had open. `None` when it never chose — the shell's first
+    /// island is the default, so nothing is stored for a person who never navigated.
+    pub fn last_island(&self, user: UserId) -> Option<String> {
+        let table = Collection::<_, UserId, LastIsland>::new(self.store.clone());
+        let row: Option<LastIsland> = table.get_row(&user).ok().flatten();
+        row.map(|r| r.booth).filter(|booth| !booth.is_empty())
+    }
+
+    /// Remember where they were. A failure is the caller's to log: a page opening on the default
+    /// island is a worse experience, not a broken one.
+    pub fn remember_island(&self, user: UserId, booth: &str) -> anyhow::Result<()> {
+        let table = Collection::<_, UserId, LastIsland>::new(self.store.clone());
+        table
+            .put(&user, &LastIsland { booth: booth.to_string() })
+            .map_err(|e| anyhow!("remember island: {e}"))
     }
 
     /// The same instance, for the auth booth: its two tables (ns 50 accounts, ns 55 verifiers) live

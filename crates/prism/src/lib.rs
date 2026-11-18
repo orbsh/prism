@@ -345,6 +345,48 @@ impl Gateway {
         (id, user)
     }
 
+    /// Which island a page opens on: the one this account last chose, else the shell's FIRST island
+    /// (document order is a deployment's statement of the default). `None` means this deployment has
+    /// no shell — the booth that answers `ui:connect` draws the whole page, and there is no island to
+    /// name.
+    pub(crate) fn active_island(&self, user: identity::UserId) -> Option<String> {
+        let islands = self.deployment.shell.as_ref().map(|s| s.islands()).unwrap_or_default();
+        if islands.is_empty() {
+            return None;
+        }
+        if !identity::is_anonymous(user) {
+            if let Some(chosen) = self.registry.last_island(user) {
+                if islands.contains(&chosen) {
+                    return Some(chosen);
+                }
+            }
+        }
+        islands.first().cloned()
+    }
+
+    /// Say `ui:connect` to ONE device: the shell's arrangement, and which island it is opening on.
+    /// An application that cannot tell has to guess between "draw the whole page" and "fill my
+    /// region", and guessing wrong draws nothing — or erases every other island with it.
+    pub(crate) async fn connect_event(&self, device: identity::DeviceId, island: Option<String>) {
+        let connect = format!("{}connect", ui::UI_PREFIX);
+        let mut data = serde_json::json!({
+            "device": device.to_string(),
+            "islands": self.deployment.shell.as_ref().map(|s| s.islands()).unwrap_or_default(),
+        });
+        if let Some(island) = &island {
+            data["island"] = serde_json::Value::String(island.clone());
+        }
+        let envelope = serde_json::json!({
+            "name": connect,
+            "device": device.to_string(),
+            "shell": self.deployment.shell.is_some(),
+            "island": island,
+            "data": data,
+        });
+        eprintln!("prism: renderer leg: device {device} connect -> emit `{connect}`");
+        self.emit(&connect, envelope).await;
+    }
+
     /// Hand an account's held frames to the screens of that account which are awake now.
     /// The held queue is the ACCOUNT's, not the device's: every frame in it was deferred because
     /// none of their screens was awake, so whoever is awake at this moment missed them all — and

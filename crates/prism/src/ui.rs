@@ -95,6 +95,15 @@ pub(crate) type UiConns = Arc<std::sync::Mutex<std::collections::HashMap<u64, Ui
 /// The booth type the venue registers for itself: the application emits, this forwards.
 pub const RENDERER_BOOTH: &str = "renderer";
 
+/// The two slots a FRAME binds, filled by the venue on every connection (ADR-0019).
+///
+/// They are the frame's whole dynamic surface, and both are facts only the venue holds: who is
+/// looking at this page (identity is resolved server-side at every uplink, ADR-0018 — a booth is
+/// never told), and what the navigation offers (the islands the frame declares). A frame that
+/// wanted these to be static would have to know the user and the deployment.
+pub const USER_SLOT: &str = "user";
+pub const NAV_SLOT: &str = "nav";
+
 /// The marker on every UI-facing name, both directions (ADR 0023's rule applied here): a page
 /// may only ever address, and be addressed by, `ui:<name>`. Anything else is internal.
 pub(crate) const UI_PREFIX: &str = "ui:";
@@ -238,6 +247,55 @@ pub(crate) async fn install(
 /// injected into the slot named by the event. The frames are the renderer's vocabulary — the
 /// venue does not interpret them, which is why it can forward a layout, an append and a patch
 /// alike.
+/// The frame's data: who is looking, and what the navigation is.
+///
+/// Said ONCE per connection, before any application speaks — a page that had to wait for an
+/// application to learn its own navigation would show an empty bar for as long as that application
+/// took to boot, and nothing at all if it failed to.
+fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
+    let mut ops: Vec<Value> = Vec::new();
+    if let Some(shell) = &gw.deployment.shell {
+        // WHO. A device's alias is the user's own word for this screen; empty means "show the id",
+        // and an unbound device is a guest — not an error, and not nothing to render: the frame's
+        // header says who is looking even when the answer is "nobody yet".
+        let (shown, bound) = match gw.registry.device(device) {
+            Ok(Some(d)) if !d.alias.trim().is_empty() => (d.alias.clone(), !identity::is_anonymous(d.user)),
+            Ok(Some(d)) => (short_id(&device.to_string()), !identity::is_anonymous(d.user)),
+            _ => (short_id(&device.to_string()), false),
+        };
+        let name = if bound { shown } else { format!("{shown} (guest)") };
+        ops.push(json!({
+            "action": "set",
+            "slot": USER_SLOT,
+            "data": {
+                "type": "text",
+                "attrs": {"class": ["--user"]},
+                "bind": {"value": {"kind": "default", "default": name}},
+            },
+        }));
+        // WHAT THE NAVIGATION OFFERS: one item per island the frame declares, labelled by the frame
+        // itself. Ids are the booth names, so a click can name its destination without a table.
+        for region in shell.regions() {
+            ops.push(json!({
+                "action": "append",
+                "slot": NAV_SLOT,
+                "data": {
+                    "id": region.booth,
+                    "type": "text",
+                    "attrs": {"class": ["--nav-item"]},
+                    "bind": {"value": {"kind": "default", "default": region.label}},
+                },
+            }));
+        }
+    }
+    ops_of(ops, "shell")
+}
+
+/// The first eight characters of an id: enough to tell two devices apart, short enough to read.
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
 /// One island's frame, with its slots moved into the island's namespace.
 ///
 /// The EMPTY slot is left alone: it is `create`'s address for the layout root (fluxen's
@@ -461,27 +519,15 @@ pub(crate) async fn serve(
     // a booth that answers `ui:connect` with a `set` needs the slot to be there — and a booth cannot
     // draw the frame itself, since it holds regions belonging to booths it cannot see.
     if let Some(shell) = &gw.deployment.shell {
+        // The frame, then its data. One message would work — the renderer applies a list in order —
+        // but two keeps the FRAME (a deployment fact, from a file) apart from the FACTS ABOUT THIS
+        // VIEWER (who is looking, what they may open), which is the same split the rest of the
+        // venue follows.
         gw.ui_frames(device, ops_of(vec![shell.create()], "shell"));
+        gw.ui_frames(device, frame_data(&gw, device));
     }
-    eprintln!("prism: renderer leg: device {device} connect -> emit `{UI_PREFIX}{CONNECT_EVENT}`");
-    // The payload says which arrangement this is. An application that cannot tell has to guess
-    // between "draw the whole page" and "fill my region", and guessing wrong draws nothing at all.
-    // The payload says which arrangement this is. An application that cannot tell has to guess
-    // between "draw the whole page" and "fill my region", and guessing wrong draws nothing at all —
-    // or, worse, erases the frame and every other island in it.
-    let connect = format!("{UI_PREFIX}{CONNECT_EVENT}");
-    let envelope = json!({
-        "name": connect,
-        "device": device.to_string(),
-        // TOP LEVEL for the same reason `shell` is top level on every other delivery (the dispatch):
-        // one question, one place, whichever event carries it.
-        "shell": gw.deployment.shell.is_some(),
-        "data": {
-            "device": device.to_string(),
-            "islands": gw.deployment.shell.as_ref().map(|s| s.islands()).unwrap_or_default(),
-        },
-    });
-    gw.emit(&connect, envelope).await;
+    let island = gw.active_island(user0);
+    gw.connect_event(device, island).await;
 
     while let Some(msg) = read.next().await {
         let bytes = match msg? {
@@ -610,6 +656,36 @@ async fn dispatch(
         // The account's own devices, on this leg too: the venue answers with a FACT (the page
         // binds slot `devices`), because a booth cannot enumerate devices either. Anonymous gets
         // the same refusal a program gets, as a notice the person can read.
+        // WHERE THE PERSON IS. The frame names the islands; this says which one they walked to. It
+        // is remembered on the ACCOUNT (they are one person across machines) and answered with the
+        // same `connect` a fresh page gets — so the booth that owns that island draws it, lazily,
+        // and the ones the person is not looking at say nothing at all.
+        "island" => {
+            let chosen = crate::text_field(&json!(data), "booth");
+            let known = chosen
+                .as_ref()
+                .filter(|b| gw.deployment.shell.as_ref().is_some_and(|s| s.islands().contains(b)));
+            match known {
+                Some(booth) => {
+                    let who = crate::auth_get(user);
+                    if !identity::is_anonymous(who) {
+                        if let Err(e) = gw.registry().remember_island(who, booth) {
+                            eprintln!("prism: could not remember island `{booth}`: {e}");
+                        }
+                    }
+                    gw.connect_event(device, Some(booth.clone())).await;
+                }
+                None => {
+                    say(
+                        &gw,
+                        device,
+                        NOTICE_EVENT,
+                        json!({"detail": format!("`{}` is not an island of this deployment", chosen.unwrap_or_default())}),
+                    )
+                    .await
+                }
+            }
+        }
         "devices" => match gw.device_rows(device, crate::auth_get(user)) {
             Ok(rows) => {
                 say(
