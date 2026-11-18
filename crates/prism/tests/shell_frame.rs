@@ -38,7 +38,8 @@ const FRAME: &str = r#"{
   "type": "case",
   "children": [
     {"type": "placeholder", "bind": {"value": {"kind": "source", "source": "auth"}}},
-    {"type": "case", "bind": {"value": {"kind": "source", "source": "island:gravity-model"}}}
+    {"type": "case", "attrs": {"label": "对话"},
+     "bind": {"value": {"kind": "source", "source": "island:gravity-model"}}}
   ]
 }"#;
 
@@ -142,10 +143,14 @@ async fn an_islands_slots_arrive_namespaced() {
     for _ in 0..40 {
         let frame = recv_json(&mut ws).await;
         let Some(ops) = frame.as_array() else { continue };
-        if let Some(op) = ops
-            .iter()
-            .find(|op| op.get("action").and_then(Value::as_str) == Some("set"))
-        {
+        // The venue's own frame data also arrives as `set` (the `user` slot), so this looks for the
+        // one thing under test: an application frame that has been moved into a namespace.
+        if let Some(op) = ops.iter().find(|op| {
+            op.get("action").and_then(Value::as_str) == Some("set")
+                && op.get("slot")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s.starts_with("island:"))
+        }) {
             landed = Some(op.clone());
             break;
         }
@@ -224,4 +229,48 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
     }
     let moved = moved.expect("the walk is answered");
     assert_eq!(moved["island"].as_str(), Some("beta"), "{moved}");
+}
+
+
+/// The frame's two dynamic slots, filled by the venue (ADR-0019): who is looking, and what the
+/// navigation offers. Both are facts a booth is never told, and both are needed BEFORE any
+/// application answers — a bar that waited for an application would be empty while it booted, and
+/// empty forever if it failed.
+#[tokio::test]
+async fn the_frame_gets_its_viewer_and_its_navigation() {
+    let (addr, _gw) = boot(FRAME).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/channel?codec=json"))
+        .await
+        .expect("/channel upgrades");
+
+    let mut user = None;
+    let mut nav = Vec::new();
+    for _ in 0..10 {
+        let frame = recv_json(&mut ws).await;
+        let Some(ops) = frame.as_array() else { continue };
+        for op in ops {
+            match op["action"].as_str() {
+                Some("set") if op["slot"] == "user" => user = Some(op.clone()),
+                Some("append") if op["slot"] == "nav" => nav.push(op.clone()),
+                _ => {}
+            }
+        }
+        if user.is_some() && !nav.is_empty() {
+            break;
+        }
+    }
+
+    let user = user.expect("the frame's viewer arrives on connect");
+    let shown = user["data"]["bind"]["value"]["default"]
+        .as_str()
+        .expect("a text node carries the name as its default");
+    // A fresh connection is an unbound device: the header says so rather than nothing, because
+    // "nobody yet" is an answer and an empty header is not.
+    assert!(shown.contains("guest"), "{user}");
+
+    assert_eq!(nav.len(), 1, "one item per island the frame declares: {nav:?}");
+    assert_eq!(
+        nav[0]["data"]["bind"]["value"]["default"], "对话",
+        "the label comes from the FRAME (its attrs.label), not from a table the venue keeps"
+    );
 }

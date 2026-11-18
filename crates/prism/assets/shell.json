@@ -12,6 +12,17 @@
           "bind": { "value": { "kind": "default", "default": "this deployment" } }
         },
         {
+          "type": "rack",
+          "attrs": { "class": ["main", "horizontal", "gap"], "view": { "layout": "adaptive" } },
+          "bind": { "value": { "kind": "source", "source": "nav" } },
+          "item": [{ "type": "text", "attrs": { "class": ["--nav-item"] } }]
+        },
+        {
+          "type": "text",
+          "attrs": { "class": ["nogrow", "--user"] },
+          "bind": { "value": { "kind": "source", "source": "user" } }
+        },
+        {
           "type": "placeholder",
           "id": "auth-region",
           "attrs": { "class": ["--auth"] },
@@ -21,7 +32,7 @@
     },
     {
       "type": "case",
-      "attrs": { "class": ["maximize", "col"] },
+      "attrs": { "class": ["maximize", "col"], "label": "对话" },
       "bind": { "value": { "kind": "source", "source": "island:gravity-model" } }
     }
   ]

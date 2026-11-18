@@ -23,6 +23,18 @@ use serde_json::{json, Value};
 /// keep in step, and a deployment that renames a booth has exactly one place to rename it.
 pub const ISLAND: &str = "island:";
 
+/// One region the frame holds, and what the frame calls it on the page.
+///
+/// The LABEL lives here because the frame already knows it: a deployment that writes its own
+/// navigation should not have to write the same words twice (once in the layout, once in whatever
+/// builds the menu). An absent label falls back to the booth name — readable enough to notice, ugly
+/// enough to fix.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Region {
+    pub booth: String,
+    pub label: String,
+}
+
 pub struct Shell {
     path: PathBuf,
     root: Value,
@@ -66,11 +78,11 @@ impl Shell {
         json!({ "action": "create", "slot": "", "data": self.root })
     }
 
-    /// The islands this frame declares, in document order. The venue does not need them to draw —
-    /// it needs them to SAY which regions exist, so an application can tell "my slot is not in this
-    /// deployment" from "I drew nothing".
-    pub fn islands(&self) -> Vec<String> {
-        fn walk(node: &Value, out: &mut Vec<String>) {
+    /// The regions this frame declares, in document order. The venue needs them for two things it
+    /// cannot do without: naming an application's slots (ADR-0019), and telling the page what its
+    /// navigation should contain.
+    pub fn regions(&self) -> Vec<Region> {
+        fn walk(node: &Value, out: &mut Vec<Region>) {
             match node {
                 Value::Object(map) => {
                     let source = map
@@ -79,8 +91,16 @@ impl Shell {
                         .and_then(|v| v.get("source"))
                         .and_then(Value::as_str);
                     if let Some(booth) = source.and_then(|s| s.strip_prefix(ISLAND)) {
-                        if !out.iter().any(|i| i == booth) {
-                            out.push(booth.to_string());
+                        if !out.iter().any(|r| r.booth == booth) {
+                            let label = map
+                                .get("attrs")
+                                .and_then(|a| a.get("label"))
+                                .and_then(Value::as_str)
+                                .unwrap_or(booth);
+                            out.push(Region {
+                                booth: booth.to_string(),
+                                label: label.to_string(),
+                            });
                         }
                     }
                     for value in map.values() {
@@ -98,6 +118,11 @@ impl Shell {
         let mut out = Vec::new();
         walk(&self.root, &mut out);
         out
+    }
+
+    /// The booth names alone — what the view leg needs to namespace an application's slots.
+    pub fn islands(&self) -> Vec<String> {
+        self.regions().into_iter().map(|r| r.booth).collect()
     }
 
     /// One boot-log line: the file, and what it promises to hold. A operator reading a start-up
@@ -141,12 +166,19 @@ mod tests {
                 {"type":"placeholder","bind":{"value":{"kind":"source","source":"auth"}}},
                 {"type":"case","bind":{"value":{"kind":"source","source":"island:gravity_turn"}}},
                 {"type":"case","children":[
-                    {"type":"case","bind":{"value":{"kind":"source","source":"island:admin"}}}
+                    {"type":"case","attrs":{"label":"资源"},
+                     "bind":{"value":{"kind":"source","source":"island:admin"}}}
                 ]}
             ]}"#,
         );
         let shell = Shell::open(&file).unwrap();
         assert_eq!(shell.islands(), vec!["gravity_turn", "admin"]);
+        // The navigation's words live in the frame too: a deployment that writes its own labels
+        // should not write them twice, and a region without one falls back to its booth name —
+        // readable enough to notice, ugly enough to fix.
+        let regions = shell.regions();
+        assert_eq!(regions[0].label, "gravity_turn", "no label: the booth's own name");
+        assert_eq!(regions[1].label, "资源");
         let frame = shell.create();
         assert_eq!(frame["action"], "create");
         assert_eq!(frame["slot"], "");
