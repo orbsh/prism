@@ -6,6 +6,11 @@
 #
 # A deployment points `PRISM_SHELL` at its frame; unset, `shell.yaml` is read from beside the
 # executable, so a binary shipped with its frame needs no configuration at all.
+#
+# Bindings are addresses, not modes (fluxen ADR 0031): `source` is where a value comes from,
+# `sink` is where it goes. `scope` says who owns it — `remote` (the default, written by the far
+# side and replayed) or `local` (this page only, dies with the tree) — so it is written only when
+# it is `local`.
 
 type: frame
 attrs:
@@ -27,28 +32,28 @@ children:
       - type: text
         attrs:
           class: [nogrow]
-        bind:
-          value:
-            kind: default
-            default: this deployment
+        source:
+          default: this deployment
 
       # 导航：选项由 venue 给（每个 region 一行，label 取自 frame 自己）。点一行既切页
-      # （local 槽 page），也把去向告诉 venue —— report 走 island 动词，venue 才知道
-      # 该给哪个 booth 触发 connect。
+      # （local 槽 page），也把去向告诉 venue —— 旧写法的 report=island 说的就是"值再
+      # 流出去一次"（ADR 0028：载荷是这次的值本身），现在它是同一个值的写通道：
+      # sink 的地址仍是 island，remote 是缺省，所以只写 slot。
       - type: select
         attrs:
           horizontal: true
           class: [main]
-        bind:
-          value:
-            kind: local
-            slot: page
-            report: island
-            path: /data
-            default: gravity-model
-          options:
-            kind: source
-            source: nav
+        source:
+          slot: page
+          scope: local
+          path: /data
+          default: gravity-model
+        # 读本地、写远端：选择落在 page 上，同一份值再从 island 这个地址上行，
+        # venue 才知道该给哪个 booth 触发 connect。
+        sink:
+          slot: island
+        options:
+          slot: nav
 
       - type: frame
         attrs:
@@ -69,10 +74,8 @@ children:
           - type: text
             attrs:
               class: [nogrow]
-            bind:
-              value:
-                kind: default
-                default: 消息
+            source:
+              default: 消息
           # 边栏本体：纵向排列，以后新的功能往下加一节即可。
           - type: frame
             attrs:
@@ -84,18 +87,14 @@ children:
                   view:
                     enter: fade
                   class: [col, gap]
-                bind:
-                  value:
-                    kind: source
-                    source: notice
+                source:
+                  slot: notice
               # 管理：venue 往 admin 槽里画什么，这里就显示什么；空槽什么也不画。
               - type: frame
                 attrs:
                   class: [col, gap]
-                bind:
-                  value:
-                    kind: source
-                    source: admin
+                source:
+                  slot: admin
 
       # 设置：登录/登出与设备列表都由 venue 画进 auth 槽，这里只给一个入口。
       - type: panel
@@ -105,39 +104,32 @@ children:
           class: [nogrow]
         children:
           - type: text
-            bind:
-              value:
-                kind: default
-                default: 设置
+            source:
+              default: 设置
           - type: frame
             attrs:
               class: [col, gap]
-            bind:
-              value:
-                kind: source
-                source: auth
+            source:
+              slot: auth
 
       - type: text
         attrs:
           class: [nogrow, --user]
-        bind:
-          value:
-            kind: source
-            source: user
+        source:
+          slot: user
 
   # ── 桌面 ────────────────────────────────────────────────────────────────────
   - type: pages
     attrs:
       class: [main, shrink]
-    bind:
-      value:
-        kind: source
-        source: pages
-      select:
-        kind: local
-        slot: page
-        path: /data
-        default: gravity-model
+    source:
+      slot: pages
+    # 舞台由哪个值决定：本地的 page 槽（导航写、这里读），remote 是缺省所以只写 local。
+    select:
+      slot: page
+      scope: local
+      path: /data
+      default: gravity-model
     display: dom
 
   # ── 通知：右上角，一条一行，各自到点离开 ──────────────────────────────────────
@@ -151,10 +143,8 @@ children:
       right: 1rem
       top: 1rem
       dismiss: false
-    bind:
-      value:
-        kind: source
-        source: notice
+    source:
+      slot: notice
     children:
       - type: rack
         attrs:
@@ -165,7 +155,5 @@ children:
             play: dwell
             every: 4000
           class: [col, jc-end, gap]
-        bind:
-          value:
-            kind: source
-            source: notice
+        source:
+          slot: notice
