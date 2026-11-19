@@ -143,10 +143,18 @@ children:
   # ── 通知：右上角，一条一行，各自到点离开 ──────────────────────────────────────
   # dwell：每行从上台起活 every 毫秒，然后下台，行仍留在槽里（消息列表里看得见）。
   # 底纹挂在行上（每条通知自己是气泡），所以舞台空了容器什么也画不出来 —— 不需要显隐规则。
-  - type: float
+  # 通知窗口：面板贴右上角（place: viewport + 位置 = 原来的 float），显隐跟着 notice 槽。
+  - type: panel
     attrs:
+      place: viewport
+      state: bound
       right: 1rem
       top: 1rem
+      dismiss: false
+    bind:
+      value:
+        kind: source
+        source: notice
     children:
       - type: rack
         attrs:
