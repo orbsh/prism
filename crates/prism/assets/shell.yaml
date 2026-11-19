@@ -120,14 +120,14 @@ children:
   - type: tiles
     attrs:
       class: [main, shrink]
-      stage: one
+      window: {size: 1}
       # 舞台由哪个值决定：本地的 page 槽（导航写、这里读），remote 是缺省所以只写 local。
       step: {slot: page}
     source:
       slot: pages
 
-  # ── 通知：右上角，一条一行，各自到点离开 ──────────────────────────────────────
-  # dwell：每行从上台起活 every 毫秒，然后下台，行仍留在槽里（消息列表里看得见）。
+  # ── 通知：右上角，一条一行，一次三条，四秒推进一格 ─────────────────────────────
+  # 窗口：舞台一次放三条，计时器每四秒把窗口往后挪一格；离窗的行仍留在槽里（消息列表里看得见）。
   # 底纹挂在行上（每条通知自己是气泡），所以舞台空了容器什么也画不出来 —— 不需要显隐规则。
   # 通知窗口：面板贴右上角（place: viewport + 位置 = 原来的 float），显隐跟着 notice 槽。
   - type: panel
@@ -143,6 +143,7 @@ children:
       - type: tiles
         attrs:
           class: [col, jc-end, gap]
+          window: {size: 3}
           step: {timer: 4000}
         source:
           slot: notice
