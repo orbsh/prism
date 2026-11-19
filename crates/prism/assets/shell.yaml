@@ -82,10 +82,8 @@ children:
               class: [col, gap]
             children:
               # 通知：每一行都在，过期只是"不上台"（右上角那个 rack 才让行退休）。
-              - type: rack
+              - type: tiles
                 attrs:
-                  view:
-                    enter: fade
                   class: [col, gap]
                 source:
                   slot: notice
@@ -119,18 +117,14 @@ children:
           slot: user
 
   # ── 桌面 ────────────────────────────────────────────────────────────────────
-  - type: pages
+  - type: tiles
     attrs:
       class: [main, shrink]
+      stage: one
+      # 舞台由哪个值决定：本地的 page 槽（导航写、这里读），remote 是缺省所以只写 local。
+      step: {slot: page}
     source:
       slot: pages
-    # 舞台由哪个值决定：本地的 page 槽（导航写、这里读），remote 是缺省所以只写 local。
-    select:
-      slot: page
-      scope: local
-      path: /data
-      default: gravity-model
-    display: dom
 
   # ── 通知：右上角，一条一行，各自到点离开 ──────────────────────────────────────
   # dwell：每行从上台起活 every 毫秒，然后下台，行仍留在槽里（消息列表里看得见）。
@@ -146,14 +140,9 @@ children:
     source:
       slot: notice
     children:
-      - type: rack
+      - type: tiles
         attrs:
-          view:
-            enter: translate
-            enter_ms: 220
-            leave_ms: 200
-            play: dwell
-            every: 4000
           class: [col, jc-end, gap]
+          step: {timer: 4000}
         source:
           slot: notice
