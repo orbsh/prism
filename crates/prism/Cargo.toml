@@ -18,6 +18,9 @@ aura-engine = { path = "../../../aura/crates/engine" }
 aura-config = { path = "../../../aura/crates/config" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The CONTENT codec (gravity ADR-0013): a booth may hand over its frame CBOR-encoded,
+# and `ui::forward` decodes it back to the same `Value` the JSON path sends.
+ciborium = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { version = "0.24", features = ["handshake"] }

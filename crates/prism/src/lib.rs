@@ -2,9 +2,19 @@
 //! gateway hosting the Aura echo booth in every embedded language.
 //!
 //! Wire shape (the reduced echo scope, documented in README):
-//! - `GET /ws`, `?protocol=json` selects the debug codec (absent = CBOR,
-//!   fixed for the connection lifetime — ADR-0017 §4); `?token=<uuid>`
+//! - `GET /ws`: the codec is NEGOTIATED once, at the handshake, and fixed for
+//!   the connection's lifetime (ADR-0017 §4). The ladder is
+//!   [`prism_protocol::negotiate`]'s: `Sec-WebSocket-Protocol`
+//!   (`accrete-json` / `accrete-cbor`, echoed back) → `?codec=` → the legacy
+//!   `?protocol=` → JSON. A name we do not speak (an unknown `accrete-*`, a bad
+//!   `?codec=`) is a 4xx refusal, never a silent fallback, and `PRISM_CODECS`
+//!   pins the whole deployment to one codec above every rung. `?token=<uuid>`
 //!   restores a binding (a device id authenticates nothing).
+//! - The codec chosen here is the CLIENT leg's and nothing else's: no event,
+//!   no dispatch and no booth ever sees it. The booth leg has its own codec,
+//!   declared by the booth (`Body::Script::encoding` → `INDUCTION_ENCODING`),
+//!   and prism transcodes between the two at ONE point — `ui::decode_content`
+//!   (`ui.rs`), where a booth's frame enters the renderer's fan-out.
 //! - ONE frame shape both directions: `{ev, args}`; the protocol does
 //!   not encode direction, dispatch cannot branch on it.
 //! - Every connect answers `{"ev": "connected", "args": {device_id,
@@ -267,7 +277,7 @@ impl Held {
 }
 
 /// The handshake extras read in accept_hdr (before the upgrade
-/// consumes the request): the codec selector and the device echo.
+/// consumes the request): the negotiated codec and the device echo.
 #[derive(Clone)]
 struct Handshake {
     codec: Codec,
@@ -275,6 +285,81 @@ struct Handshake {
     token: Option<identity::TokenId>,
     /// Which leg this connection belongs to (ADR-0017 §4): `/channel` = the renderer's wire.
     ui: bool,
+}
+
+/// `PRISM_CODECS` — the deployment's ONE-SWITCH pin (ADR-0017 §4).
+///
+/// `json` or `cbor` makes the venue serve that codec and REFUSE every connection that asked for
+/// the other one, whatever rung of the ladder it asked on. Absent (or empty) serves both and lets
+/// each connection choose. One flag, one answer for the whole deployment: a venue that hands two
+/// legs two codecs has two wires to debug, and nothing on the outside can tell them apart.
+const PRISM_CODECS_ENV: &str = "PRISM_CODECS";
+
+/// The pin's three answers, as `'static` slices because [`prism_protocol::negotiate`] takes
+/// [`prism_protocol::Refusal::Pinned`]'s `allowed` by `'static` reference — a handshake must never
+/// be able to hand itself a list that outlives its own borrow.
+const BOTH_CODECS: [Codec; 2] = [Codec::Json, Codec::Cbor];
+const JSON_ONLY: [Codec; 1] = [Codec::Json];
+const CBOR_ONLY: [Codec; 1] = [Codec::Cbor];
+
+/// The codecs this deployment serves, read ONCE (the environment is a boot fact).
+///
+/// The first read is the startup LOG (`serve` asks before the accept loop), so the operator learns
+/// what is in force at boot and every handshake afterwards only reads the answer. A value nobody
+/// recognizes is STATED and ignored — the venue keeps serving both — because a misspelled pin must
+/// not take a deployment down, and the line is what tells its operator the pin is not in force.
+fn allowed_codecs() -> &'static [Codec] {
+    static ALLOWED: std::sync::OnceLock<&'static [Codec]> = std::sync::OnceLock::new();
+    ALLOWED.get_or_init(|| match std::env::var(PRISM_CODECS_ENV) {
+        Err(_) => &BOTH_CODECS,
+        Ok(v) if v.trim().is_empty() => &BOTH_CODECS,
+        Ok(v) => match Codec::parse(v.trim()) {
+            Some(Codec::Json) => &JSON_ONLY,
+            Some(Codec::Cbor) => &CBOR_ONLY,
+            None => {
+                eprintln!(
+                    "prism: {PRISM_CODECS_ENV}=`{v}` is not `json` or `cbor` — serving both"
+                );
+                &BOTH_CODECS
+            }
+        },
+    })
+}
+
+/// The startup line for the pin: what this venue will accept, and why.
+fn codecs_line() -> String {
+    let allowed = allowed_codecs();
+    let names: Vec<&str> = allowed.iter().map(|c| c.as_str()).collect();
+    let pinned = allowed.len() == 1;
+    format!(
+        "prism: codecs: [{}]{} — per connection: Sec-WebSocket-Protocol (`accrete-json`|`accrete-cbor`) \
+         → ?codec= → ?protocol= → json; an unknown name is refused 4xx (ADR-0017 §4)",
+        names.join(", "),
+        if pinned { format!(" (pinned by {PRISM_CODECS_ENV})") } else { String::new() }
+    )
+}
+
+/// A refusal as the handshake answer it has to be: a 4xx, with the reason as the body.
+///
+/// [`prism_protocol::negotiate`] refuses instead of falling through precisely so that this
+/// response is possible: a client that asked for a wire it will not get finds out HERE, with a
+/// status it can read, instead of reading every frame thereafter as garbage.
+fn refusal_response(refusal: &prism_protocol::Refusal) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+    use tokio_tungstenite::tungstenite::http::{header::CONTENT_TYPE, Response, StatusCode};
+    match Response::builder()
+        .status(StatusCode::BAD_REQUEST)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Some(format!("{refusal}\n")))
+    {
+        Ok(response) => response,
+        // Unreachable: a literal status and one literal header cannot be invalid. A refusal must
+        // still go out as a refusal, so the bare status is built directly rather than panicking.
+        Err(_) => {
+            let mut response = Response::new(Some(String::new()));
+            *response.status_mut() = StatusCode::BAD_REQUEST;
+            response
+        }
+    }
 }
 
 impl Gateway {
@@ -625,6 +710,17 @@ impl Gateway {
                 )
             }
         }
+        // THE TWO LEGS' CODECS, STATED AT BOOT (ADR-0013): what clients may negotiate here, and
+        // what the booth leg will produce regardless. The second line is the declaration read
+        // back — `Body::Script::encoding` at registration, `INDUCTION_ENCODING` in the guest, and
+        // this constant, all one value — so an operator sees at boot where the transcode happens
+        // (between the two lines) and that a client's choice never crosses it.
+        println!("{}", codecs_line());
+        println!(
+            "prism: booth leg codec: {} (declared by the booth; a client's negotiated codec stops \
+             at the socket — the transcode is `ui::decode_content`)",
+            gravity_booth::content_codec().as_str()
+        );
         loop {
             let (stream, _) = listener.accept().await?;
             let gw = Arc::clone(&self);
@@ -707,13 +803,55 @@ impl Gateway {
 
         let hs_slot: Arc<Mutex<Option<Handshake>>> = Arc::default();
         let slot = Arc::clone(&hs_slot);
-        let ws = tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {
+        let ws = tokio_tungstenite::accept_hdr_async(
+            stream,
+            move |req: &Request,
+                  mut resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            // THE LADDER, ONCE PER CONNECTION (ADR-0017 §4, `prism_protocol::negotiate`):
+            // subprotocol → `?codec=` → the legacy `?protocol=` → json. Every rung is read here,
+            // in the handshake, because the choice is fixed for the connection's lifetime — a
+            // later read would be a second answer, and two codecs on one socket is a broken socket.
             let query = req.uri().query().unwrap_or("");
-            // The renderer pins its wire with `codec=`, the programmatic leg with
-            // `protocol=`; honour both rather than making one client learn the other's word.
-            let codec_q = query_param(query, "protocol").or_else(|| query_param(query, "codec"));
+            // `Sec-WebSocket-Protocol` is a COMMA-SEPARATED list in the client's own preference
+            // order; the first value we understand wins, and a foreign protocol in it is somebody
+            // else's and is skipped. An `accrete-` word we do not implement is a refusal.
+            let offered: Vec<&str> = req
+                .headers()
+                .get(tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL)
+                .and_then(|value| value.to_str().ok())
+                .map(|list| {
+                    list.split(',')
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let negotiated = match prism_protocol::negotiate(
+                &offered,
+                query_param(query, "codec"),
+                query_param(query, "protocol"),
+                allowed_codecs(),
+            ) {
+                Ok(negotiated) => negotiated,
+                // NO SILENT FALLBACK: the answer is a 4xx carrying the reason, so a client that
+                // asked for a wire it will not get learns it here instead of reading every frame
+                // thereafter as garbage.
+                Err(refusal) => {
+                    eprintln!("prism: refused handshake ({}): {refusal}", req.uri().path());
+                    return Err(refusal_response(&refusal));
+                }
+            };
+            // ECHO the subprotocol when the client's own offer won: the answer to a handshake that
+            // offered `accrete-cbor` is where the client reads which of its offers was taken, and
+            // silence would leave it guessing (tungstenite does not echo one for us).
+            if let Some(echo) = negotiated.echo {
+                resp.headers_mut().insert(
+                    tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+                    tokio_tungstenite::tungstenite::http::HeaderValue::from_static(echo),
+                );
+            }
             *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Handshake {
-                codec: Codec::from_query(codec_q),
+                codec: negotiated.codec,
                 token: query_param(query, "token")
                     .and_then(|v| v.parse::<identity::TokenId>().ok()),
                 ui: req.uri().path() == ui::UI_PATH,
@@ -725,7 +863,7 @@ impl Gateway {
         // The callback ran during the handshake; `unwrap_or` only
         // guards a handshake that never reached `accept`.
         let Handshake { codec, token, ui } =
-            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Cbor, token: None, ui: false });
+            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Json, token: None, ui: false });
         let identified = self.identify(token)?;
         let (device, user0, token) = (identified.device, identified.user, identified.token);
 

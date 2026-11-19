@@ -399,6 +399,58 @@ fn namespace(ops: Vec<Content<Value>>, island: &str) -> Vec<Content<Value>> {
         .collect()
 }
 
+/// Which slot of a frame a CONTENT payload rides in, and the key that marks one.
+///
+/// gravity has two content modes and two encodings (gravity ADR-0013); encoding is a transport
+/// axis, so the frame does not say which codec it used — the SHAPE says. A plain frame's `data`
+/// is the envelope itself (a map with `name`/`island`/`data`/…); encoded content arrives as a map
+/// whose ONLY key is [`CBOR_PAYLOAD_KEY`], holding the CBOR document as base64.
+///
+/// Base64 rather than a CBOR byte string because the payload is a `serde_json::Value` at every
+/// hop between the booth and here (the carrier's frame type, the realm's event args), and a
+/// `Value` has no bytes variant: a raw byte string is a decode error there, so a frame carrying
+/// one would never arrive at all. The marker keeps the discriminator on the wire and in the
+/// frame's own shape, so nothing has to be configured out of band.
+const CBOR_PAYLOAD_KEY: &str = "$cbor";
+
+/// The bytes a `data` carries when it is ENCODED content, `None` when it is the frame itself.
+fn cbor_bytes(data: &Value) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    let object = data.as_object()?;
+    if object.len() != 1 {
+        return None;
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(object.get(CBOR_PAYLOAD_KEY)?.as_str()?)
+        .ok()
+}
+
+/// THE ONE DECODE SITE for the codec axis: a frame whose `data` is CBOR is turned back into the
+/// same `Value` the JSON path sends, and every other frame is returned untouched.
+///
+/// Called once, at the top of [`forward`] — the funnel every booth frame arrives through — so no
+/// second copy of this rule can drift, and no reader below has to know a codec exists.
+fn decode_content(mut payload: Value) -> Value {
+    let Some(bytes) = payload.get("data").and_then(cbor_bytes) else {
+        return payload;
+    };
+    match ciborium::from_reader::<Value, _>(bytes.as_slice()) {
+        Ok(decoded) => {
+            if let Some(object) = payload.as_object_mut() {
+                object.insert("data".to_string(), decoded);
+            }
+            payload
+        }
+        // An undecodable payload is STATED, and the frame is forwarded as it came: dropping a
+        // frame on a decode error would make a codec bug look like a booth that said nothing.
+        Err(e) => {
+            let name = payload.get("name").and_then(Value::as_str).unwrap_or("?");
+            eprintln!("prism: view `{name}` carries an undecodable CBOR payload: {e}");
+            payload
+        }
+    }
+}
+
 pub(crate) fn forward(
     conns: &UiConns,
     peers: &PeerDeliver,
@@ -407,6 +459,10 @@ pub(crate) fn forward(
     origin: Option<&str>,
     payload: Value,
 ) {
+    // THE CODEC AXIS, applied ONCE (gravity ADR-0013): a frame whose `data` is a CBOR payload
+    // becomes the same `Value` the JSON path sends, and everything below reads `payload` — so
+    // the route, the address, the drawing and the peer leg are all codec-blind.
+    let payload = decode_content(payload);
     // THE ENVELOPE CARRIES THE ROUTE. A Rust body is not told which event fired (the concrete
     // name is consumed by the dispatcher), so the emitter states it: `name` is the recipient
     // event, marked with the same `ui:` prefix as the emit itself. The venue strips the
@@ -1016,5 +1072,83 @@ mod tests {
             vec!["", "island:gravity-model", "island:admin/notice"],
             "the root stays the root; the empty slot of a `set` is this island's surface"
         );
+    }
+
+    // ---------------------------------------------- the content codec axis (gravity ADR-0013) --
+
+    /// The frame a booth emits, in the two shapes the axis produces: `data` is the envelope
+    /// (JSON mode) or `{"$cbor": <base64 of the same value>}` (CBOR mode).
+    fn both_shapes(content: &Value) -> (Value, Value) {
+        use base64::Engine as _;
+        let mut document = Vec::new();
+        ciborium::into_writer(content, &mut document).expect("cbor document");
+        let plain = json!({
+            "name": "ui:layout",
+            "island": "gravity-model",
+            "data": content,
+        });
+        let encoded = json!({
+            "name": "ui:layout",
+            "island": "gravity-model",
+            "data": { "$cbor": base64::engine::general_purpose::STANDARD.encode(&document) },
+        });
+        (plain, encoded)
+    }
+
+    /// THE EQUIVALENCE, proved at the funnel: one frame, encoded both ways, decoded both ways,
+    /// and the two decoded frames EQUAL — through the same drawing step the venue uses, so the
+    /// assertion covers the ops a renderer would get, not just the value's shape.
+    #[test]
+    fn a_cbor_payload_and_a_plain_map_reach_the_renderer_as_the_same_frame() {
+        let content = json!([
+            { "action": "append", "slot": "messages", "data": {
+                "id": "7_1", "type": "frame", "attrs": { "selector": "assistant" },
+                "children": [{ "type": "text", "source": { "default": "there" } }],
+            }},
+            { "action": "patch", "slot": "messages", "id": "7_1",
+              "path": "/children/0/source/default", "op": "append", "value": "!" },
+        ]);
+        let (plain, encoded) = both_shapes(&content);
+
+        let decoded_plain = decode_content(plain.clone());
+        let decoded_cbor = decode_content(encoded.clone());
+        assert_eq!(
+            decoded_plain, decoded_cbor,
+            "the two encodings are one frame after the funnel"
+        );
+        assert_eq!(decoded_plain, plain, "and the JSON path is untouched");
+        assert_eq!(
+            decoded_cbor["data"], content,
+            "the byte path is the content the JSON path sent"
+        );
+
+        // The drawing step agrees, not just the value: same slots, same order.
+        let draw = |frame: &Value| {
+            let frames = frame["data"].as_array().cloned().unwrap_or_default();
+            slots(namespace(ops_of(frames, "view"), "gravity-model"))
+        };
+        assert_eq!(draw(&decoded_plain), draw(&decoded_cbor));
+    }
+
+    /// Today's wire must keep working byte for byte: a frame whose `data` is a map is returned
+    /// exactly as it came — including a map that happens to carry a `$cbor` key BESIDE others,
+    /// which is a plain payload and not an encoded one.
+    #[test]
+    fn the_decode_is_a_no_op_unless_the_payload_is_the_marker_and_nothing_else() {
+        let plain = json!({ "name": "ui:layout", "island": "gravity-model",
+                            "data": { "name": "ui:x", "data": [1, 2] } });
+        assert_eq!(decode_content(plain.clone()), plain);
+
+        let lookalike = json!({ "name": "ui:layout",
+                                "data": { "$cbor": "AQ==", "type": "frame" } });
+        assert_eq!(decode_content(lookalike.clone()), lookalike);
+
+        // No `data` at all: a page's own uplink, handled below by the `args` branch.
+        let uplink = json!({ "name": "ui:connect", "args": { "device": "d" } });
+        assert_eq!(decode_content(uplink.clone()), uplink);
+
+        // An unparsable payload is forwarded as it came, never dropped.
+        let broken = json!({ "name": "ui:layout", "data": { "$cbor": "not base64!!" } });
+        assert_eq!(decode_content(broken.clone()), broken);
     }
 }

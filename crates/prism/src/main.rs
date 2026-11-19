@@ -60,7 +60,9 @@ async fn main() -> anyhow::Result<()> {
     let addr = std::env::var("PRISM_ADDR").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let listener = TcpListener::bind(&addr).await?;
     println!(
-        "prism: ws://{addr}/ws — CBOR default, ?protocol=json for debug; \
+        "prism: ws://{addr}/ws — codec negotiated per connection \
+         (Sec-WebSocket-Protocol `accrete-json`|`accrete-cbor` → ?codec= → ?protocol= → json; \
+         PRISM_CODECS pins the deployment, unknown names refused 4xx); \
          verbs: echo (steel|python|nushell), echo_sender, signup, login, broadcast, ping; \
          static: GET /code/<sha256> (ADR-0027 export); renderer leg: /channel (Message/Outflow)"
     );

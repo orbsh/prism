@@ -30,13 +30,41 @@ async fn boot() -> SocketAddr {
 }
 
 async fn connect(addr: SocketAddr, codec: Codec) -> WsClient {
-    let qs = match codec {
-        Codec::Json => "?protocol=json",
-        Codec::Cbor => "",
-    };
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws{qs}"))
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    // THE LADDER'S TWO LIVE RUNGS (ADR-0017 §4): the debug client pins the legacy `?protocol=`
+    // rung, the binary client offers `accrete-cbor` as a SUBPROTOCOL — the rung that is echoed
+    // back, so the handshake answer itself says which wire this socket speaks.
+    let mut request = format!("ws://{addr}/ws")
+        .into_client_request()
+        .expect("client request");
+    match codec {
+        Codec::Json => {
+            *request.uri_mut() = format!("ws://{addr}/ws?protocol=json")
+                .parse()
+                .expect("uri");
+        }
+        Codec::Cbor => {
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                HeaderValue::from_static("accrete-cbor"),
+            );
+        }
+    }
+    let (mut ws, response) = tokio_tungstenite::connect_async(request)
         .await
         .expect("ws handshake");
+    assert_eq!(
+        response
+            .headers()
+            .get("sec-websocket-protocol")
+            .and_then(|v| v.to_str().ok()),
+        match codec {
+            Codec::Json => None,
+            Codec::Cbor => Some("accrete-cbor"),
+        },
+        "the accepted subprotocol is echoed, and an unoffered one is absent"
+    );
     // The §2 connect answer arrives before anything the test asked for.
     let f = recv_frame(&mut ws, codec).await;
     assert_eq!(f.ev, "connected");
