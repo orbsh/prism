@@ -974,11 +974,23 @@ fn notice_row(data: &Value) -> Value {
     // A text node carries no words of its own: what it says comes from its binding (fluxen's
     // `text` reads `bind["value"]`), which is also why a row can be a text node without the venue
     // inventing a layout.
-    json!({
+    let mut row = json!({
         "id": okm_core::Uuid7::now().to_string(),
         "type": "text",
         "bind": { "value": { "kind": "default", "default": text } },
-    })
+    });
+    // What a PERSON reads is the text, but the venue attaches facts a PAGE may act on — the idle
+    // refusal carries `reason: "idle"` — and dropping them at this seam would make every such
+    // signal prose that only a human can read. They ride beside the row: the renderer draws the
+    // text node and ignores what it does not bind, while a page reads the field it wants.
+    if let Some(fields) = data.as_object() {
+        for (key, value) in fields {
+            if key != "detail" {
+                row[key] = value.clone();
+            }
+        }
+    }
+    row
 }
 
 /// The identity fact: who this connection is, and the credential that keeps saying so. Ids travel

@@ -168,11 +168,23 @@ async fn recv_speech(ws: &mut WsClient) -> (String, String, Value) {
     loop {
         let ops = recv_ops(ws).await;
         let [op] = ops.as_slice() else { continue };
-        if op["action"] != "inject" {
-            continue;
-        }
-        if let (Some(slot), Some(name)) = (op["slot"].as_str(), op["name"].as_str()) {
-            return (slot.to_string(), name.to_string(), op["data"].clone());
+        match op["action"].as_str() {
+            // A FACT: injected into the slot named after it.
+            Some("inject") => {
+                if let (Some(slot), Some(name)) = (op["slot"].as_str(), op["name"].as_str()) {
+                    return (slot.to_string(), name.to_string(), op["data"].clone());
+                }
+            }
+            // A NOTICE IS A ROW (say()'s rule): it is APPENDED to the `notice` rack with an id of
+            // its own, because a rack holds every notice the device has seen while a plain slot
+            // would keep only the last. The rack's slot IS the fact's name — there is no second
+            // name to read, which is why this reader reports the slot twice.
+            Some("append") => {
+                if let Some(slot) = op["slot"].as_str() {
+                    return (slot.to_string(), slot.to_string(), op["data"].clone());
+                }
+            }
+            _ => continue,
         }
     }
 }
@@ -433,8 +445,13 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     // TWO facts on a refusal: the platform's (`auth.required`, which is what opens the surface — no
     // application learns of a dropped event) and the person's (`notice`). Both, in either order.
     let said = recv_named(&mut ws, ["auth.required", "notice"]).await;
+    // The notice is a ROW (say()'s rule), so its words live where a text node's do:
+    // `bind.value.default`. Reading `detail` here is what made this suite fail on the shape it
+    // thought the wire had rather than the one it has.
     assert!(
-        said["notice"]["detail"].as_str().is_some_and(|d| d.contains("echo_gate")),
+        said["notice"]["bind"]["value"]["default"]
+            .as_str()
+            .is_some_and(|d| d.contains("echo_gate")),
         "the person is told: {said:?}"
     );
     assert_eq!(said["auth.required"]["event"], "echo_gate", "the refusal names what it dropped");
@@ -484,7 +501,7 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
     let again = recv_named(&mut ws, ["auth.required", "notice"]).await;
     assert!(
-        again["notice"]["detail"].as_str().is_some(),
+        again["notice"]["bind"]["value"]["default"].as_str().is_some(),
         "refused again after the logout: {again:?}"
     );
 }
