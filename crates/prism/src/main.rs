@@ -37,8 +37,8 @@ async fn main() -> anyhow::Result<()> {
     // The shipped auth booth: the verbs stay here, the proof lives behind one call.
     Gateway::with_auth(&engine, &registry).await?;
     Gateway::with_echoes(&engine).await?;
-    // The declared node mounts (ADR-0001): absent PRISM_MOUNTS = no nodes.
-    Gateway::with_mounts(&engine).await?;
+    // The declared node mounts (ADR-0001) — installed after construction, because the table
+    // lives on the gateway (ADR-0021). Absent PRISM_MOUNTS = no nodes.
     // The trust posture is DECLARED, never defaulted (ADR-0015 §7):
     // absent or invalid PRISM_IDENTITY is a boot error, not a guess.
     let posture_raw = std::env::var("PRISM_IDENTITY")
@@ -56,6 +56,7 @@ async fn main() -> anyhow::Result<()> {
         println!("prism: no renderer bundle (PRISM_ASSETS unset) — / serves nothing");
     }
     let gw = Gateway::with_deployment(engine, registry, posture, deployment);
+    gw.install_mounts().await?;
 
     let addr = std::env::var("PRISM_ADDR").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let listener = TcpListener::bind(&addr).await?;

@@ -7,6 +7,9 @@
 //! POST   /admin/nodes                    {alias}              → 201 {token, status, created_at}
 //!                                        (the token is shown ONCE; the registry keeps its digest)
 //! GET    /admin/nodes                                            → [{alias, credential, status, created_at}]
+//! GET    /admin/mounts                                           → {mounts: [{type, alias, language, carrier,
+//!                                                                  runner, requires, encoding, registered,
+//!                                                                  node_connected}], refused: [line]}
 //! GET    /admin/dead                                             → [{event, reason, data}]
 //!   The engine's dead ring: events that reached nobody, and deliveries that reached a queue but
 //!   could not call the body (`delivery-failed`, which carries the entry name and the error).
@@ -28,7 +31,6 @@
 //! answer; the body text is for the human reading `curl` output.
 
 use crate::code_export::plain;
-use crate::nodes::NodeStore;
 use serde_json::json;
 
 /// `GET /admin/dead` — the dead ring behind an HTTP read. Async because the ring lives behind the
@@ -59,7 +61,13 @@ pub(crate) async fn serve_dead(
 /// Route an `/admin/...` request. Returns the full response bytes for
 /// any path under the prefix (the connection closes after), and None
 /// for anything else (the caller falls through to `/ws` or the export).
-pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn serve_admin(
+    gw: &crate::Gateway,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Option<Vec<u8>> {
+    let nodes = gw.nodes();
     let rest = path.strip_prefix("/admin")?;
     let response = match (method, rest) {
         // Mint: the operator names the alias, the plane invents the token and keeps only its
@@ -86,6 +94,41 @@ pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u
             }
             Err(e) => plain(400, &e.to_string()),
         },
+        // WHAT MAY BE CALLED (ADR-0021): the venue holds the mount table, so a caller reads it
+        // here instead of carrying its own copy that drifts. Two facts per row, because a
+        // declaration and a callable type are not the same thing — and one presence fact,
+        // because a live mount whose node is away answers "not connected" mid-job.
+        ("GET", "/mounts") => {
+            let pool = gw.engine.realm_set.pool();
+            let live: std::collections::BTreeSet<String> =
+                gw.live_mounts().into_iter().collect();
+            let rows: Vec<serde_json::Value> = gw
+                .mounts()
+                .iter()
+                .map(|m| {
+                    json!({
+                        "type": m.type_name,
+                        "alias": m.node_alias,
+                        "language": m.language,
+                        "carrier": m.carrier,
+                        "runner": m.runner,
+                        // Resolved, not echoed: `None` IS the container default, and a caller
+                        // reading this line is asking what the call will be required to be.
+                        "requires": match m.requires {
+                            Some(aura_booth::Requires::Host) => "host",
+                            _ => "container",
+                        },
+                        "encoding": match m.encoding {
+                            aura_booth::Encoding::Cbor => "cbor",
+                            aura_booth::Encoding::Json => "json",
+                        },
+                        "registered": live.contains(&m.type_name),
+                        "node_connected": pool.contains(&m.node_alias),
+                    })
+                })
+                .collect();
+            json_response(200, &json!({ "mounts": rows, "refused": gw.refused_mounts() }))
+        }
         ("GET", "/nodes") => match nodes.list() {
             Ok(rows) => {
                 let rows: Vec<_> = rows.iter().map(row_json).collect();

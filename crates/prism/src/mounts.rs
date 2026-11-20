@@ -171,16 +171,54 @@ pub fn drift_line(mounts: &[MountDecl], alias: &str, announced: &[String]) -> Op
     ))
 }
 
-/// The dial-in path's form of [`drift_line`]: reads the manifest from the
-/// environment (a boot fact; cheap to re-read) and reports an unreadable
-/// manifest here rather than swallowing it — the connection path has nowhere
-/// to return it.
-pub fn dial_in_note(alias: &str, announced: &[String]) -> Option<String> {
-    match from_env() {
-        Ok(mounts) => drift_line(&mounts, alias, announced),
-        Err(e) => Some(format!(
-            "prism: mount manifest unreadable at '{alias}' registration: {e}"
-        )),
+/// The dial-in path reads the table the venue INSTALLED, not the environment: one source, so a
+/// manifest that failed to parse said so once at boot instead of at every dial.
+pub fn dial_in_note(table: &MountTable, alias: &str, announced: &[String]) -> Option<String> {
+    drift_line(&table.decls, alias, announced)
+}
+
+/// WHAT THE VENUE HOLDS: the declarations it replayed, which of them registered, and why the
+/// rest did not. One table, one home — a caller reads this instead of carrying its own copy of
+/// the same list, which is how two clients of one venue come to disagree (ADR-0021, discharging
+/// gravity ADR-0001's open item).
+#[derive(Debug, Default, Clone)]
+pub struct MountTable {
+    /// Every declaration, in manifest order, whether or not it registered.
+    pub decls: Vec<MountDecl>,
+    /// The type names that registered.
+    pub live: std::collections::BTreeSet<String>,
+    /// One line per declaration that did not, in the words the failure used.
+    pub refused: Vec<String>,
+}
+
+impl MountTable {
+    /// Read the manifest and register it. A declaration that fails is recorded, not fatal: a
+    /// venue that refuses to boot because one node's mount is wrong would take the other nodes'
+    /// work down with it (the same tolerance `with_echoes` shows for a carrier a build lacks).
+    pub async fn install(engine: &Engine) -> anyhow::Result<Self> {
+        let decls = from_env()?;
+        let mut table = Self {
+            decls,
+            ..Default::default()
+        };
+        for m in &table.decls {
+            match engine.register(m.booth_type()).await {
+                Ok(()) => {
+                    table.live.insert(m.type_name.clone());
+                }
+                Err(err) => table.refused.push(format!(
+                    "mount [{}] (alias {}) did not register: {err:#}",
+                    m.type_name, m.node_alias
+                )),
+            }
+        }
+        Ok(table)
+    }
+
+    /// The type is declared AND registered: a declared mount whose type is not in the engine
+    /// would answer a caller with "no such type" long after the confusion started.
+    pub fn is_live(&self, type_name: &str) -> bool {
+        self.live.contains(type_name)
     }
 }
 

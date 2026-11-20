@@ -203,6 +203,10 @@ pub struct Gateway {
     /// device needs where things STAND, not every step that led there — and a booth redraws its
     /// screen as a whole, so the newest frames supersede the oldest ones held here.
     missed: Arc<Mutex<HashMap<(identity::UserId, String), Held>>>,
+    /// The mounts this venue holds: the declarations it replayed, which registered, and what a
+    /// caller may therefore address (ADR-0021). A std mutex, not the realm's: written once at
+    /// boot, read on a dial and on `/admin/mounts`.
+    mounts: std::sync::Mutex<mounts::MountTable>,
 }
 
 /// How many increments the venue holds behind the last whole screen before the oldest go.
@@ -406,6 +410,9 @@ impl Gateway {
             next_id: AtomicU64::new(1),
             ui_conns: Arc::new(Mutex::new(HashMap::new())),
             missed: Arc::new(Mutex::new(HashMap::new())),
+            // Empty until `install_mounts` runs: a gateway that has not replayed a manifest
+            // holds no mounts, and says so rather than pretending to hold the deployment's.
+            mounts: std::sync::Mutex::new(mounts::MountTable::default()),
         })
     }
 
@@ -628,18 +635,72 @@ impl Gateway {
         Ok(())
     }
 
-    /// Register the declared node mounts (ADR-0001): the deployment manifest
-    /// is read from `PRISM_MOUNTS` and replayed at every boot (mount
-    /// definitions are not persisted — the manifest is the durable form). An
-    /// install with no nodes is legal: this is a no-op then.
-    pub async fn with_mounts(engine: &Engine) -> anyhow::Result<()> {
-        let mounts = mounts::from_env()?;
-        if mounts.is_empty() {
-            return Ok(());
+    /// Register the declared node mounts (ADR-0001) and KEEP them: the manifest is read from
+    /// `PRISM_MOUNTS` and replayed at every boot (mount definitions are not persisted — the
+    /// manifest is the durable form), and the table stays on the gateway so the venue can say
+    /// what a caller may address (ADR-0021) instead of every client carrying a copy of it.
+    ///
+    /// A method rather than a constructor: a second place that registers mounts would be a
+    /// second answer to "what is callable".
+    pub async fn install_mounts(&self) -> anyhow::Result<()> {
+        let table = mounts::MountTable::install(&self.engine).await?;
+        if table.decls.is_empty() {
+            println!("prism: no node mounts declared (PRISM_MOUNTS unset) — no node is callable");
+        } else {
+            println!(
+                "prism: node mounts live: {:?}{}",
+                table.live.iter().collect::<Vec<_>>(),
+                if table.refused.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({} refused — see /admin/mounts)", table.refused.len())
+                }
+            );
         }
-        let live = mounts::register_all(engine, &mounts).await?;
-        println!("prism: node mounts live: {live:?}");
+        *self
+            .mounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = table;
         Ok(())
+    }
+
+    /// A snapshot of the declared mounts: the venue's own answer to "what may be called".
+    pub fn mounts(&self) -> Vec<mounts::MountDecl> {
+        self.mounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .decls
+            .clone()
+    }
+
+    /// Declarations that did NOT register, in the words the failure used — the other half of
+    /// the answer, because "declared" and "callable" are different facts.
+    pub fn refused_mounts(&self) -> Vec<String> {
+        self.mounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .refused
+            .clone()
+    }
+
+    /// Read the installed table (the dial path's carrier-drift note).
+    pub(crate) fn with_mount_table<R>(&self, f: impl FnOnce(&mounts::MountTable) -> R) -> R {
+        let table = self
+            .mounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&table)
+    }
+
+    /// Which declared types are live, for the listing.
+    pub fn live_mounts(&self) -> Vec<String> {
+        self.mounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Serve forever on `listener`: accept, route, drive. The startup
@@ -768,7 +829,7 @@ impl Gateway {
             let _ = stream.shutdown().await;
             return Ok(());
         }
-        if let Some(response) = admin::serve_admin(&self.nodes(), &head.method, &head.path, &head.body) {
+        if let Some(response) = admin::serve_admin(&self, &head.method, &head.path, &head.body) {
             let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;
             return Ok(());

@@ -188,7 +188,9 @@ pub(crate) async fn serve_mounted(
     // is stated, never silent (the same disclosure rule the alias-replacement
     // line above follows); it is NOT a refusal — a call into an un-carried
     // language answers with the carrier's own error value per call.
-    if let Some(line) = crate::mounts::dial_in_note(&node_alias, &carriers) {
+    if let Some(line) = gw.with_mount_table(|table| {
+        crate::mounts::dial_in_note(table, &node_alias, &carriers)
+    }) {
         eprintln!("{line}");
     }
     // What contains this node (ADR-0003 §1): the one fact that decides whether it may be handed code
@@ -388,9 +390,10 @@ impl Drop for PresenceGuard {
         let alias = std::mem::take(&mut self.alias);
         let channel = self.channel.clone();
         tokio::spawn(async move {
-            let mut r = realm.lock().await;
-            let pool = r.pool.clone();
-            drop(r);
+            let pool = {
+                let r = realm.lock().await;
+                r.pool.clone()
+            };
             // Identity-checked inside the pool: a reconnect that took the alias over keeps it.
             pool.remove(&alias, &channel);
         });
