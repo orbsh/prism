@@ -930,3 +930,55 @@ async fn a_replay_starts_at_the_last_whole_screen() {
         "the replay starts at the screen: {text}"
     );
 }
+
+/// A FRAME IS DRAWN ONCE PER EMIT (gravity's open item: "a duplicated patch frame, multiplicity
+/// growing per turn"). The suspicion there is this fan-out, so measure the mechanism with one page
+/// and nothing else in the way: three emits, three drawings, and the earlier ones do not come back
+/// with the later ones. A vertex that accumulates destinations — one per turn, per subscription or
+/// per connection — shows up here as 1, then 2, then 3 copies, and nowhere else in prism can.
+#[tokio::test]
+async fn one_emit_draws_exactly_one_frame_however_much_was_said_before() {
+    let (addr, gw) = boot(Deployment::default()).await;
+    let mut ws = open_ui(addr).await;
+    let device = read_connected(&mut ws).await;
+
+    for round in 0..3u64 {
+        aura_realm::Realm::emit(
+            &gw.engine.realm,
+            None,
+            "ui:graph",
+            json!({
+                "name": "ui:graph",
+                "device": device,
+                "data": { "action": "set", "slot": "graph", "data": { "mark": round } },
+            }),
+        )
+        .await
+        .expect("emit view");
+        let ops = recv_ops(&mut ws).await;
+        assert_eq!(
+            ops.len(),
+            1,
+            "emit {} drew {} actions, not one: {ops:?}",
+            round + 1,
+            ops.len()
+        );
+        assert_eq!(ops[0]["slot"], "graph", "{ops:?}");
+        // The fact is INJECTED into the slot: an object body becomes one action under `data`.
+        assert_eq!(
+            ops[0]["data"]["data"]["mark"], round,
+            "in order, once each: {ops:?}"
+        );
+    }
+
+    let extra = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        recv_ops(&mut ws),
+    )
+    .await;
+    assert!(
+        extra.is_err(),
+        "a fourth frame arrived after three emits: {:?}",
+        extra.ok()
+    );
+}
