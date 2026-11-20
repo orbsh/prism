@@ -19,11 +19,20 @@ async fn main() -> anyhow::Result<()> {
     // feature keeps its own state under `PRISM_DATA`.
     let dir = std::env::var("PRISM_DATA").unwrap_or_else(|_| "prism-data".into());
     let want = std::env::var("PRISM_ENGINE").unwrap_or_else(|_| "fjall".into());
+    // A mount's runner reaches its node BY REFERENCE, and the venue is the party that holds the
+    // bytes: it serves them at `/code/<hex>` on this listener, and this is where the dispatch is
+    // told. Only read when mounts are declared, so a venue with no node code needs no address.
+    let addr = std::env::var("PRISM_ADDR").unwrap_or_else(|_| "127.0.0.1:8765".into());
+    let code_base = prism::mounts::code_base(&addr)?;
     let engine_config = match (want.as_str(), cfg!(feature = "fjall")) {
-        ("memory", _) => aura_config::EngineConfig::default(),
+        ("memory", _) => aura_config::EngineConfig {
+            code_base_url: Some(code_base.clone()),
+            ..Default::default()
+        },
         ("fjall", true) => aura_config::EngineConfig {
             engine: aura_config::Engine::Fjall,
             data_dir: Some(std::path::Path::new(&dir).join("engine")),
+            code_base_url: Some(code_base.clone()),
             ..Default::default()
         },
         ("fjall", false) => anyhow::bail!("PRISM_ENGINE=fjall needs this build's `fjall` feature"),

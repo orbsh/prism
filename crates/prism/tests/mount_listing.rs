@@ -159,6 +159,15 @@ async fn a_mount_is_the_product_of_the_vocabulary_and_an_approved_alias() {
         "a second dial adds nothing: derivation is idempotent"
     );
 
+    // THE LAST MILE OF DELIVERY (ADR-0027): a mount's runner reaches its node by reference, so
+    // the venue must be able to serve the bytes it declares — on its own listener, at the address
+    // the dispatch is told. Without this the mount exists and every call fails three layers down
+    // with "no code_base_url configured".
+    let spec = "/runners/runner_nu.nu";
+    let hex = aura_realm::meta::code_hex(&aura_realm::meta::code_hash(spec));
+    let served = get(addr, &format!("/code/{hex}")).await;
+    assert_eq!(served, spec, "the venue serves the runner it declared");
+
     // A vocabulary with a field missing is a boot error, and the venue keeps what it already had —
     // half a table would be worse than none.
     std::env::set_var("PRISM_LANGUAGES", VOCABULARY_BROKEN);
@@ -168,4 +177,30 @@ async fn a_mount_is_the_product_of_the_vocabulary_and_an_approved_alias() {
         "the error names the field: {err:#}"
     );
     assert_eq!(gw.mounts().len(), 4, "the installed table is untouched");
+}
+/// The base the dispatch hands the node: derived from the bind address, because the venue serves
+/// its own specs; a bind-all address is refused rather than guessed at, and an explicit base wins.
+#[test]
+fn the_code_base_is_an_address_a_node_can_fetch() {
+    std::env::remove_var("PRISM_CODE_BASE");
+    assert_eq!(
+        prism::mounts::code_base("127.0.0.1:8765").unwrap(),
+        "http://127.0.0.1:8765/code"
+    );
+    assert_eq!(
+        prism::mounts::code_base("10.0.0.5:8765").unwrap(),
+        "http://10.0.0.5:8765/code"
+    );
+    let err = prism::mounts::code_base("0.0.0.0:8765").expect_err("a listener is not a destination");
+    assert!(
+        format!("{err:#}").contains("PRISM_CODE_BASE"),
+        "the refusal names the fix: {err:#}"
+    );
+    std::env::set_var("PRISM_CODE_BASE", "https://venue.example/code/");
+    assert_eq!(
+        prism::mounts::code_base("0.0.0.0:8765").unwrap(),
+        "https://venue.example/code",
+        "the deployment's word beats derivation, and a trailing slash is not a second path"
+    );
+    std::env::remove_var("PRISM_CODE_BASE");
 }

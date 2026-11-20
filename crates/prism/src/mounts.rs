@@ -221,6 +221,32 @@ impl MountDecl {
     }
 }
 
+/// WHERE A NODE FETCHES THIS VENUE'S CODE (ADR-0027, gravity ADR-0001 §4). A mount's source is a
+/// deployment artifact and the dispatch carries only its ADDRESS (content-addressed), so a venue
+/// that declares mounts and cannot serve them has declared a mount that fails on the first call —
+/// `no code_base_url configured` three layers below whoever asked. The venue serves the specs it
+/// registers at `/code/<hex>` on its own listener, so it knows its own base.
+///
+/// A base derived from a BIND-ALL address is not one a node can fetch: `0.0.0.0` is a listener, not
+/// a destination, so that case names `PRISM_CODE_BASE` instead of guessing a hostname.
+pub fn code_base(addr: &str) -> anyhow::Result<String> {
+    if let Ok(explicit) = std::env::var("PRISM_CODE_BASE") {
+        let explicit = explicit.trim().trim_end_matches('/').to_string();
+        if !explicit.is_empty() {
+            return Ok(explicit);
+        }
+    }
+    let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
+    if host.is_empty() || host == "0.0.0.0" || host == "[::]" || host == "::" {
+        anyhow::bail!(
+            "PRISM_ADDR `{addr}` binds every interface, which is not an address a node can fetch \
+             from: set PRISM_CODE_BASE (e.g. `http://10.0.0.5:8765/code`) so mounts can deliver \
+             their runners (ADR-0027)"
+        );
+    }
+    Ok(format!("http://{addr}/code"))
+}
+
 /// The CARRIERS the manifest expects for a node alias — the other half of the
 /// carrier↔node fact (the dial-in frame announces what the node was BUILT
 /// with; the manifest says what its mounts' calls run in). The operation
