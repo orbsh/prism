@@ -106,11 +106,16 @@ async fn approval_lifecycle_over_http() {
     assert_eq!(approved["status"], "approved");
     // The handshake seam sees it: registered for the key, conflict for
     // another (the record is the SAME table the approval wrote).
-    assert_eq!(nodes.verdict("home-pc", &first_id).unwrap(), Verdict::Registered);
-    assert_eq!(
-        nodes.verdict("home-pc", &prism::nodes::token_credential("some-other-token")).unwrap(),
-        Verdict::Conflict
-    );
+    assert!(matches!(
+        nodes.verdict("home-pc", &first_id, "box-admin").unwrap(),
+        Verdict::Registered { .. }
+    ));
+    assert!(matches!(
+        nodes
+            .verdict("home-pc", &prism::nodes::token_credential("some-other-token"), "box-other")
+            .unwrap(),
+        Verdict::Conflict { .. }
+    ));
 
     // Rotation: mint + approve a second token → the first demotes (§6).
     let (_, _, second) = request(addr, "POST", "/admin/nodes", Some(json!({"alias": "home-pc"}))).await;
@@ -124,8 +129,14 @@ async fn approval_lifecycle_over_http() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(nodes.verdict("home-pc", &second_id).unwrap(), Verdict::Registered);
-    assert_eq!(nodes.verdict("home-pc", &first_id).unwrap(), Verdict::Conflict);
+    assert!(matches!(
+        nodes.verdict("home-pc", &second_id, "box-admin").unwrap(),
+        Verdict::Registered { .. }
+    ));
+    assert!(matches!(
+        nodes.verdict("home-pc", &first_id, "box-admin").unwrap(),
+        Verdict::Conflict { .. }
+    ));
 
     // Revoke the alias → live keys fall to pending-verdict (revoked),
     // a fresh claim queues again — never self-service.

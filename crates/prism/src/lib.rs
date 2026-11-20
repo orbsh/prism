@@ -701,7 +701,9 @@ impl Gateway {
         resources_ui::install(&self.engine).await;
         match self.posture {
             nodes::Posture::Required => {
-                eprintln!("prism: identity posture: `required` (ed25519 handshake gates effectors — ADR-0015)")
+                eprintln!(
+                    "prism: identity posture: `required` (a node token on the dial gates effectors — ADR-0015)"
+                )
             }
             nodes::Posture::Open => {
                 eprintln!(

@@ -105,26 +105,26 @@ async fn effector_mount_roundtrip_and_presence() {
 
     // Wait for registration through the mount.
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if engine.realm_set.pool().contains("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(
-        engine.realm.try_lock().unwrap().effectors.contains_key("test-node"),
+        engine.realm_set.pool().contains("test-node"),
         "the effector registered through /effector/<alias>"
     );
 
     // Disconnect flips presence (abort → reader EOF → guard unregisters).
     effector.abort();
     for _ in 0..50 {
-        if !engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if !engine.realm_set.pool().contains("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(
-        !engine.realm.try_lock().unwrap().effectors.contains_key("test-node"),
+        !engine.realm_set.pool().contains("test-node"),
         "dropped connection unregisters the node alias"
     );
 }
@@ -185,7 +185,7 @@ async fn effector_mount_remote_call_roundtrip() {
         "test-node",
     )));
     for _ in 0..50 {
-        if engine.realm.try_lock().unwrap().effectors.contains_key("test-node") {
+        if engine.realm_set.pool().contains("test-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -231,6 +231,7 @@ async fn effector_mount_refuses_alias_mismatch() {
         class: effector_protocol::NodeClass::Host,
         node_alias: "other-node".into(),
         carriers: vec!["steel".into()],
+        machine: "box-test".into(),
     };
     ws.send(Message::Text(serde_json::to_string(&frame).unwrap().into()))
         .await
@@ -250,7 +251,7 @@ async fn effector_mount_refuses_alias_mismatch() {
     assert!(refused, "alias mismatch closes the connection");
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
-        !engine.realm.try_lock().unwrap().effectors.contains_key("other-node"),
+        !engine.realm_set.pool().contains("other-node"),
         "nothing registered under the mismatched alias"
     );
 }

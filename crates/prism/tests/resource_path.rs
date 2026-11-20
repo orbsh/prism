@@ -100,6 +100,7 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
                 class: effector_protocol::NodeClass::Host,
                 node_alias: "res-node".into(),
                 carriers: vec!["exec".into()],
+                machine: "box-test".into(),
             })
             .unwrap(),
         ))

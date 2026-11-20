@@ -379,24 +379,13 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     // scheduling rather than on the thing being tested. Waiting is what the loop
     // means.
     for _ in 0..80 {
-        if engine
-            .realm
-            .lock()
-            .await
-            .effectors
-            .contains_key("skill-node")
-        {
+        if engine.realm_set.pool().contains("skill-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(
-        engine
-            .realm
-            .lock()
-            .await
-            .effectors
-            .contains_key("skill-node"),
+        engine.realm_set.pool().contains("skill-node"),
         "the node registered through /effector/<alias>"
     );
 

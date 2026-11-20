@@ -18,7 +18,7 @@ delivery = realm events"），ADR-0015 的节点审批端点也明确推迟到"P
 
 承接先前裁决的约束：
 
-- ADR-0015：节点身份是每 effector 节点一把 ed25519 key；审批通过四个 curl 端点按公钥进行，这四个
+- ADR-0015：节点身份是每 effector 节点一个 token，在拨号上出示；审批通过四个 curl 端点按摘要进行，这四个
   端点"将来挂在账户（Prism auth）之下"。
 - okm key 纪律：`Key` 字段拒绝 `String`（仅定宽）；开放名字是运行时数据，通过 registry 表
   （`#[kv_index(by_name)]`）解析，不手搓字节 key。

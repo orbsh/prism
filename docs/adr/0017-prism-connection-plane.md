@@ -22,7 +22,7 @@ user".
 
 Constraints carried over from earlier rulings:
 
-- ADR-0015: node identity is an ed25519 key per effector node; approval is by public key through four
+- ADR-0015: node identity is a token per effector node, presented on the dial; approval is by digest through four
   curl endpoints that "later hang under the account (Prism auth)".
 - okm key discipline: `Key` fields reject `String` (fixed-width only); open-ended names are runtime
   DATA resolved through registry tables (`#[kv_index(by_name)]`), never hand-rolled byte keys.

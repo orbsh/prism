@@ -1,6 +1,8 @@
-//! Node identity, trust plane data surface (ADR-0015 §4/§5, prism PLAN
-//! Phase 1.8; attribution per ADR-0015 Update 2026-09-25 — the registry
-//! lives in Prism's connection plane, never in aura).
+//! Node identity, trust plane data surface (aura ADR-0015 §4/§5 — approval by
+//! digest and the curl-first endpoint set — plus this plane's own §7 for where
+//! that surface hangs; prism ADR-0017 §7. The registry lives in Prism's
+//! connection plane, never in aura: one home, so there is no second truth to
+//! diverge from it. Labels and machine binding are prism ADR-0020.)
 //!
 //! What lands here (step 1 of the ADR's implementation order, prism's
 //! half): the node registry — `{alias, credential, status, created_at}`
@@ -57,6 +59,39 @@ pub struct Node {
     pub created_at: u64,
     /// Single-group discriminator for the registry-wide watermark.
     pub global: u32,
+    /// The names the operator gave this machine in the admin UI — `MyLaptop`, `xxServer` — one
+    /// per line. Bare, as typed: the user id is prepended at ADMISSION, on the way into the
+    /// venue's pool, because the execution layer is where two users' `MyLaptop` have to stop
+    /// colliding (aura ADR-0053). Stored bare so a rename is a rename and the history stays
+    /// attached to the machine, not to a string.
+    ///
+    /// A string rather than a list because the payload is fixed-width TLV with no sequence
+    /// type, and a name cannot contain a newline (refused at mint). Stringly for the same
+    /// reason `status` is: never indexed, tiny vocabulary, one place that splits it.
+    pub labels: String,
+    /// The user this token was minted for (empty = the installation's own node). Labels are
+    /// names, and names are per-user: it is why the prefix exists at all.
+    pub owner: String,
+    /// The machine this token is BOUND to (effector ADR-0006's `machine`), written on the
+    /// first successful registration and never changed afterwards.
+    ///
+    /// One token, one machine: a token is minted for a use ("enroll my laptop"), and the box
+    /// that presents it first owns it. Empty means unbound — either never used yet, or a node
+    /// that could not identify its hardware, which cannot be bound and says so.
+    pub machine: String,
+}
+
+impl Node {
+    /// The names as the operator typed them. One place splits the row's line-joined string, so
+    /// nothing downstream has to know how it was stored.
+    pub fn label_list(&self) -> Vec<String> {
+        self.labels
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 /// Mint one node token and the credential the registry stores for it.
@@ -91,15 +126,20 @@ use __OkmIndex_Node_by_alias as NodeByAlias;
 /// answers: `registered | pending | conflict`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// The key is approved for that alias.
-    Registered,
+    /// The key is approved for that alias, and the machine presenting it is the machine the
+    /// token belongs to (or the token was unbound until now, and this registration bound it).
+    ///
+    /// Carries the row's labels and owner because the caller is the one that hands them to the
+    /// venue's pool — prefixed there, at the execution layer, not here where they are data.
+    Registered { labels: Vec<String>, owner: String },
     /// No decision yet — a fresh claim auto-registers as pending so
     /// the operator can see and approve it (`GET /nodes` then approve);
     /// an already-pending claim stays pending (idempotent retry).
     Pending,
-    /// A DIFFERENT key holds the approved slot for this alias. Refused,
-    /// and surfaced — an enrolled key is never silently replaced.
-    Conflict,
+    /// The claim is refused, and the reason travels with it: a DIFFERENT key holds the
+    /// approved slot, or the same token arrives from a machine it is not bound to. Both are
+    /// surfaced — an enrolled key and an enrolled machine are never silently replaced.
+    Conflict { why: String },
 }
 
 /// Trust mode, a declared deployment-form switch (§7). No default: the
@@ -120,6 +160,18 @@ impl Posture {
             other => Err(anyhow!("identity: expected `required` | `open`, got `{other}`")),
         }
     }
+}
+
+/// What a claim says about itself when it first becomes a row: minted by the operator
+/// (`POST /admin/nodes`, with the names they typed), or presented by a node at the dial
+/// (`alias`, `credential`, and whichever machine it reported).
+#[derive(Default)]
+pub struct Claim {
+    pub alias: String,
+    pub credential: String,
+    pub machine: String,
+    pub labels: Vec<String>,
+    pub owner: String,
 }
 
 /// The node registry over prism's okm instance. Shares the store handle
@@ -146,12 +198,46 @@ impl NodeStore {
     /// attempt — approving the queued row is §6's rotation); a revoked
     /// row of the claimant revives to pending when nothing else holds
     /// the alias — a re-decision, never self-service.
-    pub fn verdict(&self, alias: &str, credential: &str) -> anyhow::Result<Verdict> {
+    pub fn verdict(
+        &self,
+        alias: &str,
+        credential: &str,
+        machine: &str,
+    ) -> anyhow::Result<Verdict> {
         let t = self.table();
         let rows = self.rows_of(alias)?;
         let mine = rows.iter().find(|n| n.credential == credential);
-        if mine.map(|n| n.status.as_str()) == Some("approved") {
-            return Ok(Verdict::Registered);
+        if let Some(row) = mine.filter(|n| n.status == "approved") {
+            // One token, one machine (ADR-0020): the first registration binds the token to the
+            // hardware that presented it, and every later one must come from the same machine.
+            // A node that reported no machine cannot be bound — its token then works from
+            // anywhere, and that is stated rather than pretended otherwise.
+            let mut row = row.clone();
+            if row.machine.is_empty() {
+                if machine.is_empty() {
+                    eprintln!(
+                        "node registry: '{alias}' registered without a machine id — this token \
+                         stays unbound, so it is not confined to one piece of hardware"
+                    );
+                } else {
+                    row.machine = machine.to_string();
+                    t.put(&NodeKey { id: row.id }, &row)?;
+                    eprintln!("node registry: '{alias}' token BOUND to machine `{machine}`");
+                }
+            } else if row.machine != machine {
+                return Ok(Verdict::Conflict {
+                    why: format!(
+                        "this token is bound to machine `{}`, and this node reports `{}` — a \
+                         token is minted for one use, and the box that presents it first owns it",
+                        row.machine,
+                        if machine.is_empty() { "(none)" } else { machine }
+                    ),
+                });
+            }
+            return Ok(Verdict::Registered {
+                labels: row.label_list(),
+                owner: row.owner.clone(),
+            });
         }
         let alias_taken = rows
             .iter()
@@ -159,9 +245,19 @@ impl NodeStore {
         if alias_taken {
             // Surface the attempt: queue it if it is not already a row.
             if mine.is_none() {
-                self.create(alias, credential)?;
+                self.create(&Claim {
+                    alias: alias.to_string(),
+                    credential: credential.to_string(),
+                    machine: machine.to_string(),
+                    ..Default::default()
+                })?;
             }
-            return Ok(Verdict::Conflict);
+            return Ok(Verdict::Conflict {
+                why: format!(
+                    "another token holds the approved slot for '{alias}' — an enrolled node is \
+                     never silently replaced; revoke it first"
+                ),
+            });
         }
         match mine {
             Some(n) if n.status == "pending" => Ok(Verdict::Pending),
@@ -175,7 +271,12 @@ impl NodeStore {
             // A fresh claim queues itself; a write the engine refuses is
             // reported, never read as "awaiting approval".
             None => {
-                self.create(alias, credential)?;
+                self.create(&Claim {
+                    alias: alias.to_string(),
+                    credential: credential.to_string(),
+                    machine: machine.to_string(),
+                    ..Default::default()
+                })?;
                 Ok(Verdict::Pending)
             }
         }
@@ -183,7 +284,9 @@ impl NodeStore {
 
     /// Create a pending record (the `POST /nodes` surface, and the
     /// handshake's fresh-claim path).
-    pub fn create(&self, alias: &str, credential: &str) -> anyhow::Result<Node> {
+    pub fn create(&self, claim: &Claim) -> anyhow::Result<Node> {
+        let alias = claim.alias.as_str();
+        let credential = claim.credential.as_str();
         if alias.is_empty() || credential.is_empty() {
             return Err(anyhow!("alias and credential are required"));
         }
@@ -210,6 +313,12 @@ impl NodeStore {
             status: "pending".into(),
             created_at: now_ms(),
             global: 0,
+            labels: claim.labels.join("\n"),
+            owner: claim.owner.clone(),
+            // Empty on purpose, even when the claim arrived from a node that named its box:
+            // only an APPROVED registration may write the binding, so a pending claim cannot
+            // occupy the machine slot before the operator has decided anything.
+            machine: String::new(),
         };
         t.put(&NodeKey { id: row.id }, &row)?;
         Ok(row)
@@ -319,21 +428,28 @@ mod tests {
         r.nodes()
     }
 
+    fn registered(v: Verdict) -> bool {
+        matches!(v, Verdict::Registered { .. })
+    }
+
     #[test]
     fn verdict_lifecycle() {
         let s = store();
         // Fresh claim → pending + a visible row.
-        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Pending);
+        assert_eq!(s.verdict("home-pc", "KEY-A", "box-1").unwrap(), Verdict::Pending);
         assert_eq!(s.list().unwrap().len(), 1);
         // Retry is idempotent pending (same row, no duplicate).
-        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Pending);
+        assert_eq!(s.verdict("home-pc", "KEY-A", "box-1").unwrap(), Verdict::Pending);
         assert_eq!(s.list().unwrap().len(), 1);
         // Approve by alias (unique pending) → registered.
         let approved = s.approve("home-pc", None).unwrap();
         assert_eq!(approved.credential, "KEY-A");
-        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Registered);
+        assert!(registered(s.verdict("home-pc", "KEY-A", "box-1").unwrap()));
         // A different key under the alias → conflict, never takeover.
-        assert_eq!(s.verdict("home-pc", "KEY-B").unwrap(), Verdict::Conflict);
+        assert!(matches!(
+            s.verdict("home-pc", "KEY-B", "box-2").unwrap(),
+            Verdict::Conflict { .. }
+        ));
         assert_eq!(
             s.list().unwrap().iter().find(|n| n.credential == "KEY-B").unwrap().status,
             "pending",
@@ -341,21 +457,86 @@ mod tests {
         );
         // Rotation: approve KEY-B → A demotes to revoked (§6).
         s.approve("home-pc", Some("KEY-B")).unwrap();
-        assert_eq!(s.verdict("home-pc", "KEY-B").unwrap(), Verdict::Registered);
-        assert_eq!(s.verdict("home-pc", "KEY-A").unwrap(), Verdict::Conflict);
+        assert!(registered(s.verdict("home-pc", "KEY-B", "box-2").unwrap()));
+        assert!(matches!(
+            s.verdict("home-pc", "KEY-A", "box-1").unwrap(),
+            Verdict::Conflict { .. }
+        ));
         // Revocation: B falls to revoked; a revoked key re-claiming is
         // back to pending, never self-service (the revive rewrote B).
         s.revoke("home-pc", None).unwrap();
-        assert_eq!(s.verdict("home-pc", "KEY-B").unwrap(), Verdict::Pending);
+        assert_eq!(s.verdict("home-pc", "KEY-B", "box-2").unwrap(), Verdict::Pending);
         assert_eq!(s.list().unwrap().iter().filter(|n| n.status == "pending").count(), 1, "only B revived");
         assert_eq!(s.list().unwrap().iter().filter(|n| n.status == "revoked").count(), 1, "A stays a tombstone");
     }
 
     #[test]
+    fn a_token_is_bound_to_the_first_machine_that_presents_it() {
+        let s = store();
+        // Minted by the operator: a name the humans use, and whose it is.
+        let row = s
+            .create(&Claim {
+                alias: "laptop".into(),
+                credential: "KEY".into(),
+                machine: String::new(),
+                labels: vec!["MyLaptop".into()],
+                owner: "u1".into(),
+            })
+            .unwrap();
+        assert_eq!(row.status, "pending", "minting queues; it does not enrol");
+        s.approve("laptop", None).unwrap();
+
+        // First approved registration BINDS the token to the hardware that presented it.
+        match s.verdict("laptop", "KEY", "box-7").unwrap() {
+            Verdict::Registered { labels, owner } => {
+                assert_eq!(labels, vec!["MyLaptop".to_string()]);
+                assert_eq!(owner, "u1");
+            }
+            other => panic!("expected registered, got {other:?}"),
+        }
+        assert_eq!(s.list().unwrap()[0].machine, "box-7", "the box claimed the token");
+
+        // The same machine reconnecting is the same node.
+        assert!(registered(s.verdict("laptop", "KEY", "box-7").unwrap()));
+
+        // A different machine presenting the same token: refused, and the reason names both
+        // sides — "one token, one use" is a fact about hardware, not a guess.
+        match s.verdict("laptop", "KEY", "box-9").unwrap() {
+            Verdict::Conflict { why } => {
+                assert!(why.contains("box-7"), "{why}");
+                assert!(why.contains("box-9"), "{why}");
+            }
+            other => panic!("expected conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_node_that_cannot_name_its_hardware_stays_unbound() {
+        let s = store();
+        s.create(&Claim {
+            alias: "anon".into(),
+            credential: "KEY".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        s.approve("anon", None).unwrap();
+        // No machine to bind: the token works, and the registry says out loud that it is not
+        // confined to one piece of hardware rather than inventing an identity for it.
+        assert!(registered(s.verdict("anon", "KEY", "").unwrap()));
+        assert!(s.list().unwrap()[0].machine.is_empty());
+        assert!(registered(s.verdict("anon", "KEY", "box-later").unwrap()));
+        assert_eq!(
+            s.list().unwrap()[0].machine,
+            "box-later",
+            "an unidentified first registration binds nothing; the first identified one does"
+        );
+    }
+
+    #[test]
     fn approve_is_never_a_guess() {
         let s = store();
-        s.verdict("two-pending", "K1").unwrap();
-        s.verdict("two-pending", "K2").unwrap();
+        s.verdict("two-pending", "K1", "box-a").unwrap();
+        s.verdict("two-pending", "K2", "box-b").unwrap();
         // Two pending, keyless approve → refused (the honest-cost
         // comparison is the operator's job).
         assert!(s.approve("two-pending", None).is_err());

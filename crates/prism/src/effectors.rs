@@ -57,6 +57,19 @@ where
     }
 }
 
+/// The names the pool will match on: `{user}:{label}`, or the bare label for a node that
+/// belongs to the installation rather than to a user.
+///
+/// The prefix is added HERE, at the execution layer, and not in the registry: the operator
+/// types `MyLaptop`, the registry stores `MyLaptop`, and only the address the venue matches on
+/// carries the owner. Renaming a machine therefore renames its name, not its history.
+fn prefixed(labels: &[String], owner: &str) -> Vec<String> {
+    if owner.is_empty() {
+        return labels.to_vec();
+    }
+    labels.iter().map(|l| format!("{owner}:{l}")).collect()
+}
+
 /// Serve one effector connection whose upgrade requested
 /// `/effector/{alias}`. Runs the register handshake, then the
 /// reader/writer pair, to connection end.
@@ -85,13 +98,14 @@ pub(crate) async fn serve_mounted(
     // travel inside a frame is a credential inside a frame, and the connection already carries it.
     let credential = token.as_deref().map(crate::nodes::token_credential);
 
-    let (node_alias, carriers, class) = match stream.next().await {
+    let (node_alias, carriers, class, machine) = match stream.next().await {
         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Frame>(&text)? {
             Frame::Register {
                 node_alias,
                 carriers,
                 class,
-            } if node_alias == path_alias => (node_alias, carriers, class),
+                machine,
+            } if node_alias == path_alias => (node_alias, carriers, class, machine),
             // A claim that contradicts its own URL is refused like any other, and STATED: the
             // node operator has one socket and no log on this machine, so a reason that only
             // exists in the host's log is a reason nobody can act on.
@@ -115,6 +129,11 @@ pub(crate) async fn serve_mounted(
     // THE REGISTRY, when the deployment asks for trust. `open` records nothing and says so;
     // `required` maps the verdict onto the connection, and a refusal is STATED before the
     // socket closes (an operator on the node machine has no other way to learn the reason).
+    // (labels, owner) of the token that admitted this connection: the names the operator gave
+    // the machine in the admin UI, and whose they are. Empty in `open` posture — there is no
+    // token, so there are no names, and the node is simply unplaced.
+    let mut named: Vec<String> = Vec::new();
+    let mut owner = String::new();
     match gw.posture() {
         crate::nodes::Posture::Open => {
             eprintln!(
@@ -138,9 +157,12 @@ pub(crate) async fn serve_mounted(
                     anyhow::bail!("register refused: {reason}");
                 }
             };
-            let verdict = gw.nodes().verdict(&node_alias, credential)?;
+            let verdict = gw.nodes().verdict(&node_alias, credential, &machine)?;
             match verdict {
-                crate::nodes::Verdict::Registered => {}
+                crate::nodes::Verdict::Registered { labels, owner: who } => {
+                    named = labels;
+                    owner = who;
+                }
                 crate::nodes::Verdict::Pending => {
                     let reason = format!(
                         "no approved credential for '{node_alias}' yet — this token's digest is \
@@ -149,11 +171,8 @@ pub(crate) async fn serve_mounted(
                     refuse(&mut sink, reason.clone()).await;
                     anyhow::bail!("register refused: {reason}");
                 }
-                crate::nodes::Verdict::Conflict => {
-                    let reason = format!(
-                        "another token holds the approved slot for '{node_alias}' — an enrolled \
-                         node is never silently replaced; revoke it first"
-                    );
+                crate::nodes::Verdict::Conflict { why } => {
+                    let reason = format!("'{node_alias}' refused: {why}");
                     refuse(&mut sink, reason.clone()).await;
                     anyhow::bail!("register refused: {reason}");
                 }
@@ -189,14 +208,40 @@ pub(crate) async fn serve_mounted(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
     let entry = aura_realm::ActuatorConn { sender: tx.clone(), peer };
     {
-        let mut r = realm.lock().await;
-        if let Some(old) = r.effectors.insert(node_alias.clone(), entry.clone()) {
+        // The venue's pool, not this realm's own map (aura ADR-0053): every realm the engine
+        // creates borrows it, so a job dispatched a moment later can find this node.
+        let pool = {
+            let r = realm.lock().await;
+            r.pool.clone()
+        };
+        let record = aura_realm::pool::NodeRecord {
+            alias: node_alias.clone(),
+            conn: entry.clone(),
+            carriers: carriers.clone(),
+            class,
+            machine: machine.clone(),
+            // Names become addresses here, and only here: the user id is prepended so two
+            // users' `MyLaptop` cannot collide in a placement, and the registry keeps the names
+            // bare so a rename stays a rename (aura ADR-0053, effector ADR-0006).
+            labels: prefixed(&named, &owner),
+        };
+        let admitted = pool.insert(record);
+        if let Some(old) = &admitted.displaced {
             // Alias replacement (in `open` posture a restarted container
             // must be able to reclaim its name from a stale registration).
             // Allowed — but never silent (ADR-0015 §7).
             eprintln!(
                 "effector mount: alias '{node_alias}' REPLACED — old peer {} displaced by new peer {peer:?}",
-                old.peer
+                old.conn.peer
+            );
+        }
+        if !admitted.same_machine.is_empty() {
+            // One box, two names — or a serial two nodes both claim. Nothing here decides which
+            // reading is right; saying it is the whole job (effector ADR-0006).
+            eprintln!(
+                "effector mount: machine '{}' is also connected as {}",
+                if machine.is_empty() { "(unidentified)" } else { &machine },
+                admitted.same_machine.join(", ")
             );
         }
     }
@@ -344,9 +389,10 @@ impl Drop for PresenceGuard {
         let channel = self.channel.clone();
         tokio::spawn(async move {
             let mut r = realm.lock().await;
-            if r.effectors.get(&alias).is_some_and(|conn| conn.sender.same_channel(&channel)) {
-                r.effectors.remove(&alias);
-            }
+            let pool = r.pool.clone();
+            drop(r);
+            // Identity-checked inside the pool: a reconnect that took the alias over keeps it.
+            pool.remove(&alias, &channel);
         });
     }
 }

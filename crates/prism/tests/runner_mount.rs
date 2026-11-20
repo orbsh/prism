@@ -145,24 +145,14 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     };
     let _node = tokio::spawn(effector_runtime::remote::run(config));
     for _ in 0..50 {
-        if engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("runner-node")
+        if engine.realm_set.pool().contains("runner-node")
         {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(
-        engine
-            .realm
-            .try_lock()
-            .unwrap()
-            .effectors
-            .contains_key("runner-node"),
+        engine.realm_set.pool().contains("runner-node"),
         "the node registered through /effector/<alias>"
     );
 

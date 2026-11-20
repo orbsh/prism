@@ -104,6 +104,7 @@ async fn declare(ws: &mut WsClient, alias: &str) -> Frame {
             class: effector_protocol::NodeClass::Host,
             node_alias: alias.to_string(),
             carriers: vec!["nu".into()],
+            machine: "box-test".into(),
         })
         .unwrap()
         .into(),
@@ -122,7 +123,7 @@ async fn required_admits_an_approved_token() {
 
     let mut ws = open(addr, "node1", Some(&token)).await;
     assert!(matches!(declare(&mut ws, "node1").await, Frame::Registered));
-    assert!(gw.engine.realm.lock().await.effectors.contains_key("node1"));
+    assert!(gw.engine.realm_set.pool().contains("node1"));
 }
 
 /// `required`: a token nobody minted does not get in, and the refusal says WHY and how out —
@@ -190,13 +191,7 @@ async fn open_admits_a_node_no_registry_knows() {
         declare(&mut ws, "nobody-enrolled-this").await,
         Frame::Registered
     ));
-    assert!(gw
-        .engine
-        .realm
-        .lock()
-        .await
-        .effectors
-        .contains_key("nobody-enrolled-this"));
+    assert!(gw.engine.realm_set.pool().contains("nobody-enrolled-this"));
 }
 
 /// The alias claim is stated twice (path and frame) and both must agree — and the refusal says

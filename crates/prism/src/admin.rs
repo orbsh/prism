@@ -65,10 +65,17 @@ pub(crate) fn serve_admin(nodes: &NodeStore, method: &str, path: &str, body: &[u
         // Mint: the operator names the alias, the plane invents the token and keeps only its
         // digest. This response is the ONE place the token exists in readable form (ADR-0003) —
         // hand it to the node (config `token`, or `--token` for the container form) and forget it.
-        ("POST", "/nodes") => match parse_alias(body) {
-            Ok(alias) => {
+        ("POST", "/nodes") => match parse_mint(body) {
+            Ok(mint) => {
                 let (token, credential) = crate::nodes::mint_token();
-                match nodes.create(&alias, &credential) {
+                let claim = crate::nodes::Claim {
+                    alias: mint.alias,
+                    credential,
+                    machine: String::new(),
+                    labels: mint.labels,
+                    owner: mint.owner,
+                };
+                match nodes.create(&claim) {
                     Ok(row) => {
                         let mut out = row_json(&row);
                         out["token"] = json!(token);
@@ -355,20 +362,61 @@ fn row_json(n: &crate::nodes::Node) -> serde_json::Value {
         "credential": n.credential,
         "status": n.status,
         "created_at": n.created_at,
+        // The names the operator typed, and whose they are. Reported so the listing shows what
+        // the pool will see (after the user prefix), and so a rename has an origin to compare.
+        "labels": n.labels,
+        "owner": n.owner,
+        // Which machine claimed the token. Empty = not claimed yet, or a node that could not
+        // identify its hardware.
+        "machine": n.machine,
     })
 }
 
-fn parse_alias(body: &[u8]) -> anyhow::Result<String> {
+/// What a mint request asks for: the alias the node will dial, the names the operator gives
+/// this machine in the UI, and whose names they are.
+struct Mint {
+    alias: String,
+    labels: Vec<String>,
+    owner: String,
+}
+
+/// `{ "alias": "...", "labels": ["MyLaptop"], "owner": "<user id>" }`.
+///
+/// `labels` and `owner` are optional: a node minted without a user is the installation's own,
+/// and its names are unprefixed in the pool. An empty or whitespace label is refused rather
+/// than stored — a name that cannot be said is not a name.
+fn parse_mint(body: &[u8]) -> anyhow::Result<Mint> {
     let v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| anyhow::anyhow!("body must be JSON: {e}"))?;
-    let field = |k: &str| -> anyhow::Result<String> {
-        v.get(k)
-            .and_then(|x| x.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow::anyhow!("`{k}` is required"))
+    let alias = v
+        .get("alias")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("`alias` is required"))?;
+    let labels = match v.get("labels") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let label = item
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("`labels` must be non-empty strings"))?;
+                out.push(label.to_string());
+            }
+            out
+        }
+        Some(_) => return Err(anyhow::anyhow!("`labels` must be an array of strings")),
     };
-    field("alias")
+    let owner = v
+        .get("owner")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Ok(Mint { alias, labels, owner })
 }
 
 /// The optional `credential` on approve/revoke bodies: absent (or an
