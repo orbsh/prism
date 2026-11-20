@@ -738,6 +738,17 @@ async fn dispatch(
     // of this connection — local, not on any wire.
     let asked = uplink.dest.clone();
     let data = uplink.data;
+    // A PAGE'S `dest` IS THE BARE NAME (the venue adds `ui:` on the way in and strips it on the
+    // way out). An application author who copies the plane's name sends `ui:turn.submit`, and the
+    // venue reads the marker as "this is already a view event" and paints it — it reaches no
+    // renderer and the turn never starts, which reads exactly like a broken venue. Say where the
+    // mistake is, once, at the door.
+    if let Some(bare) = asked.strip_prefix("ui:") {
+        eprintln!(
+            "prism: /channel uplink dest `{asked}` carries the plane's marker — a page addresses \
+             `{bare}` (the venue adds the marker); this uplink is not routed"
+        );
+    }
     match asked.as_str() {
         "login" | "signup" => {
             // ONE SEAM FOR BOTH LEGS: the booth proves the credential (a call — a password never
