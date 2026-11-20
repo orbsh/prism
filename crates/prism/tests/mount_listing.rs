@@ -193,14 +193,36 @@ fn the_code_base_is_an_address_a_node_can_fetch() {
     );
     let err = prism::mounts::code_base("0.0.0.0:8765").expect_err("a listener is not a destination");
     assert!(
-        format!("{err:#}").contains("PRISM_CODE_BASE"),
+        format!("{err:#}").contains("PRISM_VENUE_URL"),
         "the refusal names the fix: {err:#}"
     );
-    std::env::set_var("PRISM_CODE_BASE", "https://venue.example/code/");
+    // The ORIGIN is what a guest reads the table from and what a node is told about; the CODE base
+    // is that origin plus one path, so a deployment that names only the origin gets both.
+    assert_eq!(
+        prism::mounts::venue_origin("127.0.0.1:8765").unwrap(),
+        "http://127.0.0.1:8765"
+    );
+    assert_eq!(
+        prism::mounts::code_base("127.0.0.1:8765").unwrap(),
+        "http://127.0.0.1:8765/code"
+    );
+    std::env::set_var("PRISM_VENUE_URL", "https://venue.example/");
+    assert_eq!(
+        prism::mounts::venue_origin("0.0.0.0:8765").unwrap(),
+        "https://venue.example",
+        "the deployment's word beats derivation, and a trailing slash is not a second path"
+    );
     assert_eq!(
         prism::mounts::code_base("0.0.0.0:8765").unwrap(),
         "https://venue.example/code",
-        "the deployment's word beats derivation, and a trailing slash is not a second path"
+        "a named origin carries the code base with it"
+    );
+    std::env::set_var("PRISM_CODE_BASE", "https://cdn.example/specs/");
+    assert_eq!(
+        prism::mounts::code_base("0.0.0.0:8765").unwrap(),
+        "https://cdn.example/specs",
+        "a CDN in front of the specs is its own address"
     );
     std::env::remove_var("PRISM_CODE_BASE");
+    std::env::remove_var("PRISM_VENUE_URL");
 }

@@ -24,6 +24,14 @@ async fn main() -> anyhow::Result<()> {
     // told. Only read when mounts are declared, so a venue with no node code needs no address.
     let addr = std::env::var("PRISM_ADDR").unwrap_or_else(|_| "127.0.0.1:8765".into());
     let code_base = prism::mounts::code_base(&addr)?;
+    // THE VENUE TELLS ITS GUESTS WHERE IT IS. A booth runs inside us and needs the venue's own
+    // answer to "what can I call" (gravity ADR-0001 §7): publishing the address here means a page's
+    // turn reads the same table the CLI does, instead of a copy riding each call — and the guest
+    // inherits this process's environment, which is the only channel we have to it. An address a
+    // guest cannot use (a proxy, another name) is overridden with `PRISM_VENUE_URL`.
+    if std::env::var_os("PRISM_VENUE_URL").is_none() {
+        std::env::set_var("PRISM_VENUE_URL", prism::mounts::venue_origin(&addr)?);
+    }
     let engine_config = match (want.as_str(), cfg!(feature = "fjall")) {
         ("memory", _) => aura_config::EngineConfig {
             code_base_url: Some(code_base.clone()),

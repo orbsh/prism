@@ -221,16 +221,14 @@ impl MountDecl {
     }
 }
 
-/// WHERE A NODE FETCHES THIS VENUE'S CODE (ADR-0027, gravity ADR-0001 §4). A mount's source is a
-/// deployment artifact and the dispatch carries only its ADDRESS (content-addressed), so a venue
-/// that declares mounts and cannot serve them has declared a mount that fails on the first call —
-/// `no code_base_url configured` three layers below whoever asked. The venue serves the specs it
-/// registers at `/code/<hex>` on its own listener, so it knows its own base.
+/// THE VENUE'S OWN ADDRESS, as a guest or a node reaches it (`http://<host>:<port>`). A mount's
+/// runner reaches its node BY REFERENCE (ADR-0027) and the mount table is read from the venue
+/// (gravity ADR-0001 §7), so this one string serves both readers.
 ///
-/// A base derived from a BIND-ALL address is not one a node can fetch: `0.0.0.0` is a listener, not
-/// a destination, so that case names `PRISM_CODE_BASE` instead of guessing a hostname.
-pub fn code_base(addr: &str) -> anyhow::Result<String> {
-    if let Ok(explicit) = std::env::var("PRISM_CODE_BASE") {
+/// A BIND-ALL address is not one: `0.0.0.0` is a listener, not a destination, so that case names
+/// the override instead of guessing a hostname.
+pub fn venue_origin(addr: &str) -> anyhow::Result<String> {
+    if let Ok(explicit) = std::env::var("PRISM_VENUE_URL") {
         let explicit = explicit.trim().trim_end_matches('/').to_string();
         if !explicit.is_empty() {
             return Ok(explicit);
@@ -239,12 +237,28 @@ pub fn code_base(addr: &str) -> anyhow::Result<String> {
     let host = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
     if host.is_empty() || host == "0.0.0.0" || host == "[::]" || host == "::" {
         anyhow::bail!(
-            "PRISM_ADDR `{addr}` binds every interface, which is not an address a node can fetch \
-             from: set PRISM_CODE_BASE (e.g. `http://10.0.0.5:8765/code`) so mounts can deliver \
-             their runners (ADR-0027)"
+            "PRISM_ADDR `{addr}` binds every interface, which is not an address a node or a guest \
+             can reach: set PRISM_VENUE_URL (e.g. `http://10.0.0.5:8765`) so mounts can deliver \
+             their runners and guests can read the table (ADR-0027, gravity ADR-0001 §7)"
         );
     }
-    Ok(format!("http://{addr}/code"))
+    Ok(format!("http://{addr}"))
+}
+
+/// WHERE A NODE FETCHES THIS VENUE'S CODE (ADR-0027, gravity ADR-0001 §4). A mount's source is a
+/// deployment artifact and the dispatch carries only its ADDRESS (content-addressed), so a venue
+/// that declares mounts and cannot serve them has declared a mount that fails on the first call —
+/// `no code_base_url configured` three layers below whoever asked. The venue serves the specs it
+/// registers at `/code/<hex>` on its own listener, so it knows its own base; `PRISM_CODE_BASE`
+/// overrides it when the venue is reached under another name or behind a proxy.
+pub fn code_base(addr: &str) -> anyhow::Result<String> {
+    if let Ok(explicit) = std::env::var("PRISM_CODE_BASE") {
+        let explicit = explicit.trim().trim_end_matches('/').to_string();
+        if !explicit.is_empty() {
+            return Ok(explicit);
+        }
+    }
+    Ok(format!("{}/code", venue_origin(addr)?))
 }
 
 /// The CARRIERS the manifest expects for a node alias — the other half of the
