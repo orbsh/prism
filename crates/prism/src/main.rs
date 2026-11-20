@@ -37,8 +37,8 @@ async fn main() -> anyhow::Result<()> {
     // The shipped auth booth: the verbs stay here, the proof lives behind one call.
     Gateway::with_auth(&engine, &registry).await?;
     Gateway::with_echoes(&engine).await?;
-    // The declared node mounts (ADR-0001) — installed after construction, because the table
-    // lives on the gateway (ADR-0021). Absent PRISM_MOUNTS = no nodes.
+    // The node mounts (ADR-0001) — installed after construction, because the table lives on the
+    // gateway (ADR-0021), and derived from PRISM_LANGUAGES × the approved rows (ADR-0022).
     // The trust posture is DECLARED, never defaulted (ADR-0015 §7):
     // absent or invalid PRISM_IDENTITY is a boot error, not a guess.
     let posture_raw = std::env::var("PRISM_IDENTITY")

@@ -1,5 +1,20 @@
 //! Node mounts (gravity ADR-0001): what makes a node's language callable.
 //!
+//! THE DECLARATION SPLIT (prism ADR-0022). A mount used to be one line of a per-alias manifest, so
+//! a machine that dialled in without a line was in the pool and uncallable. Two facts had been
+//! travelling together and belong to different owners:
+//!
+//! - THE VOCABULARY — which operation languages this installation can run, each with its carrier,
+//!   runner artifact, codec and required isolation. A deployment fact, declared once, the same for
+//!   every node (`PRISM_LANGUAGES`).
+//! - THE ALIAS LIST — which machines are nodes. That list is the node registry's, already: a row
+//!   is approved or it is not.
+//!
+//! A mount is then DERIVED: one per (approved alias × vocabulary entry). Nothing a skill, an
+//! operation or a dialling robot says can add an entry to the vocabulary — the ruling in ADR-0001
+//! ("no data path mints mounts") is kept, and what a dial can do in `open` posture is stated at the
+//! dial (§`install_mounts`' counterpart in the mount handler).
+//!
 //! A mount is a `Remote` booth type. The alias names the node (its
 //! outbound dial-in connection is the only door, held by the realm) and the
 //! `runner` is a FIXED deployment artifact — the program that receives an
@@ -26,6 +41,96 @@ use aura_booth::{Body, BoothType, Encoding};
 use aura_engine::Engine;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+/// One entry of the deployment's language vocabulary: what this installation runs, and with which
+/// artifact. Per node it becomes one mount; the node chooses nothing about it.
+#[derive(Clone, Debug)]
+pub struct Language {
+    /// The OPERATION language a skill declares (`nu`, `python`) — the axis gravity routes on.
+    pub language: String,
+    /// The node facility the call runs in (`exec`, `induction`, …) — what a node can lack, which is
+    /// why the dial compares the announced carriers against this.
+    pub carrier: String,
+    /// The fixed runner deployment artifact.
+    pub runner: String,
+    pub encoding: Encoding,
+    pub requires: Option<aura_booth::Requires>,
+}
+
+impl Language {
+    pub fn from_json(v: &Value) -> anyhow::Result<Self> {
+        let s = |k: &str| -> anyhow::Result<String> {
+            v.get(k)
+                .and_then(Value::as_str)
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| anyhow::anyhow!("language entry missing string `{k}`: {v}"))
+        };
+        let encoding = match v.get("encoding").and_then(Value::as_str) {
+            None | Some("json") => Encoding::Json,
+            Some("cbor") => Encoding::Cbor,
+            Some(other) => anyhow::bail!("language entry: unknown encoding `{other}`"),
+        };
+        let requires = match v.get("requires").and_then(Value::as_str) {
+            None => None,
+            Some("container") => Some(aura_booth::Requires::Container),
+            Some("host") => Some(aura_booth::Requires::Host),
+            Some(other) => anyhow::bail!("language entry: unknown requires `{other}` (host|container)"),
+        };
+        Ok(Self {
+            language: s("language")?,
+            carrier: s("carrier")?,
+            runner: s("runner")?,
+            encoding,
+            requires,
+        })
+    }
+
+    /// The mount this vocabulary entry makes for one node. The type name is `{alias}.{language}`:
+    /// a name, not a path — nothing parses it back apart (an alias containing a dot is refused at
+    /// minting, so the pair stays unambiguous for a reader and for this construction).
+    pub fn mount_for(&self, alias: &str) -> MountDecl {
+        MountDecl {
+            type_name: format!("{alias}.{}", self.language),
+            node_alias: alias.to_string(),
+            carrier: self.carrier.clone(),
+            language: self.language.clone(),
+            requires: self.requires,
+            runner: self.runner.clone(),
+            encoding: self.encoding,
+        }
+    }
+}
+
+/// The deployment's vocabulary, from `PRISM_LANGUAGES` — a JSON array of
+/// `{language, carrier, runner, encoding?, requires?}`. Absent means this installation runs no
+/// node code, which is legal and said at boot. A MALFORMED one is a boot error: it is a deployment
+/// fact, never a default (ADR-0001).
+pub fn vocabulary_from_env() -> anyhow::Result<Vec<Language>> {
+    let Some(raw) = std::env::var("PRISM_LANGUAGES")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    let parsed: Value = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("PRISM_LANGUAGES is not JSON: {e}"))?;
+    let entries = parsed
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("PRISM_LANGUAGES must be a JSON array of entries"))?;
+    let mut out: Vec<Language> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let lang = Language::from_json(entry)?;
+        if out.iter().any(|l| l.language == lang.language) {
+            anyhow::bail!(
+                "PRISM_LANGUAGES declares `{}` twice — one language, one runner",
+                lang.language
+            );
+        }
+        out.push(lang);
+    }
+    Ok(out)
+}
 
 /// One mount declaration: (node alias × operation language) → the runner
 /// serving it.
@@ -116,24 +221,6 @@ impl MountDecl {
     }
 }
 
-/// Read the deployment manifest from `PRISM_MOUNTS` — a JSON array of mount
-/// entries. Absent or empty is legal: an install with no nodes serves echo,
-/// identity, and turns-over-memory only.
-pub fn from_env() -> anyhow::Result<Vec<MountDecl>> {
-    let Some(raw) = std::env::var("PRISM_MOUNTS")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-    else {
-        return Ok(Vec::new());
-    };
-    let parsed: Value =
-        serde_json::from_str(&raw).map_err(|e| anyhow::anyhow!("PRISM_MOUNTS is not JSON: {e}"))?;
-    let entries = parsed
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("PRISM_MOUNTS must be a JSON array of mount entries"))?;
-    entries.iter().map(MountDecl::from_json).collect()
-}
-
 /// The CARRIERS the manifest expects for a node alias — the other half of the
 /// carrier↔node fact (the dial-in frame announces what the node was BUILT
 /// with; the manifest says what its mounts' calls run in). The operation
@@ -183,7 +270,9 @@ pub fn dial_in_note(table: &MountTable, alias: &str, announced: &[String]) -> Op
 /// gravity ADR-0001's open item).
 #[derive(Debug, Default, Clone)]
 pub struct MountTable {
-    /// Every declaration, in manifest order, whether or not it registered.
+    /// The deployment's vocabulary: every mount in `decls` was derived from one of these entries.
+    pub languages: Vec<Language>,
+    /// Every declaration derived so far, whether or not it registered.
     pub decls: Vec<MountDecl>,
     /// The type names that registered.
     pub live: std::collections::BTreeSet<String>,
@@ -192,27 +281,54 @@ pub struct MountTable {
 }
 
 impl MountTable {
-    /// Read the manifest and register it. A declaration that fails is recorded, not fatal: a
-    /// venue that refuses to boot because one node's mount is wrong would take the other nodes'
-    /// work down with it (the same tolerance `with_echoes` shows for a carrier a build lacks).
-    pub async fn install(engine: &Engine) -> anyhow::Result<Self> {
-        let decls = from_env()?;
-        let mut table = Self {
-            decls,
+    /// An empty table for a vocabulary: mounts are added per alias as they are approved (or, in
+    /// `open` posture, as they dial).
+    pub fn with_vocabulary(languages: Vec<Language>) -> Self {
+        Self {
+            languages,
             ..Default::default()
-        };
-        for m in &table.decls {
-            match engine.register(m.booth_type()).await {
-                Ok(()) => {
-                    table.live.insert(m.type_name.clone());
-                }
-                Err(err) => table.refused.push(format!(
-                    "mount [{}] (alias {}) did not register: {err:#}",
-                    m.type_name, m.node_alias
-                )),
+        }
+    }
+
+    /// Derive this alias's mounts from the vocabulary, returning only the ones the table did not
+    /// hold yet. Idempotent: a second dial of the same alias adds nothing.
+    pub fn add_alias(&mut self, alias: &str) -> Vec<MountDecl> {
+        let known: std::collections::BTreeSet<&str> =
+            self.decls.iter().map(|d| d.type_name.as_str()).collect();
+        let mut added = Vec::new();
+        for lang in &self.languages {
+            let decl = lang.mount_for(alias);
+            if !known.contains(decl.type_name.as_str()) {
+                added.push(decl);
             }
         }
-        Ok(table)
+        self.decls.extend(added.iter().cloned());
+        added
+    }
+
+    /// Register declarations and record what the engine said. A failure is recorded, not fatal: a
+    /// venue that refused to boot because one node's mount is wrong would take the other nodes'
+    /// work down with it (the same tolerance `with_echoes` shows for a carrier a build lacks).
+    pub async fn register(&mut self, engine: &Engine, decls: Vec<MountDecl>) {
+        for m in decls {
+            let alias = m.node_alias.clone();
+            let name = m.type_name.clone();
+            let outcome = engine.register(m.booth_type()).await;
+            self.record(name, alias, outcome);
+        }
+    }
+
+    /// Book one registration's outcome. Split out from `register` so a caller that registers
+    /// outside the lock (the dial path) can still write the result in the same words.
+    pub fn record(&mut self, type_name: String, alias: String, outcome: anyhow::Result<()>) {
+        match outcome {
+            Ok(()) => {
+                self.live.insert(type_name);
+            }
+            Err(err) => self.refused.push(format!(
+                "mount [{type_name}] (alias {alias}) did not register: {err:#}"
+            )),
+        }
     }
 
     /// The type is declared AND registered: a declared mount whose type is not in the engine

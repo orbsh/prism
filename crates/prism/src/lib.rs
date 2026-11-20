@@ -635,17 +635,36 @@ impl Gateway {
         Ok(())
     }
 
-    /// Register the declared node mounts (ADR-0001) and KEEP them: the manifest is read from
-    /// `PRISM_MOUNTS` and replayed at every boot (mount definitions are not persisted — the
-    /// manifest is the durable form), and the table stays on the gateway so the venue can say
-    /// what a caller may address (ADR-0021) instead of every client carrying a copy of it.
+    /// Derive, register and KEEP the node mounts (ADR-0001, ADR-0022): the deployment's
+    /// vocabulary (`PRISM_LANGUAGES`) crossed with the approved registry rows, replayed at every
+    /// boot because mount definitions are not persisted — and the table stays on the gateway so
+    /// the venue can say what a caller may address (ADR-0021) instead of every client carrying a
+    /// copy of it.
     ///
     /// A method rather than a constructor: a second place that registers mounts would be a
     /// second answer to "what is callable".
     pub async fn install_mounts(&self) -> anyhow::Result<()> {
-        let table = mounts::MountTable::install(&self.engine).await?;
+        let languages = mounts::vocabulary_from_env()?;
+        let mut table = mounts::MountTable::with_vocabulary(languages);
+        // One mount per (APPROVED alias × vocabulary entry): the alias list is the node registry's,
+        // the vocabulary is the deployment's, and a mount is the product (ADR-0022). A pending or
+        // revoked row yields nothing — approval is what makes a machine callable.
+        let aliases: Vec<String> = self
+            .nodes()
+            .list()?
+            .into_iter()
+            .filter(|row| row.status == "approved")
+            .map(|row| row.alias)
+            .collect();
+        for alias in &aliases {
+            table.add_alias(alias);
+        }
+        let todo = table.decls.clone();
+        table.register(&self.engine, todo).await;
         if table.decls.is_empty() {
-            println!("prism: no node mounts declared (PRISM_MOUNTS unset) — no node is callable");
+            println!(
+                "prism: no node mounts (PRISM_LANGUAGES unset or no approved node) — no node is callable"
+            );
         } else {
             println!(
                 "prism: node mounts live: {:?}{}",
@@ -662,6 +681,45 @@ impl Gateway {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = table;
         Ok(())
+    }
+
+    /// Make one alias callable, deriving its mounts from the vocabulary the venue installed.
+    ///
+    /// Called when a node registers in `open` posture (there is no registry, so the dial IS the
+    /// alias list — the network is the boundary, and the log says the mounts were minted from it)
+    /// and, in `required` posture, never: an approved row was already turned into mounts at boot.
+    /// Returns the types that became live now, so the caller can say so.
+    pub async fn ensure_alias_mounts(&self, alias: &str) -> Vec<String> {
+        let todo = self.with_mount_table_mut(|table| table.add_alias(alias));
+        if todo.is_empty() {
+            return Vec::new();
+        }
+        // Registration is async and the table is behind a std mutex: take the declarations out,
+        // register them, then book the outcomes together (never hold a lock across an await).
+        let mut outcomes = Vec::with_capacity(todo.len());
+        for decl in todo {
+            let outcome = self.engine.register(decl.booth_type()).await;
+            outcomes.push((decl.type_name, decl.node_alias, outcome));
+        }
+        let names: Vec<String> = outcomes.iter().map(|(n, _, _)| n.clone()).collect();
+        self.with_mount_table_mut(|table| {
+            for (name, alias, outcome) in outcomes {
+                table.record(name, alias, outcome);
+            }
+        });
+        names
+    }
+
+    /// Mutate the installed table in place (mount derivation for a newly seen alias).
+    pub(crate) fn with_mount_table_mut<R>(
+        &self,
+        f: impl FnOnce(&mut mounts::MountTable) -> R,
+    ) -> R {
+        let mut table = self
+            .mounts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut table)
     }
 
     /// A snapshot of the declared mounts: the venue's own answer to "what may be called".

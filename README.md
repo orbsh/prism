@@ -48,7 +48,7 @@ No turn verb lives here. A conversation is not the venue's key: the address is a
 
 `/effector/<alias>` is the dial-in mount, and the credential rides the DIAL (`?token=…`), never a frame: the venue checks its digest before the socket is served, and the node's first frame declares shape only — `{alias, carriers, class, machine}`. `PRISM_IDENTITY=required` gates on `NodeStore::verdict` (an unapproved digest queues `pending`, another record's digest or another machine on the same token is `conflict` with its reason); `open` means no registry, and the network is the boundary. A node's identity is `(alias, token digest)`, a token binds to the first machine that registers it, and the connection never learns a user.
 
-`PRISM_MOUNTS` is a JSON manifest of mounts, replayed at every boot because `Remote` booth definitions are not persisted: each entry is `{type, alias, carrier, language, runner, encoding?}`, where `alias` must equal the dial-in path and `runner` is a FIXED deployment artifact. A skill travels as a call argument, so a new skill — or a new version of one — mints no type, no ns and no route. Absent `PRISM_MOUNTS` means no nodes. `GET /admin/mounts` publishes the table the venue holds, per mount: `registered` (the engine took the type) and `node_connected` (its node is in the pool right now), plus the declarations that failed — so a caller reads what is callable instead of carrying a copy (ADR-0021).
+`PRISM_LANGUAGES` is the deployment's vocabulary of operation languages: `[{language, carrier, runner, encoding?, requires?}]`. A mount is the PRODUCT of that vocabulary and an approved node (`{alias}.{language}`, one per language, runner fixed as the mount's source) — so a machine becomes callable when its token is approved, and it serves the WHOLE vocabulary by default: a node that lacks a runner fails on the call, which is an environment problem rather than a reason to tick boxes at minting. A pending or revoked row mints nothing. Absent `PRISM_LANGUAGES` means this installation runs no node code. A skill travels as a call argument, so a new skill — or a new version of one — mints no type, no ns and no route. `GET /admin/mounts` publishes the table the venue holds, per mount: `registered` (the engine took the type) and `node_connected` (its node is in the pool right now), plus the declarations that failed — so a caller reads what is callable instead of carrying a copy (ADR-0021).
 
 ## Configuration
 
@@ -58,7 +58,7 @@ No turn verb lives here. A conversation is not the venue's key: the address is a
 | `PRISM_ADDR` | listen address | `127.0.0.1:8765` |
 | `PRISM_DATA` | the registry directory | `./prism-data` |
 | `PRISM_ASSETS` | the renderer bundle root — the bundle IS THE ORIGIN | nothing served at `/`; the boot log says so |
-| `PRISM_MOUNTS` | the node mount manifest | no mounts |
+| `PRISM_LANGUAGES` | the language vocabulary mounts are derived from | no node code runs |
 | `PRISM_IDLE_WINDOW` | device idle window, seconds | 30 days |
 
 ## Run

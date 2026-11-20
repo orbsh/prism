@@ -183,6 +183,15 @@ pub(crate) async fn serve_mounted(
     sink.send(Message::Text(serde_json::to_string(&Frame::Registered)?))
         .await?;
 
+    // A node that may be admitted becomes CALLABLE (ADR-0022): the vocabulary is the
+    // deployment's, the alias came from the approved row (or, in `open`, from the dial itself),
+    // and the mounts are their product. Idempotent — a boot-time row adds nothing here, a row
+    // approved after boot (or an `open` alias) gets its types now instead of at the next restart.
+    let minted = gw.ensure_alias_mounts(&node_alias).await;
+    if !minted.is_empty() {
+        eprintln!("effector mount: '{node_alias}' is callable as {minted:?}");
+    }
+
     // The language↔node fact (ADR-0001): the frame announces the carriers this
     // node was built with, the manifest declares what its mounts expect. Drift
     // is stated, never silent (the same disclosure rule the alias-replacement

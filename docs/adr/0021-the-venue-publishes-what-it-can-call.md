@@ -6,9 +6,9 @@
 
 ## Context
 
-A node is callable through a mount: one `Remote` type per (alias × operation language), whose source is a fixed runner (gravity ADR-0001). The declarations live in `PRISM_MOUNTS` and are replayed at every boot, because `Remote` definitions are not persisted.
+A node is callable through a mount: one `Remote` type per (alias × operation language), whose source is a fixed runner (gravity ADR-0001). The declarations are derived from the deployment's language vocabulary and the approved node rows, and replayed at every boot, because `Remote` definitions are not persisted (ADR-0022).
 
-That leaves the table with no home a caller can ask. gravity carries its own copy in the turn's args ("the mount table travels in the turn's args, so every caller carries it"), and gravity ADR-0001 already names the consequence as open: *prism already holds the same table as `PRISM_MOUNTS`, so each further client is a drift source*.
+That leaves the table with no home a caller can ask. gravity carries its own copy in the turn's args ("the mount table travels in the turn's args, so every caller carries it"), and gravity ADR-0001 already names the consequence as open: *prism already holds the same table, so each further client is a drift source*.
 
 Two failures follow from a table nobody can read:
 

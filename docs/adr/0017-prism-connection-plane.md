@@ -261,7 +261,7 @@ reached nobody and deliveries that reached a queue but could not call the body. 
 lives in prism's own okm instance (ns 52) beside the identity tables.
 
 Booth code is not delivered through this prefix. A booth is a registered type in the running process
-(`Gateway::with_echoes` mounts the echoes and gravity's turn executor; `PRISM_MOUNTS` replays the
+(`Gateway::with_echoes` mounts the echoes and gravity's turn executor; `PRISM_LANGUAGES` + the approved node rows derive the
 declared node mounts at boot), and `/admin` is the operator's face, not a code-delivery one.
 
 No `/admin` route authenticates the operator: the interim rule is curl-first, and the deployment

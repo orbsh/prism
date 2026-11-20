@@ -6,9 +6,9 @@
 
 ## Context（背景）
 
-节点是靠 mount 可调用的：每个（alias × 操作语言）一个 `Remote` 类型，其 source 是固定 runner（gravity ADR-0001）。声明放在 `PRISM_MOUNTS`，每次启动重放，因为 `Remote` 定义不持久化。
+节点是靠 mount 可调用的：每个（alias × 操作语言）一个 `Remote` 类型，其 source 是固定 runner（gravity ADR-0001）。声明由部署的语言词表与已批准的节点行派生，每次启动重放，因为 `Remote` 定义不持久化（ADR-0022）。
 
-于是这张表没有一个调用方能问的家。gravity 自己在 turn 的 args 里带着一份副本（"mount 表随 turn 的 args 走，所以每个调用方都带一份"），而 gravity ADR-0001 已经把后果记成 open：*prism 已经持有同一张表（`PRISM_MOUNTS`），每多一个客户端多一份声明就是一个漂移源*。
+于是这张表没有一个调用方能问的家。gravity 自己在 turn 的 args 里带着一份副本（"mount 表随 turn 的 args 走，所以每个调用方都带一份"），而 gravity ADR-0001 已经把后果记成 open：*prism 已经持有同一张表，每多一个客户端多一份声明就是一个漂移源*。
 
 一张没人能读的表会带来两种失效：
 

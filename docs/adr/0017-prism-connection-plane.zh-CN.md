@@ -189,7 +189,7 @@ data}` 发 `ui:<dest>`。sender 是这条 socket 自己的身份，只查一次�
 相邻。
 
 摊位代码不从这个前缀投递。摊位是运行进程里已注册的类型（`Gateway::with_echoes` 挂上各语言 echo
-与 gravity 的 turn executor；`PRISM_MOUNTS` 在启动时重放声明的节点挂载），`/admin` 是运维的面，
+与 gravity 的 turn executor；`PRISM_LANGUAGES` 与已批准的节点行在启动时派生出节点挂载），`/admin` 是运维的面，
 不是投代码的面。
 
 `/admin` 上没有任何路由认证运维者：现行的规则是 curl-first，边界就是部署边界——启动日志里写出的

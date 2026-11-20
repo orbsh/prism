@@ -437,6 +437,14 @@ fn parse_mint(body: &[u8]) -> anyhow::Result<Mint> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow::anyhow!("`alias` is required"))?;
+    // A mount type is `{alias}.{language}`, so a dot inside the alias would make two different
+    // (alias, language) pairs spell one name. Refused where names are minted, not at the mount.
+    if alias.contains('.') {
+        return Err(anyhow::anyhow!(
+            "`alias` may not contain '.': a mount type is `{{alias}}.{{language}}`, and a dotted \
+             alias would collide with another node's language"
+        ));
+    }
     let labels = match v.get("labels") {
         None | Some(serde_json::Value::Null) => Vec::new(),
         Some(serde_json::Value::Array(items)) => {
