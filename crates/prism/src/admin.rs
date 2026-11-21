@@ -4,6 +4,11 @@
 //! `code_export`). JSON in, JSON out, one record behind it.
 //!
 //! ```text
+//! POST   /admin/tokens                   {login_name, password, alias?}
+//!                                                             → 201 {token, device_id, user_id}
+//!                                        (an account's token for an UNATTENDED caller: the password
+//!                                         is the proof, so this is login over HTTP, not an operator
+//!                                         power — no password, no token)
 //! POST   /admin/nodes                    {alias}              → 201 {token, status, created_at}
 //!                                        (the token is shown ONCE; the registry keeps its digest)
 //! GET    /admin/nodes                                            → [{alias, credential, status, created_at}]
@@ -90,6 +95,42 @@ pub(crate) fn serve_admin(
                         json_response(201, &out)
                     }
                     Err(e) => plain(400, &e.to_string()),
+                }
+            }
+            Err(e) => plain(400, &e.to_string()),
+        },
+        // A TOKEN IS AN UNATTENDED CALLER'S CREDENTIAL, and the PASSWORD is what proves it. That is
+        // the whole reason this route exists: a script has no socket to keep open for a login, and
+        // stashing a password in CI is worse than stashing a token. It hands out nothing a login
+        // would not — the same `bind_login` (device ↔ account, token rotated) — so it is login over
+        // HTTP, not an operator power: without the password it answers 401 and mints nothing.
+        ("POST", "/tokens") => match parse_login(body) {
+            Ok(login) => {
+                let accounts = crate::auth::AuthStore::new(gw.registry.store());
+                match accounts.verify(&login.login_name, &login.password) {
+                    Ok(user) => match gw.registry.new_device() {
+                        Ok(device) => {
+                            let named = match &login.alias {
+                                Some(alias) => gw.registry.set_alias(device, alias),
+                                None => Ok(()),
+                            };
+                            match named.and_then(|()| gw.registry.bind_login(device, user)) {
+                                Ok(token) => json_response(
+                                    201,
+                                    &json!({
+                                        "token": token.to_string(),
+                                        "device_id": device.to_string(),
+                                        "user_id": user.to_string(),
+                                    }),
+                                ),
+                                Err(e) => plain(500, &e.to_string()),
+                            }
+                        }
+                        Err(e) => plain(500, &e.to_string()),
+                    },
+                    // ONE ANSWER for an unknown account and a wrong password: which half was wrong
+                    // is not the caller's business (there is no account enumeration here).
+                    Err(_) => plain(401, "invalid credentials"),
                 }
             }
             Err(e) => plain(400, &e.to_string()),
@@ -421,6 +462,36 @@ struct Mint {
     alias: String,
     labels: Vec<String>,
     owner: String,
+}
+
+/// `{ "login_name": "...", "password": "...", "alias": "ci" }` — the account whose token is wanted.
+/// `alias` is optional and is the device's label, so an operator looking at a device list can tell
+/// which automation holds which token.
+fn parse_login(body: &[u8]) -> anyhow::Result<Login> {
+    let v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| anyhow::anyhow!("body must be JSON: {e}"))?;
+    let field = |name: &str| -> anyhow::Result<String> {
+        v.get(name)
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("`{name}` is required"))
+    };
+    Ok(Login {
+        login_name: field("login_name")?,
+        password: field("password")?,
+        alias: match v.get("alias").and_then(|x| x.as_str()).map(str::trim) {
+            Some(alias) if !alias.is_empty() => Some(crate::clean_alias(alias)?),
+            _ => None,
+        },
+    })
+}
+
+struct Login {
+    login_name: String,
+    password: String,
+    alias: Option<String>,
 }
 
 /// `{ "alias": "...", "labels": ["MyLaptop"], "owner": "<user id>" }`.
