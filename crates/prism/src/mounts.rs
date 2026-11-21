@@ -75,7 +75,9 @@ impl Language {
             None => None,
             Some("container") => Some(aura_booth::Requires::Container),
             Some("host") => Some(aura_booth::Requires::Host),
-            Some(other) => anyhow::bail!("language entry: unknown requires `{other}` (host|container)"),
+            Some(other) => {
+                anyhow::bail!("language entry: unknown requires `{other}` (host|container)")
+            }
         };
         Ok(Self {
             language: s("language")?,
@@ -181,7 +183,9 @@ impl MountDecl {
             None => None,
             Some("container") => Some(aura_booth::Requires::Container),
             Some("host") => Some(aura_booth::Requires::Host),
-            Some(other) => anyhow::bail!("mount manifest: unknown requires `{other}` (host|container)"),
+            Some(other) => {
+                anyhow::bail!("mount manifest: unknown requires `{other}` (host|container)")
+            }
         };
         Ok(Self {
             type_name: s("type")?,

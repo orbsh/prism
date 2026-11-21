@@ -5,7 +5,13 @@
 //! asks its registry whether that DIGEST is approved for the alias. The first frame the node
 //! sends is a declaration of shape (alias + carriers), never a proof: the authority is the
 //! connection, and a tokenless dial is refused where a registry is consulted.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::net::SocketAddr;
 
@@ -26,7 +32,9 @@ type WsClient =
 async fn boot(posture: Posture) -> (SocketAddr, std::sync::Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let gw = Gateway::with_deployment(engine, registry, posture, Deployment::default());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -106,8 +114,7 @@ async fn declare(ws: &mut WsClient, alias: &str) -> Frame {
             carriers: vec!["nu".into()],
             machine: "box-test".into(),
         })
-        .unwrap()
-        .into(),
+        .unwrap(),
     ))
     .await
     .unwrap();

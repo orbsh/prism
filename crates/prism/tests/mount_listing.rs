@@ -191,7 +191,8 @@ fn the_code_base_is_an_address_a_node_can_fetch() {
         prism::mounts::code_base("10.0.0.5:8765").unwrap(),
         "http://10.0.0.5:8765/code"
     );
-    let err = prism::mounts::code_base("0.0.0.0:8765").expect_err("a listener is not a destination");
+    let err =
+        prism::mounts::code_base("0.0.0.0:8765").expect_err("a listener is not a destination");
     assert!(
         format!("{err:#}").contains("PRISM_VENUE_URL"),
         "the refusal names the fix: {err:#}"

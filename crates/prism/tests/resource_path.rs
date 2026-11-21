@@ -40,10 +40,16 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         code_base_url: Some("http://127.0.0.1:1/code".into()),
         ..Default::default()
     };
-    let engine = aura_engine::Engine::start(&config).await.expect("engine boot");
+    let engine = aura_engine::Engine::start(&config)
+        .await
+        .expect("engine boot");
     Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
-    let gw = Gateway::new(engine.clone(), registry.clone(), prism::nodes::Posture::Open);
+    let gw = Gateway::new(
+        engine.clone(),
+        registry.clone(),
+        prism::nodes::Posture::Open,
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { gw.serve(listener).await.unwrap() });
@@ -106,10 +112,7 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         ))
         .await
         .unwrap();
-    assert!(matches!(
-        next_frame(&mut socket).await,
-        Frame::Registered
-    ));
+    assert!(matches!(next_frame(&mut socket).await, Frame::Registered));
 
     // The turn's dispatch. It carries no declaration: a resource is asked for at RUN time by the
     // script, so the call itself names nothing.
@@ -203,9 +206,7 @@ async fn a_turn_declares_a_resource_and_the_venue_mints_and_records_it() {
         .unwrap();
     let answered = call.await.expect("the call task");
     assert!(answered.is_ok(), "the dispatch answered: {answered:?}");
-
 }
-
 
 /// The management face, over HTTP: declare, read back, and the pointer it reports. This half needs
 /// no node — it is the venue's own table, and it is the only door an operator has.
@@ -235,7 +236,10 @@ async fn the_admin_face_declares_and_reads_a_resource() {
     let (status, answer, raw) = http_full(addr, "GET", "/admin/resources/object", None).await;
     assert_eq!(status, 200, "the grant reads back: {raw}");
     assert_eq!(answer["base"], "s3://test");
-    assert_eq!(answer["mode"], 1, "rw is stored as the flag the mint checks");
+    assert_eq!(
+        answer["mode"], 1,
+        "rw is stored as the flag the mint checks"
+    );
     // The credential's VALUE is nowhere in the grant: a dumped grant hands nobody a key.
     assert!(!answer.to_string().contains("ak:sk"), "{answer}");
 
@@ -247,7 +251,10 @@ async fn the_admin_face_declares_and_reads_a_resource() {
         "kind": "object", "base": "s3://test", "secret": {"name": "x", "value": "not-a-pair"},
     });
     let (status, answer) = http(addr, "POST", "/admin/resources", Some(bad.to_string())).await;
-    assert_eq!(status, 400, "an unusable credential is refused at the door: {answer}");
+    assert_eq!(
+        status, 400,
+        "an unusable credential is refused at the door: {answer}"
+    );
 }
 
 async fn http_full(
@@ -267,9 +274,20 @@ async fn http_full(
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).await.unwrap();
     let text = String::from_utf8_lossy(&raw).to_string();
-    let status = text.split_whitespace().nth(1).and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
-    let payload = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
-    (status, serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null), text)
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let payload = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    (
+        status,
+        serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+        text,
+    )
 }
 
 /// One request/response over a raw TCP connection — the admin face speaks HTTP/1.1 and closes.
@@ -295,8 +313,14 @@ async fn http(
         .nth(1)
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(0);
-    let payload = text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default();
-    (status, serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null))
+    let payload = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    (
+        status,
+        serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null),
+    )
 }
 
 async fn next_frame<S>(socket: &mut S) -> Frame

@@ -41,11 +41,7 @@ use serde_json::json;
 /// `GET /admin/dead` — the dead ring behind an HTTP read. Async because the ring lives behind the
 /// realm lock; every other `/admin` route is a plain store read. Ask this BEFORE `serve_admin`:
 /// that one claims the whole prefix and answers 404 for what it does not know.
-pub(crate) async fn serve_dead(
-    gw: &crate::Gateway,
-    method: &str,
-    path: &str,
-) -> Option<Vec<u8>> {
+pub(crate) async fn serve_dead(gw: &crate::Gateway, method: &str, path: &str) -> Option<Vec<u8>> {
     if (method, path) != ("GET", "/admin/dead") {
         return None;
     }
@@ -141,8 +137,7 @@ pub(crate) fn serve_admin(
         // because a live mount whose node is away answers "not connected" mid-job.
         ("GET", "/mounts") => {
             let pool = gw.engine.realm_set.pool();
-            let live: std::collections::BTreeSet<String> =
-                gw.live_mounts().into_iter().collect();
+            let live: std::collections::BTreeSet<String> = gw.live_mounts().into_iter().collect();
             let rows: Vec<serde_json::Value> = gw
                 .mounts()
                 .iter()
@@ -168,7 +163,10 @@ pub(crate) fn serve_admin(
                     })
                 })
                 .collect();
-            json_response(200, &json!({ "mounts": rows, "refused": gw.refused_mounts() }))
+            json_response(
+                200,
+                &json!({ "mounts": rows, "refused": gw.refused_mounts() }),
+            )
         }
         ("GET", "/nodes") => match nodes.list() {
             Ok(rows) => {
@@ -179,7 +177,10 @@ pub(crate) fn serve_admin(
             // own fault, not the operator's request — 500, with its text.
             Err(e) => plain(500, &e.to_string()),
         },
-        ("POST", other) => match other.strip_prefix("/nodes/").and_then(|a| a.strip_suffix("/approve")) {
+        ("POST", other) => match other
+            .strip_prefix("/nodes/")
+            .and_then(|a| a.strip_suffix("/approve"))
+        {
             Some(alias) => {
                 // The key is optional (unique-pending approval); empty
                 // body or absent field = None, present-but-blank = 400.
@@ -211,7 +212,6 @@ pub(crate) fn serve_admin(
     };
     Some(response)
 }
-
 
 /// `POST /admin/resources` — declare what this venue offers for one KIND, and optionally the
 /// credential that reaches it (ADR-0049: a resource is a grant, not a snapshot).
@@ -435,7 +435,10 @@ pub(crate) async fn serve_revoke(
         return Some(plain(400, "`device_id` (uuid text) is required"));
     };
     match gw.revoke_device(device_id) {
-        Ok(n) => Some(json_response(200, &json!({"device_id": device_id.to_string(), "kicked": n}))),
+        Ok(n) => Some(json_response(
+            200,
+            &json!({"device_id": device_id.to_string(), "kicked": n}),
+        )),
         Err(e) => Some(plain(409, &e.to_string())),
     }
 }
@@ -538,7 +541,11 @@ fn parse_mint(body: &[u8]) -> anyhow::Result<Mint> {
         .unwrap_or_default()
         .trim()
         .to_string();
-    Ok(Mint { alias, labels, owner })
+    Ok(Mint {
+        alias,
+        labels,
+        owner,
+    })
 }
 
 /// The optional `credential` on approve/revoke bodies: absent (or an
@@ -619,7 +626,10 @@ mod resource_surface_tests {
         assert!(err.contains("ftp"), "{err}");
         // …and `archive` is a kind a node moves now, so what gets judged is its credential: a
         // repository password, optionally behind the store's signing triple.
-        assert!(declaration_shape("archive", None).is_ok(), "no credential yet is legal");
+        assert!(
+            declaration_shape("archive", None).is_ok(),
+            "no credential yet is legal"
+        );
         assert!(declaration_shape("archive", Some("a-repository-password")).is_ok());
         let err = declaration_shape("archive", Some("ak:sk")).unwrap_err();
         assert!(err.contains("archive"), "{err}");
@@ -633,5 +643,4 @@ mod resource_surface_tests {
         assert!(parse_secret(br#"{"secret":{"name":"t"}}"#).is_err());
         assert!(parse_secret(br#"{"secret":{"name":"","value":"v"}}"#).is_err());
     }
-
 }

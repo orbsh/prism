@@ -155,7 +155,9 @@ fn reach_of(payload: &Value) -> Result<Option<Reach>, String> {
         return Ok(Some(Reach::Device(id)));
     }
     if let Some(v) = payload.get("user").filter(|v| !v.is_null()) {
-        let text = v.as_str().ok_or_else(|| format!("`user` is not text: {v}"))?;
+        let text = v
+            .as_str()
+            .ok_or_else(|| format!("`user` is not text: {v}"))?;
         let id = text
             .parse::<identity::UserId>()
             .map_err(|e| format!("`user` `{text}`: {e}"))?;
@@ -257,8 +259,12 @@ pub(crate) async fn install(
         concurrency: aura_booth::Concurrency::Queued,
     };
     match engine.register(booth).await {
-        Ok(()) => println!("prism: `{UI_PREFIX}<name>` reaches renderers (booth `{RENDERER_BOOTH}`, prefix route)"),
-        Err(e) => eprintln!("prism: the renderer booth did not register: {e} — the UI will not update"),
+        Ok(()) => println!(
+            "prism: `{UI_PREFIX}<name>` reaches renderers (booth `{RENDERER_BOOTH}`, prefix route)"
+        ),
+        Err(e) => {
+            eprintln!("prism: the renderer booth did not register: {e} — the UI will not update")
+        }
     }
 }
 
@@ -279,11 +285,20 @@ fn frame_data(gw: &Gateway, device: identity::DeviceId) -> Vec<Content<Value>> {
         // and an unbound device is a guest — not an error, and not nothing to render: the frame's
         // header says who is looking even when the answer is "nobody yet".
         let (shown, bound) = match gw.registry.device(device) {
-            Ok(Some(d)) if !d.alias.trim().is_empty() => (d.alias.clone(), !identity::is_anonymous(d.user)),
-            Ok(Some(d)) => (short_id(&device.to_string()), !identity::is_anonymous(d.user)),
+            Ok(Some(d)) if !d.alias.trim().is_empty() => {
+                (d.alias.clone(), !identity::is_anonymous(d.user))
+            }
+            Ok(Some(d)) => (
+                short_id(&device.to_string()),
+                !identity::is_anonymous(d.user),
+            ),
             _ => (short_id(&device.to_string()), false),
         };
-        let name = if bound { shown } else { format!("{shown} (guest)") };
+        let name = if bound {
+            shown
+        } else {
+            format!("{shown} (guest)")
+        };
         ops.push(json!({
             "action": "set",
             "slot": USER_SLOT,
@@ -485,7 +500,11 @@ pub(crate) fn forward(
     };
     let sender = payload
         .get("sender")
-        .and_then(|s| s.get("device").and_then(Value::as_str).or_else(|| s.as_str()))
+        .and_then(|s| {
+            s.get("device")
+                .and_then(Value::as_str)
+                .or_else(|| s.as_str())
+        })
         .map(str::to_string);
     // What it is: an operation list is DRAWN; anything else is DATA and takes the vals plane,
     // injected into the slot named by the event. Both shapes are legal on this wire and the
@@ -545,7 +564,9 @@ pub(crate) fn forward(
         eprintln!("prism: view event `{name}` carried nothing deliverable");
         return;
     }
-    let conns = conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let conns = conns
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut sent = 0usize;
     let mut awake = false;
     for c in conns.values() {
@@ -587,7 +608,12 @@ pub(crate) async fn serve(
     codec: ActiveCodec,
     identified: identity::Identified,
 ) -> anyhow::Result<()> {
-    let identity::Identified { device, user: user0, token, idle } = identified;
+    let identity::Identified {
+        device,
+        user: user0,
+        token,
+        idle,
+    } = identified;
     let (mut write, mut read) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Content<Value>>>();
     let (id, user) = gw.register_ui(tx, device, user0);
@@ -605,10 +631,15 @@ pub(crate) async fn serve(
         eprintln!("prism: /channel could not stamp activity: {e}");
     }
     if idle {
-        say(&gw, device, NOTICE_EVENT, json!({
-            "detail": "this device was silent past the idle window; log in again",
-            "reason": "idle",
-        }))
+        say(
+            &gw,
+            device,
+            NOTICE_EVENT,
+            json!({
+                "detail": "this device was silent past the idle window; log in again",
+                "reason": "idle",
+            }),
+        )
         .await;
     }
     let mut spoke_at = identity::now_ms();
@@ -718,7 +749,13 @@ pub(crate) async fn serve(
     if let Err(e) = gw.registry().touch(device) {
         eprintln!("prism: /channel could not stamp the last activity: {e}");
     }
-    say(&gw, device, DISCONNECT_EVENT, json!({ "device": device.to_string() })).await;
+    say(
+        &gw,
+        device,
+        DISCONNECT_EVENT,
+        json!({ "device": device.to_string() }),
+    )
+    .await;
     gw.unregister_ui(id);
     let _ = pump.await;
     Ok(())
@@ -753,7 +790,11 @@ async fn dispatch(
         "login" | "signup" => {
             // ONE SEAM FOR BOTH LEGS: the booth proves the credential (a call — a password never
             // rides the event plane), the venue binds the device and rotates the token.
-            let op = if asked == "signup" { crate::auth::OP_REGISTER } else { crate::auth::OP_VERIFY };
+            let op = if asked == "signup" {
+                crate::auth::OP_REGISTER
+            } else {
+                crate::auth::OP_VERIFY
+            };
             match gw.login_op(op, device, &data).await {
                 Ok((user_id, fresh)) => {
                     crate::auth_set(user, user_id);
@@ -763,16 +804,21 @@ async fn dispatch(
                     // Two speeches, both facts: `token` carries what only it can (the ROTATED
                     // credential the page must keep — the old one is dead the moment this is
                     // issued), and `login` is the lifecycle event an application binds to.
-                    say(&gw, device, TOKEN_EVENT, token_fact(device, fresh)).await;
-                    say(&gw, device, LOGIN_EVENT, json!({
-                        "device": device.to_string(),
-                        "user": user_id.to_string(),
-                    }))
+                    say(gw, device, TOKEN_EVENT, token_fact(device, fresh)).await;
+                    say(
+                        gw,
+                        device,
+                        LOGIN_EVENT,
+                        json!({
+                            "device": device.to_string(),
+                            "user": user_id.to_string(),
+                        }),
+                    )
                     .await;
                 }
                 Err(e) => {
                     eprintln!("prism: /channel {asked} refused: {e}");
-                    say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
+                    say(gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
                 }
             }
         }
@@ -788,12 +834,18 @@ async fn dispatch(
                         token
                     }
                 };
-                say(&gw, device, TOKEN_EVENT, token_fact(device, fresh)).await;
-                say(&gw, device, LOGOUT_EVENT, json!({ "device": device.to_string() })).await;
+                say(gw, device, TOKEN_EVENT, token_fact(device, fresh)).await;
+                say(
+                    gw,
+                    device,
+                    LOGOUT_EVENT,
+                    json!({ "device": device.to_string() }),
+                )
+                .await;
             }
             Err(e) => {
                 eprintln!("prism: /channel logout refused: {e}");
-                say(&gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
+                say(gw, device, NOTICE_EVENT, json!({"detail": e.to_string()})).await;
             }
         },
         // The account's own devices, on this leg too: the venue answers with a FACT (the page
@@ -810,9 +862,12 @@ async fn dispatch(
             // fact; the deployment names it.
             let chosen = crate::text_field(&json!(data), "booth")
                 .or_else(|| data.as_str().map(str::to_string));
-            let known = chosen
-                .as_ref()
-                .filter(|b| gw.deployment.shell.as_ref().is_some_and(|s| s.islands().contains(b)));
+            let known = chosen.as_ref().filter(|b| {
+                gw.deployment
+                    .shell
+                    .as_ref()
+                    .is_some_and(|s| s.islands().contains(b))
+            });
             match known {
                 Some(booth) => {
                     let who = crate::auth_get(user);
@@ -825,7 +880,7 @@ async fn dispatch(
                 }
                 None => {
                     say(
-                        &gw,
+                        gw,
                         device,
                         NOTICE_EVENT,
                         json!({"detail": format!("`{}` is not an island of this deployment", chosen.unwrap_or_default())}),
@@ -837,31 +892,35 @@ async fn dispatch(
         "devices" => match gw.device_rows(device, crate::auth_get(user)) {
             Ok(rows) => {
                 say(
-                    &gw,
+                    gw,
                     device,
                     DEVICES_EVENT,
                     json!({ "device": device.to_string(), "devices": rows }),
                 )
                 .await
             }
-            Err(e) => say(&gw, device, NOTICE_EVENT, json!({ "detail": e.to_string() })).await,
+            Err(e) => say(gw, device, NOTICE_EVENT, json!({ "detail": e.to_string() })).await,
         },
         // `alias` names THIS device: the connection's own row, so it needs no address and no
         // permission — a name is not a decision.
         "alias" => {
-            let named = crate::clean_alias(data.get("alias").and_then(Value::as_str).unwrap_or_default())
-                .and_then(|alias| gw.registry().set_alias(device, &alias).map(|()| alias));
+            let named = crate::clean_alias(
+                data.get("alias")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+            .and_then(|alias| gw.registry().set_alias(device, &alias).map(|()| alias));
             match named {
                 Ok(alias) => {
                     say(
-                        &gw,
+                        gw,
                         device,
                         ALIAS_EVENT,
                         json!({ "device": device.to_string(), "alias": alias }),
                     )
                     .await
                 }
-                Err(e) => say(&gw, device, NOTICE_EVENT, json!({ "detail": e.to_string() })).await,
+                Err(e) => say(gw, device, NOTICE_EVENT, json!({ "detail": e.to_string() })).await,
             }
         }
         other => {
@@ -870,14 +929,28 @@ async fn dispatch(
             // reached by someone it did not agree to serve — the check stays on this side of
             // delivery, not inside every booth.
             let bound = crate::auth_get(user);
-            if identity::is_anonymous(bound) && gw.requires_auth(&format!("{UI_PREFIX}{other}")).await {
+            if identity::is_anonymous(bound)
+                && gw.requires_auth(&format!("{UI_PREFIX}{other}")).await
+            {
                 eprintln!("prism: /channel event `{other}` refused: authentication required");
                 // THE VENUE KNOWS IT REFUSED, so it says so as a FACT: an application never learns
                 // this (nothing was delivered to it), and a surface that only opens on a click is a
                 // surface nobody finds at the moment it is needed. The auth booth subscribes; the
                 // notice below is for the person, this is for the platform.
-                say(&gw, device, crate::auth::AUTH_REQUIRED_FACT, json!({"event": other})).await;
-                say(&gw, device, NOTICE_EVENT, json!({"detail": format!("`{other}` requires a bound user")})).await;
+                say(
+                    gw,
+                    device,
+                    crate::auth::AUTH_REQUIRED_FACT,
+                    json!({"event": other}),
+                )
+                .await;
+                say(
+                    gw,
+                    device,
+                    NOTICE_EVENT,
+                    json!({"detail": format!("`{other}` requires a bound user")}),
+                )
+                .await;
                 return;
             }
             // THE PAGE SENDS A BARE `dest`; THE VENUE PUTS IT ON THE PLANE AS `ui:<dest>`.
@@ -943,13 +1016,15 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
     frames
         .into_iter()
         .enumerate()
-        .filter_map(|(index, frame)| match serde_json::from_value::<Content<Value>>(frame) {
-            Ok(op) => Some(op),
-            Err(e) => {
-                eprintln!("prism: {what} frame #{index} is not an Accrete operation: {e}");
-                None
-            }
-        })
+        .filter_map(
+            |(index, frame)| match serde_json::from_value::<Content<Value>>(frame) {
+                Ok(op) => Some(op),
+                Err(e) => {
+                    eprintln!("prism: {what} frame #{index} is not an Accrete operation: {e}");
+                    None
+                }
+            },
+        )
         .collect()
 }
 
@@ -1014,10 +1089,15 @@ fn token_fact(device: identity::DeviceId, token: identity::TokenId) -> Value {
 /// stays, the uplinks stop being accepted, and a login is what starts them again.
 async fn said_too_late(gw: &Gateway, device: identity::DeviceId) {
     eprintln!("prism: /channel device {device} crossed the idle window; asking for a login");
-    say(gw, device, NOTICE_EVENT, json!({
-        "detail": "this device was silent past the idle window; log in again",
-        "reason": "idle",
-    }))
+    say(
+        gw,
+        device,
+        NOTICE_EVENT,
+        json!({
+            "detail": "this device was silent past the idle window; log in again",
+            "reason": "idle",
+        }),
+    )
     .await;
 }
 

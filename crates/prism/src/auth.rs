@@ -95,7 +95,12 @@ impl AuthStore {
     /// Create the account and its verifier; returns the user id the venue will bind. The verifier is
     /// written FIRST: a half-finished registration then leaves an orphan hash rather than an account
     /// whose name is taken and which nobody can ever log into.
-    pub fn register(&self, login_name: &str, nickname: &str, password: &str) -> anyhow::Result<UserId> {
+    pub fn register(
+        &self,
+        login_name: &str,
+        nickname: &str,
+        password: &str,
+    ) -> anyhow::Result<UserId> {
         if login_name.is_empty() || password.is_empty() {
             return Err(anyhow!("a login name and a password are required"));
         }
@@ -103,12 +108,20 @@ impl AuthStore {
             return Err(anyhow!("that login name is taken"));
         }
         let id = Uuid7::now();
-        let creds = Collection::<_, UserId, Credential>::new(self.store.clone());
-        creds.put(&id, &Credential { hash: hash_password(password)? })?;
-        let accounts = Collection::<_, UserId, Account>::new(self.store.clone());
+        let creds = Collection::<_, UserId, Credential>::open(self.store.clone())?;
+        creds.put(
+            &id,
+            &Credential {
+                hash: hash_password(password)?,
+            },
+        )?;
+        let accounts = Collection::<_, UserId, Account>::open(self.store.clone())?;
         accounts.put(
             &id,
-            &Account { login_name: login_name.to_string(), nickname: nickname.to_string() },
+            &Account {
+                login_name: login_name.to_string(),
+                nickname: nickname.to_string(),
+            },
         )?;
         Ok(id)
     }
@@ -119,7 +132,7 @@ impl AuthStore {
         let (user, _) = self
             .find_account(login_name)?
             .ok_or_else(|| anyhow!("invalid credentials"))?;
-        let cred = Collection::<_, UserId, Credential>::new(self.store.clone())
+        let cred = Collection::<_, UserId, Credential>::open(self.store.clone())?
             .get_row(&user)?
             .ok_or_else(|| anyhow!("invalid credentials"))?;
         verify_password(password, &cred.hash)?;
@@ -130,17 +143,21 @@ impl AuthStore {
     /// an external IdP may have no row here at all — the screen then says "you").
     pub fn display_name(&self, user: UserId) -> anyhow::Result<Option<String>> {
         let Some(account) =
-            Collection::<_, UserId, Account>::new(self.store.clone()).get_row(&user)?
+            Collection::<_, UserId, Account>::open(self.store.clone())?.get_row(&user)?
         else {
             return Ok(None);
         };
-        Ok(Some(if account.nickname.is_empty() { account.login_name } else { account.nickname }))
+        Ok(Some(if account.nickname.is_empty() {
+            account.login_name
+        } else {
+            account.nickname
+        }))
     }
 
     /// Username → (id, row). The text lives in the index; the row verifies an exact match, because an
     /// index hit may be a prefix collision.
     pub fn find_account(&self, login_name: &str) -> anyhow::Result<Option<(UserId, Account)>> {
-        let t = Collection::<_, UserId, Account>::new(self.store.clone());
+        let t = Collection::<_, UserId, Account>::open(self.store.clone())?;
         for hit in t.scan::<AccountByName>(login_name.as_bytes()) {
             let (_, key, row) = hit?;
             if let Some(account) = row.filter(|a| a.login_name == login_name) {
@@ -224,12 +241,17 @@ async fn handle(store: FjallStore, args: Value) -> anyhow::Result<Value> {
     match op {
         OP_VERIFY => {
             let (login_name, password) = (field("login_name")?, field("password")?);
-            let user = tokio::task::spawn_blocking(move || store.verify(&login_name, &password)).await??;
+            let user =
+                tokio::task::spawn_blocking(move || store.verify(&login_name, &password)).await??;
             Ok(json!({ "user": user.to_string() }))
         }
         OP_REGISTER => {
             let (login_name, password) = (field("login_name")?, field("password")?);
-            let nickname = args.get("nickname").and_then(Value::as_str).unwrap_or("").to_string();
+            let nickname = args
+                .get("nickname")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             let user = tokio::task::spawn_blocking(move || {
                 store.register(&login_name, &nickname, &password)
             })
@@ -245,7 +267,10 @@ async fn handle(store: FjallStore, args: Value) -> anyhow::Result<Value> {
 /// handed no event name of its own (aura dispatches `(ctx, args)`).
 async fn answer(ctx: &Ctx, store: FjallStore, envelope: Value) -> anyhow::Result<Value> {
     let event = envelope.get("name").and_then(Value::as_str).unwrap_or("");
-    let device = envelope.get("device").and_then(Value::as_str).map(str::to_string);
+    let device = envelope
+        .get("device")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let data = envelope.get("data").cloned().unwrap_or(Value::Null);
     let (screen, what) = match event {
         AUTH_REQUEST => {
@@ -322,7 +347,11 @@ fn form(dest: &str, children: Vec<Value>) -> Value {
 /// serves both and neither the venue nor the shell has to know which is wanted.
 fn login_screen(mode: &str) -> Value {
     let signup = mode == "signup";
-    let mut children = vec![text(if signup { "create an account" } else { "sign in" })];
+    let mut children = vec![text(if signup {
+        "create an account"
+    } else {
+        "sign in"
+    })];
     children.push(input("login_name", "text", ""));
     children.push(input("password", "password", "password"));
     if signup {
@@ -336,10 +365,7 @@ fn login_screen(mode: &str) -> Value {
 fn signed_in_screen(who: &str) -> Value {
     form(
         "logout",
-        vec![
-            text(&format!("signed in as {who}")),
-            button("sign out"),
-        ],
+        vec![text(&format!("signed in as {who}")), button("sign out")],
     )
 }
 
@@ -374,11 +400,15 @@ mod tests {
     fn a_credential_names_a_user_and_the_verifier_has_its_own_row() {
         let s = store();
         let user = s.register("alice", "Ali", "pw-a").unwrap();
-        assert_eq!(s.verify("alice", "pw-a").unwrap(), user, "the same user id comes back");
+        assert_eq!(
+            s.verify("alice", "pw-a").unwrap(),
+            user,
+            "the same user id comes back"
+        );
         assert_eq!(s.find_account("alice").unwrap().unwrap().1.nickname, "Ali");
 
         // The verifier is a row of its own, keyed by the USER ID — not a field of the account.
-        let creds = Collection::<_, UserId, Credential>::new(s.store.clone());
+        let creds = Collection::<_, UserId, Credential>::open(s.store.clone()).unwrap();
         assert!(
             creds.get_row(&user).unwrap().is_some(),
             "ns 55 holds the hash for this user"
@@ -393,6 +423,9 @@ mod tests {
         let wrong = s.verify("alice", "nope").unwrap_err().to_string();
         let ghost = s.verify("ghost", "nope").unwrap_err().to_string();
         assert_eq!(wrong, ghost, "enumeration-free");
-        assert!(s.register("alice", "", "other").is_err(), "login_name is unique");
+        assert!(
+            s.register("alice", "", "other").is_err(),
+            "login_name is unique"
+        );
     }
 }

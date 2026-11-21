@@ -2,11 +2,7 @@
 //! register the echoes, serve WS on PRISM_ADDR (default 127.0.0.1:8765).
 
 use aura_engine::Engine;
-use prism::{
-    identity::Registry,
-    nodes::Posture,
-    Deployment, Gateway,
-};
+use prism::{identity::Registry, nodes::Posture, Deployment, Gateway};
 use tokio::net::TcpListener;
 
 #[tokio::main]

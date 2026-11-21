@@ -165,7 +165,16 @@ impl Registry {
     /// Which island this account last had open. `None` when it never chose — the shell's first
     /// island is the default, so nothing is stored for a person who never navigated.
     pub fn last_island(&self, user: UserId) -> Option<String> {
-        let table = Collection::<_, UserId, LastIsland>::new(self.store.clone());
+        // Opening is the fallible step (it attaches the declaration to the store, ADR-0074);
+        // a page that cannot read the remembered island opens on the default — the same answer
+        // a person who never chose gets — and the log keeps the reason.
+        let table = match Collection::<_, UserId, LastIsland>::open(self.store.clone()) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("prism: last island unreadable: {e} — opening the default");
+                return None;
+            }
+        };
         let row: Option<LastIsland> = table.get_row(&user).ok().flatten();
         row.map(|r| r.booth).filter(|booth| !booth.is_empty())
     }
@@ -173,9 +182,14 @@ impl Registry {
     /// Remember where they were. A failure is the caller's to log: a page opening on the default
     /// island is a worse experience, not a broken one.
     pub fn remember_island(&self, user: UserId, booth: &str) -> anyhow::Result<()> {
-        let table = Collection::<_, UserId, LastIsland>::new(self.store.clone());
+        let table = Collection::<_, UserId, LastIsland>::open(self.store.clone())?;
         table
-            .put(&user, &LastIsland { booth: booth.to_string() })
+            .put(
+                &user,
+                &LastIsland {
+                    booth: booth.to_string(),
+                },
+            )
             .map_err(|e| anyhow!("remember island: {e}"))
     }
 
@@ -189,7 +203,7 @@ impl Registry {
     /// Mint a device: a fresh uuid7 row, anonymous, no alias. Nothing is fingerprint-based, so two
     /// browsers that look identical still get two ids.
     pub fn new_device(&self) -> anyhow::Result<DeviceId> {
-        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Device>::open(self.store.clone())?;
         let id = Uuid7::now();
         let now = now_ms();
         t.put(
@@ -207,7 +221,7 @@ impl Registry {
 
     /// One device row, if it exists.
     pub fn device(&self, id: DeviceId) -> anyhow::Result<Option<Device>> {
-        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Device>::open(self.store.clone())?;
         Ok(t.get_row(&id)?)
     }
 
@@ -223,7 +237,7 @@ impl Registry {
     /// Rename a device. The alias is display only — it never participates in a decision, so two
     /// devices may share one.
     pub fn set_alias(&self, id: DeviceId, alias: &str) -> anyhow::Result<()> {
-        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Device>::open(self.store.clone())?;
         let Some(mut d) = t.get_row(&id)? else {
             return Err(anyhow!("unknown device {}", id));
         };
@@ -261,7 +275,7 @@ impl Registry {
     /// nowhere else — a booth that received a device id does not have to own a second copy of the
     /// mapping. `anonymous()` for a device that never logged in or was revoked.
     pub fn owner_of(&self, device: DeviceId) -> anyhow::Result<UserId> {
-        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Device>::open(self.store.clone())?;
         match t.get_row(&device)? {
             Some(d) => Ok(d.user),
             None => Ok(anonymous()),
@@ -272,7 +286,7 @@ impl Registry {
     /// survives — re-login is the only path back. Returns the prior binding (the caller reports
     /// it; anonymous = was anonymous).
     pub fn revoke_device(&self, device: DeviceId) -> anyhow::Result<UserId> {
-        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Device>::open(self.store.clone())?;
         let Some(mut d) = t.get_row(&device)? else {
             return Err(anyhow!("unknown device {}", device));
         };
@@ -288,7 +302,7 @@ impl Registry {
     /// ROTATION, so a leaked token does not survive the next login.
     pub fn issue_token(&self, device: DeviceId, user: UserId) -> anyhow::Result<TokenId> {
         self.revoke_tokens_of(device)?;
-        let t = Collection::<_, TokenId, Token>::new(self.store.clone());
+        let t = Collection::<_, TokenId, Token>::open(self.store.clone())?;
         let id = Uuid4::new();
         let now = now_ms();
         t.put(
@@ -307,7 +321,7 @@ impl Registry {
     /// here — the credential names who, [`Registry::idle`] decides whether that name still carries
     /// permission. A revoked row reads None and is left alone.
     pub fn resolve_token(&self, token: TokenId) -> anyhow::Result<Option<(DeviceId, UserId)>> {
-        let t = Collection::<_, TokenId, Token>::new(self.store.clone());
+        let t = Collection::<_, TokenId, Token>::open(self.store.clone())?;
         let Some(row) = t.get_row(&token)? else {
             return Ok(None);
         };
@@ -324,7 +338,7 @@ impl Registry {
 
     /// Revoke one token (a single tab's logout, or an operator's kick). Reports whether it flipped.
     pub fn revoke_token(&self, token: TokenId) -> anyhow::Result<bool> {
-        let t = Collection::<_, TokenId, Token>::new(self.store.clone());
+        let t = Collection::<_, TokenId, Token>::open(self.store.clone())?;
         let Some(mut row) = t.get_row(&token)? else {
             return Ok(false);
         };
@@ -338,7 +352,7 @@ impl Registry {
 
     /// Revoke every token of a device — rotation, logout, device revocation. Returns how many.
     pub fn revoke_tokens_of(&self, device: DeviceId) -> anyhow::Result<usize> {
-        let t = Collection::<_, TokenId, Token>::new(self.store.clone());
+        let t = Collection::<_, TokenId, Token>::open(self.store.clone())?;
         let mut n = 0usize;
         let now = now_ms();
         for hit in t.scan::<TokenByDevice>(device.encode().as_slice()) {
@@ -359,7 +373,7 @@ impl Registry {
     /// reads: ids are uuid7 (clock-ordered, so the list arrives in the order they were first seen)
     /// and the alias is what the page shows.
     pub fn devices_of(&self, user: UserId) -> anyhow::Result<Vec<(DeviceId, Device)>> {
-        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Device>::open(self.store.clone())?;
         let mut out = Vec::new();
         for hit in t.scan::<DeviceByUser>(user.encode().as_slice()) {
             let (_, key, row) = hit?;
@@ -372,7 +386,7 @@ impl Registry {
     }
 
     fn bind_device(&self, device: DeviceId, user: UserId) -> anyhow::Result<()> {
-        let t = Collection::<_, DeviceId, Device>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Device>::open(self.store.clone())?;
         if let Some(mut d) = t.get_row(&device)? {
             d.user = user;
             // A fresh authentication re-earns the device's trust: the revocation stamp clears with
@@ -389,7 +403,7 @@ impl Registry {
     /// The clock: when this device last spoke. `None` when no row exists — a device nobody has heard
     /// from is idle, which is the safe direction (the alternative would be to trust silence).
     pub fn activity(&self, device: DeviceId) -> anyhow::Result<Option<u64>> {
-        let t = Collection::<_, DeviceId, Activity>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Activity>::open(self.store.clone())?;
         Ok(t.get_row(&device)?.map(|a| a.at))
     }
 
@@ -399,7 +413,7 @@ impl Registry {
     }
 
     fn touch_at(&self, device: DeviceId, at: u64) -> anyhow::Result<()> {
-        let t = Collection::<_, DeviceId, Activity>::new(self.store.clone());
+        let t = Collection::<_, DeviceId, Activity>::open(self.store.clone())?;
         t.put(&device, &Activity { at })?;
         Ok(())
     }
@@ -463,7 +477,11 @@ mod tests {
         assert_eq!(device.encode().len(), 16);
         assert_ne!(r.new_device().unwrap(), device);
 
-        assert_eq!(r.resolve_token(Uuid4::new()).unwrap(), None, "no row, no identity");
+        assert_eq!(
+            r.resolve_token(Uuid4::new()).unwrap(),
+            None,
+            "no row, no identity"
+        );
 
         // Logout revokes the token AND clears the binding: the same token stops resolving.
         r.logout(device).unwrap();
@@ -481,13 +499,24 @@ mod tests {
         let first = r.bind_login(device, alice).unwrap();
         let second = r.bind_login(device, alice).unwrap();
         assert_ne!(first, second, "rotation mints a new token");
-        assert_eq!(r.resolve_token(first).unwrap(), None, "the old token is retired");
+        assert_eq!(
+            r.resolve_token(first).unwrap(),
+            None,
+            "the old token is retired"
+        );
         assert_eq!(r.resolve_token(second).unwrap(), Some((device, alice)));
 
         assert_eq!(r.revoke_device(device).unwrap(), alice);
         assert_eq!(r.device_user(device).unwrap(), None);
-        assert_eq!(r.resolve_token(second).unwrap(), None, "every token of the device died");
-        assert!(r.revoke_device(Uuid7::now()).is_err(), "unknown device is a refusal");
+        assert_eq!(
+            r.resolve_token(second).unwrap(),
+            None,
+            "every token of the device died"
+        );
+        assert!(
+            r.revoke_device(Uuid7::now()).is_err(),
+            "unknown device is a refusal"
+        );
 
         // Re-login re-binds and clears the stamp — the only way back.
         let third = r.bind_login(device, alice).unwrap();
@@ -508,7 +537,10 @@ mod tests {
         r.bind_login(a, alice).unwrap();
         r.bind_login(b, bob).unwrap();
         assert_ne!(alice, bob);
-        assert!(r.bind_login(a, anonymous()).is_err(), "a login must name a user");
+        assert!(
+            r.bind_login(a, anonymous()).is_err(),
+            "a login must name a user"
+        );
 
         // The "my devices" list reads the by_user index: both rows, newest last.
         let listed = r.devices_of(alice).unwrap();
@@ -517,9 +549,16 @@ mod tests {
 
         r.set_alias(a, "laptop").unwrap();
         r.set_alias(b, "laptop").unwrap();
-        assert_eq!(r.device(a).unwrap().unwrap().alias, "laptop", "aliases may repeat");
+        assert_eq!(
+            r.device(a).unwrap().unwrap().alias,
+            "laptop",
+            "aliases may repeat"
+        );
         assert_eq!(r.device(b).unwrap().unwrap().alias, "laptop");
-        assert!(r.set_alias(Uuid7::now(), "x").is_err(), "unknown device is a refusal");
+        assert!(
+            r.set_alias(Uuid7::now(), "x").is_err(),
+            "unknown device is a refusal"
+        );
     }
 
     /// Freshness is the DEVICE's clock, not the token's: a token that is still live keeps naming its
@@ -532,9 +571,15 @@ mod tests {
         let device = r.new_device().unwrap();
         let token = r.bind_login(device, Uuid7::now()).unwrap();
         r.set_alias(device, "laptop").unwrap();
-        assert!(!r.idle(device, now_ms()).unwrap(), "a device that just spoke is not idle");
+        assert!(
+            !r.idle(device, now_ms()).unwrap(),
+            "a device that just spoke is not idle"
+        );
         std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(r.idle(device, now_ms()).unwrap(), "a window of 1ms has passed");
+        assert!(
+            r.idle(device, now_ms()).unwrap(),
+            "a window of 1ms has passed"
+        );
         assert_eq!(
             r.resolve_token(token).unwrap().map(|(d, _)| d),
             Some(device),
@@ -543,7 +588,11 @@ mod tests {
         // Speaking again ends the idleness, and the alias a login restores is the one it had.
         r.touch(device).unwrap();
         assert!(!r.idle(device, now_ms()).unwrap());
-        assert_eq!(r.device(device).unwrap().unwrap().alias, "laptop", "a timeout renames nothing");
+        assert_eq!(
+            r.device(device).unwrap().unwrap().alias,
+            "laptop",
+            "a timeout renames nothing"
+        );
         // Logout keeps the id and the name and drops the binding — the page is not re-created.
         r.logout(device).unwrap();
         let row = r.device(device).unwrap().unwrap();

@@ -45,9 +45,8 @@ impl Shell {
     /// a deployment that meant to have navigation and got a page with none is worse than one that
     /// said nothing, because it looks finished.
     pub fn open(file: &Path) -> anyhow::Result<Self> {
-        let raw = std::fs::read_to_string(file).map_err(|e| {
-            anyhow::anyhow!("frame '{}' is unreadable: {e}", file.display())
-        })?;
+        let raw = std::fs::read_to_string(file)
+            .map_err(|e| anyhow::anyhow!("frame '{}' is unreadable: {e}", file.display()))?;
         let root: Value = parse(file, &raw)?;
         if !root.is_object() {
             anyhow::bail!(
@@ -66,7 +65,10 @@ impl Shell {
     /// together needs no configuration at all. Nothing found is legal and means the old
     /// arrangement: whichever application answers `ui:connect` draws the whole page.
     pub fn from_env() -> anyhow::Result<Option<Self>> {
-        if let Some(path) = std::env::var("PRISM_SHELL").ok().filter(|s| !s.trim().is_empty()) {
+        if let Some(path) = std::env::var("PRISM_SHELL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+        {
             return Ok(Some(Self::open(Path::new(path.trim()))?));
         }
         let beside = std::env::current_exe()
@@ -167,10 +169,7 @@ impl Shell {
         } else {
             format!("islands: {}", islands.join(", "))
         };
-        format!(
-            "prism: page frame ← {} ({regions})",
-            self.path.display()
-        )
+        format!("prism: page frame ← {} ({regions})", self.path.display())
     }
 }
 
@@ -183,12 +182,10 @@ fn parse(file: &Path, raw: &str) -> anyhow::Result<Value> {
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
-        Some("yaml" | "yml") => serde_yaml::from_str(raw).map_err(|e| {
-            anyhow::anyhow!("frame '{}' is not YAML: {e}", file.display())
-        }),
-        _ => serde_json::from_str(raw).map_err(|e| {
-            anyhow::anyhow!("frame '{}' is not JSON: {e}", file.display())
-        }),
+        Some("yaml" | "yml") => serde_yaml::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("frame '{}' is not YAML: {e}", file.display())),
+        _ => serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("frame '{}' is not JSON: {e}", file.display())),
     }
 }
 
@@ -227,7 +224,10 @@ mod tests {
         // should not write them twice, and a region without one falls back to its booth name —
         // readable enough to notice, ugly enough to fix.
         let regions = shell.regions();
-        assert_eq!(regions[0].label, "gravity_turn", "no label: the booth's own name");
+        assert_eq!(
+            regions[0].label, "gravity_turn",
+            "no label: the booth's own name"
+        );
         assert_eq!(regions[1].label, "资源");
         let frame = shell.create();
         assert_eq!(frame["action"], "create");
@@ -267,7 +267,10 @@ mod tests {
         let shell = Shell::open(&file).unwrap();
         assert_eq!(
             shell.regions(),
-            vec![Region { booth: "gravity-model".into(), label: "对话".into() }]
+            vec![Region {
+                booth: "gravity-model".into(),
+                label: "对话".into()
+            }]
         );
         assert_eq!(shell.islands(), vec!["gravity-model"]);
     }

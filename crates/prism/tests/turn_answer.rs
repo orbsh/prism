@@ -183,9 +183,8 @@ async fn read_run(store_url: &str, run_id: u64) -> Value {
     serde_json::from_str(body["doc"].as_str().expect("a document")).expect("a run document")
 }
 
-type WsClient = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsClient =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn connect(addr: SocketAddr) -> WsClient {
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws?protocol=json"))
@@ -245,12 +244,16 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
 
     let store_url = mem_server().await;
     // The skill: a plan with a step only a person can answer.
-    let skill: Value = post_json(&format!("{store_url}/skills/37"), json!({
+    let skill: Value = post_json(
+        &format!("{store_url}/skills/37"),
+        json!({
             "name": "ask-the-user",
             "title": "asks",
             "content": "Asks which way to go, then finishes.",
             "steps": PLAN,
-        })).await;
+        }),
+    )
+    .await;
     let skill_id = skill["node_id"].as_u64().unwrap();
 
     let (endpoint, seen) = sse_server(skill_id).await;
@@ -259,10 +262,7 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
     let mut ws = connect(addr).await;
     send(
         &mut ws,
-        &prism_protocol::Frame::new(
-            "signup",
-            json!({ "login_name": "alice", "password": "pw" }),
-        ),
+        &prism_protocol::Frame::new("signup", json!({ "login_name": "alice", "password": "pw" })),
     )
     .await;
     assert_eq!(recv(&mut ws).await.ev, "signup.result");
@@ -341,7 +341,11 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
         .iter()
         .map(|e| e["step"].as_str().unwrap_or(""))
         .collect();
-    assert_eq!(steps, vec!["ask", "done"], "the answer, then the exit: {run}");
+    assert_eq!(
+        steps,
+        vec!["ask", "done"],
+        "the answer, then the exit: {run}"
+    );
     assert_eq!(entries[0]["output"]["branch"], "left", "{run}");
 
     // And the model was asked TWICE — the answer added no round.

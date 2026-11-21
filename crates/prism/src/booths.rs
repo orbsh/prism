@@ -28,7 +28,11 @@ pub struct Echo {
 /// PTY carrier retired; nu rides the framed two-fifo adapter, so the
 /// booth's source IS the argv, pointing at the shared fixture.
 fn fixture_induction_nu() -> String {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../../effector/crates/runtime/examples/induction_nu.nu").to_string()
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../effector/crates/runtime/examples/induction_nu.nu"
+    )
+    .to_string()
 }
 
 /// The registered set; carriers absent from this build are skipped at

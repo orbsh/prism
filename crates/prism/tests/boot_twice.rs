@@ -9,6 +9,13 @@
 //! the binary as a child process (nothing is caught in-process, because the failure is not an error
 //! value), twice, and asserts no panic line appears in either run while registration still succeeds.
 #![cfg(feature = "fjall")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

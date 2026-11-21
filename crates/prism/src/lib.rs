@@ -54,15 +54,23 @@
 //! the rest of ADR-0017 — deliberately not here; README states the gap so
 //! it reads as scope, not as drift.
 
-
 // Unit tests may use the unwrap/panic vocabulary the production targets are
 // denied (a panicking test is a failing test). `cfg(test)` is on only for this
 // crate's own test build; `tests/` crates set the same line at their own root.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
+pub mod admin;
 pub mod assets;
 pub mod auth;
 pub mod booths;
-pub mod admin;
 pub mod code_export;
 pub mod effectors;
 pub mod identity;
@@ -123,11 +131,15 @@ fn auth_field(user: identity::UserId) -> AuthField {
 }
 
 pub(crate) fn auth_get(field: &AuthField) -> identity::UserId {
-    *field.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    *field
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub(crate) fn auth_set(field: &AuthField, user: identity::UserId) {
-    *field.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = user;
+    *field
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = user;
 }
 
 /// A device name, as the person typed it. Display only — it never takes part in a decision, so two
@@ -321,9 +333,7 @@ fn allowed_codecs() -> &'static [Codec] {
             Some(Codec::Json) => &JSON_ONLY,
             Some(Codec::Cbor) => &CBOR_ONLY,
             None => {
-                eprintln!(
-                    "prism: {PRISM_CODECS_ENV}=`{v}` is not `json` or `cbor` — serving both"
-                );
+                eprintln!("prism: {PRISM_CODECS_ENV}=`{v}` is not `json` or `cbor` — serving both");
                 &BOTH_CODECS
             }
         },
@@ -348,7 +358,9 @@ fn codecs_line() -> String {
 /// [`prism_protocol::negotiate`] refuses instead of falling through precisely so that this
 /// response is possible: a client that asked for a wire it will not get finds out HERE, with a
 /// status it can read, instead of reading every frame thereafter as garbage.
-fn refusal_response(refusal: &prism_protocol::Refusal) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+fn refusal_response(
+    refusal: &prism_protocol::Refusal,
+) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
     use tokio_tungstenite::tungstenite::http::{header::CONTENT_TYPE, Response, StatusCode};
     match Response::builder()
         .status(StatusCode::BAD_REQUEST)
@@ -437,10 +449,17 @@ impl Gateway {
     ) -> (u64, AuthField) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let user = auth_field(user0);
-        self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
-            id,
-            ui::UiConn { tx, device, user: Arc::clone(&user) },
-        );
+        self.ui_conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                id,
+                ui::UiConn {
+                    tx,
+                    device,
+                    user: Arc::clone(&user),
+                },
+            );
         (id, user)
     }
 
@@ -449,7 +468,12 @@ impl Gateway {
     /// no shell — the booth that answers `ui:connect` draws the whole page, and there is no island to
     /// name.
     pub(crate) fn active_island(&self, user: identity::UserId) -> Option<String> {
-        let islands = self.deployment.shell.as_ref().map(|s| s.islands()).unwrap_or_default();
+        let islands = self
+            .deployment
+            .shell
+            .as_ref()
+            .map(|s| s.islands())
+            .unwrap_or_default();
         if islands.is_empty() {
             return None;
         }
@@ -500,7 +524,10 @@ impl Gateway {
     /// once one screen has them the debt is settled (a booth draws its next screen whole).
     pub(crate) async fn flush_missed(&self, device: identity::DeviceId, user: identity::UserId) {
         let held: Vec<Held> = {
-            let mut missed = self.missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut missed = self
+                .missed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let booths: Vec<String> = missed
                 .keys()
                 .filter(|(who, _)| *who == user)
@@ -529,9 +556,17 @@ impl Gateway {
             drawn.len()
         );
         {
-            let conns = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let conns = self
+                .ui_conns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for c in conns.values() {
-                if *c.user.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != user {
+                if *c
+                    .user
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    != user
+                {
                     continue;
                 }
                 for (_name, ops) in data.iter().chain(drawn.iter()) {
@@ -558,7 +593,10 @@ impl Gateway {
     }
 
     pub(crate) fn unregister_ui(&self, id: u64) {
-        self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+        self.ui_conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
     }
 
     /// The account/device facts (the same registry the peer leg uses — identity has one home).
@@ -591,7 +629,12 @@ impl Gateway {
         let device = self.registry.new_device()?;
         let user = identity::anonymous();
         let token = self.registry.issue_token(device, user)?;
-        Ok(identity::Identified { device, user, token, idle: false })
+        Ok(identity::Identified {
+            device,
+            user,
+            token,
+            idle: false,
+        })
     }
 
     /// Register the shipped auth booth (`auth.rs`): the venue's verbs need a place to ASK whether a
@@ -773,7 +816,10 @@ impl Gateway {
         // connection of that account on both legs, or a browser and a CLI would disagree about
         // who "that person" is.
         let peers: ui::PeerDeliver = std::sync::Arc::new(
-            move |reach: Option<&ui::Reach>, sender: Option<&str>, name: &str, data: serde_json::Value| {
+            move |reach: Option<&ui::Reach>,
+                  sender: Option<&str>,
+                  name: &str,
+                  data: serde_json::Value| {
                 let Ok(conns) = peer_conns.lock() else {
                     return;
                 };
@@ -796,8 +842,12 @@ impl Gateway {
         // says where things stand. Keying by both is what lets one booth's screen arrive without
         // flushing another's frames onto a screen that is not there yet.
         let defer: ui::Defer = std::sync::Arc::new(move |booth, user, name, ops| {
-            let mut held = missed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            held.entry((user, booth.to_string())).or_default().push(name, ops);
+            let mut held = missed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            held.entry((user, booth.to_string()))
+                .or_default()
+                .push(name, ops);
         });
         // The islands the frame declares are handed to the view leg: that is the whole of what an
         // application needs to be namespaced, and the venue is the only party that knows the list.
@@ -858,6 +908,11 @@ impl Gateway {
     /// replays the head into the WS handshake (tungstenite 0.24's
     /// callback cannot emit an early non-upgrade response, so the
     /// branch lives below the upgrade machinery, not inside it).
+    ///
+    /// The handshake closure returns tungstenite's own `Result<Response, Response>`, so the
+    /// `Err` variant is a header-bearing response by contract — boxing it would change the
+    /// callback's signature, not the memory it costs.
+    #[allow(clippy::result_large_err)]
     async fn handle_conn(self: Arc<Self>, mut stream: TcpStream) -> anyhow::Result<()> {
         let Some(head) = code_export::read_head(&mut stream).await else {
             return Ok(()); // client died mid-head: nothing to serve
@@ -867,7 +922,9 @@ impl Gateway {
         // claims every path under `/admin` (answering 404 for the ones it does not
         // know), so routing it first made `POST /admin/revoke` unreachable — a dead
         // route behind a live-looking handler (found by the renderer-leg suite).
-        if let Some(response) = admin::serve_revoke(self.as_ref(), &head.method, &head.path, &head.body).await {
+        if let Some(response) =
+            admin::serve_revoke(self.as_ref(), &head.method, &head.path, &head.body).await
+        {
             let _ = stream.write_all(&response).await;
             let _ = stream.shutdown().await;
             return Ok(());
@@ -908,7 +965,11 @@ impl Gateway {
         // still raw here — the effector's WS carries no `?protocol=`
         // query, so it takes a bare accept over the prefixed stream
         // (the upgrade replaying its head), not the client handshake.
-        if let Some(alias) = head.path.strip_prefix("/effector/").filter(|a| !a.is_empty() && !a.contains('/')) {
+        if let Some(alias) = head
+            .path
+            .strip_prefix("/effector/")
+            .filter(|a| !a.is_empty() && !a.contains('/'))
+        {
             // The token rides the dial (ADR-0003): read it off the query before the socket is
             // served, and let the mount decide (a `required` plane refuses a tokenless dial).
             let token = head
@@ -983,8 +1044,15 @@ impl Gateway {
 
         // The callback ran during the handshake; `unwrap_or` only
         // guards a handshake that never reached `accept`.
-        let Handshake { codec, token, ui } =
-            hs_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(Handshake { codec: Codec::Json, token: None, ui: false });
+        let Handshake { codec, token, ui } = hs_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or(Handshake {
+                codec: Codec::Json,
+                token: None,
+                ui: false,
+            });
         let identified = self.identify(token)?;
         let (device, user0, token) = (identified.device, identified.user, identified.token);
 
@@ -1005,10 +1073,17 @@ impl Gateway {
         let (tx, rx) = mpsc::unbounded_channel::<Frame>();
 
         let user = auth_field(user0);
-        self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
-            id,
-            Conn { tx: tx.clone(), user: Arc::clone(&user), device },
-        );
+        self.conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                id,
+                Conn {
+                    tx: tx.clone(),
+                    user: Arc::clone(&user),
+                    device,
+                },
+            );
 
         // The connect answer: the device assignment frame AND the
         // (possibly restored) binding — one frame, no separate
@@ -1041,7 +1116,11 @@ impl Gateway {
         let pump = tokio::spawn(async move {
             let mut rx = rx;
             while let Some(frame) = rx.recv().await {
-                if write.send(Message::Binary(codec.encode(&frame))).await.is_err() {
+                if write
+                    .send(Message::Binary(codec.encode(&frame)))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1051,13 +1130,19 @@ impl Gateway {
             // dropped write half.
             let _ = write.send(Message::Close(None)).await;
             let _ = write.flush().await;
-            conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+            conns
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
         });
 
         let result = self.inbound(id, &mut read, codec).await;
         pump.abort();
         let _ = pump.await;
-        self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+        self.conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
         result
     }
 
@@ -1065,7 +1150,7 @@ impl Gateway {
         &self,
         id: u64,
         read: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-              + Unpin),
+                  + Unpin),
         codec: Codec,
     ) -> anyhow::Result<()> {
         while let Some(msg) = read.next().await {
@@ -1078,7 +1163,10 @@ impl Gateway {
             let frame = match codec.decode(&bytes) {
                 Ok(f) => f,
                 Err(e) => {
-                    self.send_to(id, Frame::new("error", serde_json::json!({"message": e.to_string()})));
+                    self.send_to(
+                        id,
+                        Frame::new("error", serde_json::json!({"message": e.to_string()})),
+                    );
                     continue;
                 }
             };
@@ -1111,14 +1199,25 @@ impl Gateway {
                 // itself as an error value — the socket stays up.
                 match self.registry.logout(device) {
                     Ok(()) => {
-                        if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
+                        if let Some(conn) = self
+                            .conns
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get(&id)
+                        {
                             auth_set(&conn.user, identity::anonymous());
                         }
-                        self.send_to(id, Frame::new("logout.result", serde_json::json!({"ok": true})));
+                        self.send_to(
+                            id,
+                            Frame::new("logout.result", serde_json::json!({"ok": true})),
+                        );
                     }
                     Err(e) => self.send_to(
                         id,
-                        Frame::new("error", serde_json::json!({"ev": "logout", "message": e.to_string()})),
+                        Frame::new(
+                            "error",
+                            serde_json::json!({"ev": "logout", "message": e.to_string()}),
+                        ),
                     ),
                 }
                 return;
@@ -1146,8 +1245,12 @@ impl Gateway {
             }
             "alias" => {
                 let device = self.identities(id).0;
-                let named = clean_alias(args.get("alias").and_then(|v| v.as_str()).unwrap_or_default())
-                    .and_then(|alias| self.registry.set_alias(device, &alias).map(|()| alias));
+                let named = clean_alias(
+                    args.get("alias")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                )
+                .and_then(|alias| self.registry.set_alias(device, &alias).map(|()| alias));
                 match named {
                     Ok(alias) => self.send_to(
                         id,
@@ -1172,7 +1275,10 @@ impl Gateway {
                 return;
             }
             "ping" => {
-                self.send_to(id, Frame::new("ping.result", serde_json::json!({"pong": true})));
+                self.send_to(
+                    id,
+                    Frame::new("ping.result", serde_json::json!({"pong": true})),
+                );
                 return;
             }
             _ => {}
@@ -1205,7 +1311,10 @@ impl Gateway {
                 eprintln!("prism: `{ev}` did not reach the plane: {e}");
                 self.send_to(
                     id,
-                    Frame::new("error", serde_json::json!({"ev": ev, "message": e.to_string()})),
+                    Frame::new(
+                        "error",
+                        serde_json::json!({"ev": ev, "message": e.to_string()}),
+                    ),
                 );
             }
             return;
@@ -1236,7 +1345,10 @@ impl Gateway {
             "sender": self.sender_json(device, user),
             "args": args,
         });
-        let target = InstanceId { booth_type: ev.clone(), key: InstanceKey::Named("ws".into()) };
+        let target = InstanceId {
+            booth_type: ev.clone(),
+            key: InstanceKey::Named("ws".into()),
+        };
         let payload = match self.engine.call(target, &ev, envelope).await {
             Ok(Waited::Done(Ok(v))) => Ok(v),
             Ok(Waited::Done(Err(e))) => Err(e.to_string()),
@@ -1247,9 +1359,10 @@ impl Gateway {
         };
         match payload {
             Ok(v) => self.send_to(id, Frame::new(format!("{ev}.result"), v)),
-            Err(message) => {
-                self.send_to(id, Frame::new("error", serde_json::json!({"ev": ev, "message": message})))
-            }
+            Err(message) => self.send_to(
+                id,
+                Frame::new("error", serde_json::json!({"ev": ev, "message": message})),
+            ),
         }
     }
 
@@ -1267,7 +1380,10 @@ impl Gateway {
         self.registry.revoke_device(device_id)?;
         let mut kicked = 0;
         let mut dead = Vec::new();
-        let mut conns = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut conns = self
+            .conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (id, c) in conns.iter() {
             if c.device == device_id {
                 auth_set(&c.user, identity::anonymous());
@@ -1294,7 +1410,10 @@ impl Gateway {
         // The renderer's leg carries the same auth field, so it is cleared and kicked by the
         // same act: clearing only the peer table would leave a revoked device watching a
         // browser tab that still believes it is logged in.
-        let mut ui = self.ui_conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut ui = self
+            .ui_conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut ui_dead = Vec::new();
         for (id, c) in ui.iter() {
             if c.device == device_id {
@@ -1308,8 +1427,6 @@ impl Gateway {
         }
         Ok(kicked)
     }
-
-
 
     /// One login, from both legs: ASK the auth booth, then do the venue's own act. The ask is a CALL,
     /// never an event — an emit is persisted as an MQ row (aura `realm/src/events.rs`) and a payload
@@ -1333,7 +1450,11 @@ impl Gateway {
             booth_type: auth::AUTH_BOOTH.to_string(),
             key: InstanceKey::Singleton,
         };
-        let answer = match self.engine.call(target, op, serde_json::Value::Object(payload)).await {
+        let answer = match self
+            .engine
+            .call(target, op, serde_json::Value::Object(payload))
+            .await
+        {
             Ok(Waited::Done(Ok(v))) => v,
             Ok(Waited::Done(Err(e))) => return Err(anyhow::anyhow!("{e}")),
             Ok(Waited::Pending(_)) => {
@@ -1366,10 +1487,19 @@ impl Gateway {
     /// ordinary `<ev>.result` frames; failures are error values.
     async fn auth_event(&self, id: u64, ev: &str, args: serde_json::Value) {
         let device = self.identities(id).0;
-        let op = if ev == "signup" { auth::OP_REGISTER } else { auth::OP_VERIFY };
+        let op = if ev == "signup" {
+            auth::OP_REGISTER
+        } else {
+            auth::OP_VERIFY
+        };
         match self.login_op(op, device, &args).await {
             Ok((user_id, token)) => {
-                if let Some(conn) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
+                if let Some(conn) = self
+                    .conns
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&id)
+                {
                     auth_set(&conn.user, user_id);
                 }
                 // A signature-in makes its screen owed whatever the account missed while nobody
@@ -1386,9 +1516,13 @@ impl Gateway {
                     ),
                 );
             }
-            Err(e) => {
-                self.send_to(id, Frame::new("error", serde_json::json!({"ev": ev, "message": e.to_string()})))
-            }
+            Err(e) => self.send_to(
+                id,
+                Frame::new(
+                    "error",
+                    serde_json::json!({"ev": ev, "message": e.to_string()}),
+                ),
+            ),
         }
     }
 
@@ -1434,7 +1568,6 @@ impl Gateway {
             .any(|route| route.auth)
     }
 
-
     /// WHO SENT IT, as the venue knows it: the device, the account, and the account's NAME.
     ///
     /// The name belongs here and only here. A booth writes rows into a memory store that has its own
@@ -1461,7 +1594,10 @@ impl Gateway {
     }
 
     fn identities(&self, id: u64) -> (identity::DeviceId, identity::UserId) {
-        let guard = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.get(&id) {
             Some(c) => (c.device, auth_get(&c.user)),
             None => (identity::DeviceId::default(), identity::anonymous()),
@@ -1477,7 +1613,7 @@ impl Gateway {
             // Selection is a predicate READ; retain is only for dead
             // senders. (Conflating them evicted anonymous connections
             // on the first auth-only fan-out.)
-            for (_, c) in conns.iter() {
+            for c in conns.values() {
                 if !auth_only || !identity::is_anonymous(auth_get(&c.user)) {
                     let _ = c.tx.send(frame.clone());
                 }
@@ -1487,7 +1623,12 @@ impl Gateway {
     }
 
     fn send_to(&self, id: u64, frame: Frame) {
-        if let Some(c) = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id) {
+        if let Some(c) = self
+            .conns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+        {
             let _ = c.tx.send(frame);
         }
     }

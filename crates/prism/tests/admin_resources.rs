@@ -25,7 +25,9 @@ use tokio::net::{TcpListener, TcpStream};
 async fn boot() -> std::net::SocketAddr {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -54,7 +56,10 @@ async fn request(
     let resp = String::from_utf8_lossy(&buf).into_owned();
     let status: u16 = resp[9..12].parse().unwrap();
     let body_part = resp.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
-    (status, serde_json::from_str(body_part).unwrap_or(serde_json::Value::Null))
+    (
+        status,
+        serde_json::from_str(body_part).unwrap_or(serde_json::Value::Null),
+    )
 }
 
 /// The same request, keeping the body as text: refusals are sentences, not JSON.
@@ -87,7 +92,11 @@ async fn grants_are_listed_read_and_withdrawn() {
 
     let (_status, body) = request(addr, "GET", "/admin/resources", None).await;
     assert_eq!(_status, 200, "{body}");
-    assert_eq!(body, json!([]), "nothing declared yet, and the listing says so");
+    assert_eq!(
+        body,
+        json!([]),
+        "nothing declared yet, and the listing says so"
+    );
 
     let (status, body) = request(
         addr,
@@ -104,7 +113,10 @@ async fn grants_are_listed_read_and_withdrawn() {
     .await;
     assert_eq!(status, 201, "{body}");
     assert_eq!(body["base"], "ssh://git.example/team");
-    assert_eq!(body["mode"], 1, "rw is stored as the number the row indexes on");
+    assert_eq!(
+        body["mode"], 1,
+        "rw is stored as the number the row indexes on"
+    );
 
     let (status, body) = request(addr, "GET", "/admin/resources", None).await;
     assert_eq!(status, 200, "{body}");
@@ -127,7 +139,11 @@ async fn grants_are_listed_read_and_withdrawn() {
     assert_eq!(body["revoked"], "git");
 
     let (_, body) = request(addr, "GET", "/admin/resources", None).await;
-    assert_eq!(body, json!([]), "withdrawn means gone from the listing: {body}");
+    assert_eq!(
+        body,
+        json!([]),
+        "withdrawn means gone from the listing: {body}"
+    );
     let (status, _) = request(addr, "GET", "/admin/resources/git", None).await;
     assert_eq!(status, 404, "and unreadable by name");
     let (status, _) = request(addr, "DELETE", "/admin/resources/git", None).await;
@@ -210,6 +226,10 @@ async fn a_kind_no_node_can_move_is_refused_at_the_door() {
     let (status, body) = request(addr, "GET", "/admin/resources", None).await;
     assert_eq!(status, 200, "{body}");
     let rows = body.as_array().expect("a listing is an array");
-    assert_eq!(rows.len(), 1, "only the accepted declaration is stored: {body}");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the accepted declaration is stored: {body}"
+    );
     assert_eq!(rows[0]["kind"], "archive");
 }

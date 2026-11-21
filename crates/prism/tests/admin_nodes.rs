@@ -6,7 +6,13 @@
 //! the WS regression (the admin branch must not swallow upgrades) and
 //! the posture wiring (the boot declares `open` in its log; the type
 //! has no default to inherit).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
 use prism::{
@@ -22,7 +28,9 @@ async fn boot() -> (std::net::SocketAddr, NodeStore) {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
     let nodes = registry.nodes();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -62,7 +70,12 @@ async fn request(
 
 /// Raw request returning the whole response text (for asserting the
 /// human-readable error bodies).
-async fn raw(addr: std::net::SocketAddr, method: &str, path: &str, body: Option<serde_json::Value>) -> String {
+async fn raw(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> String {
     let mut s = TcpStream::connect(addr).await.unwrap();
     let head = match &body {
         Some(b) => format!(
@@ -85,8 +98,13 @@ async fn approval_lifecycle_over_http() {
     let (addr, nodes) = boot().await;
 
     // POST /admin/nodes → 201 + the pending row AND the token, shown once.
-    let (status, _, created) = request(addr, "POST", "/admin/nodes", Some(json!({"alias": "home-pc"})))
-        .await;
+    let (status, _, created) = request(
+        addr,
+        "POST",
+        "/admin/nodes",
+        Some(json!({"alias": "home-pc"})),
+    )
+    .await;
     assert_eq!(status, 201);
     assert_eq!(created["status"], "pending");
     assert!(created["created_at"].as_u64().unwrap() > 0);
@@ -112,13 +130,23 @@ async fn approval_lifecycle_over_http() {
     ));
     assert!(matches!(
         nodes
-            .verdict("home-pc", &prism::nodes::token_credential("some-other-token"), "box-other")
+            .verdict(
+                "home-pc",
+                &prism::nodes::token_credential("some-other-token"),
+                "box-other"
+            )
             .unwrap(),
         Verdict::Conflict { .. }
     ));
 
     // Rotation: mint + approve a second token → the first demotes (§6).
-    let (_, _, second) = request(addr, "POST", "/admin/nodes", Some(json!({"alias": "home-pc"}))).await;
+    let (_, _, second) = request(
+        addr,
+        "POST",
+        "/admin/nodes",
+        Some(json!({"alias": "home-pc"})),
+    )
+    .await;
     let second_token = second["token"].as_str().unwrap().to_string();
     let second_id = prism::nodes::token_credential(&second_token);
     let (status, _, _) = request(
@@ -146,7 +174,10 @@ async fn approval_lifecycle_over_http() {
     let (status, _, rows) = request(addr, "GET", "/admin/nodes", None).await;
     assert_eq!(status, 200);
     assert!(
-        rows.as_array().unwrap().iter().all(|r| r["status"] == "revoked"),
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["status"] == "revoked"),
         "tombstones survive the revoke: {rows}"
     );
 }
@@ -165,7 +196,10 @@ async fn failures_are_the_machines_answer() {
     request(addr, "POST", "/admin/nodes", Some(json!({"alias": "amb"}))).await;
     let resp = raw(addr, "POST", "/admin/nodes/amb/approve", None).await;
     assert!(resp.starts_with("HTTP/1.1 409"), "{resp}");
-    assert!(resp.contains("no unique pending"), "the reason travels for the human: {resp}");
+    assert!(
+        resp.contains("no unique pending"),
+        "the reason travels for the human: {resp}"
+    );
 
     let (status, _, _) = request(addr, "POST", "/admin/nodes/ghost/approve", None).await;
     assert_eq!(status, 409);
@@ -184,9 +218,8 @@ async fn ws_and_fallthrough_coexist() {
 
     let (addr, _) = boot().await;
     // WS: upgrade + echo (the head replay path is untouched by admin).
-    let ev_of = |bytes: &[u8]| -> String {
-        Codec::Json.decode(bytes).map(|f| f.ev).unwrap_or_default()
-    };
+    let ev_of =
+        |bytes: &[u8]| -> String { Codec::Json.decode(bytes).map(|f| f.ev).unwrap_or_default() };
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws?protocol=json"))
         .await
         .expect("ws handshake");
@@ -199,7 +232,7 @@ async fn ws_and_fallthrough_coexist() {
         }
     }
     ws.send(Message::Text(
-        serde_json::to_string(&Frame::new("echo_steel", json!({"x": 1}))).unwrap().into(),
+        serde_json::to_string(&Frame::new("echo_steel", json!({"x": 1}))).unwrap(),
     ))
     .await
     .unwrap();
@@ -221,7 +254,9 @@ async fn ws_and_fallthrough_coexist() {
 async fn a_failed_delivery_is_readable_over_http() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     engine
         .register(aura_booth::BoothType::script(
@@ -251,7 +286,10 @@ async fn a_failed_delivery_is_readable_over_http() {
             .find(|r| r["reason"] == "delivery-failed" && r["event"] == "ui:missing")
         {
             assert_eq!(row["data"]["entry"], "no_such_fn", "{row}");
-            assert!(row["data"]["error"].as_str().is_some_and(|e| !e.is_empty()), "{row}");
+            assert!(
+                row["data"]["error"].as_str().is_some_and(|e| !e.is_empty()),
+                "{row}"
+            );
             return;
         }
     }

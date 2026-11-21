@@ -31,7 +31,7 @@
 
 use anyhow::anyhow;
 use okm_core::document::Collection;
-use okm_core::{Document, DocumentEncode, KeyEncode, ReduceCodec};
+use okm_core::{Document, DocumentEncode, KeyEncode};
 
 /// The node table (prism instance, ns 52 — beside Account 50 / Device 51).
 #[derive(KeyEncode, Clone, PartialEq, Debug, Default)]
@@ -55,7 +55,7 @@ pub struct Node {
     /// indexed and the vocabulary is tiny; the transitions below are
     /// the only writers.
     pub status: String,
-        /// Epoch milliseconds at record creation.
+    /// Epoch milliseconds at record creation.
     pub created_at: u64,
     /// Single-group discriminator for the registry-wide watermark.
     pub global: u32,
@@ -102,8 +102,8 @@ impl Node {
 /// nothing here; what matters is that the registry never holds the token, so a dump of the node
 /// table is not a set of keys. The token is returned to the operator ONCE, at minting.
 pub fn mint_token() -> (String, String) {
-    use base64::Engine as _;
     use argon2::password_hash::rand_core::RngCore as _;
+    use base64::Engine as _;
     let mut bytes = [0u8; 32];
     argon2::password_hash::rand_core::OsRng.fill_bytes(&mut bytes);
     let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
@@ -117,7 +117,6 @@ pub fn token_credential(token: &str) -> String {
     use sha2::Digest as _;
     hex::encode(sha2::Sha256::digest(token.as_bytes()))
 }
-
 
 use __OkmIndex_Node_by_alias as NodeByAlias;
 
@@ -157,7 +156,9 @@ impl Posture {
         match v {
             "required" => Ok(Posture::Required),
             "open" => Ok(Posture::Open),
-            other => Err(anyhow!("identity: expected `required` | `open`, got `{other}`")),
+            other => Err(anyhow!(
+                "identity: expected `required` | `open`, got `{other}`"
+            )),
         }
     }
 }
@@ -186,8 +187,10 @@ impl NodeStore {
         Self { store }
     }
 
-    fn table(&self) -> Collection<okm_core::FjallStore, NodeKey, Node> {
-        Collection::new(self.store.clone())
+    fn table(&self) -> anyhow::Result<Collection<okm_core::FjallStore, NodeKey, Node>> {
+        // Opening attaches the declaration to the store and refuses a store of another
+        // generation (ADR-0074): the only way in, and it is fallible.
+        Ok(Collection::open(self.store.clone())?)
     }
 
     /// Handshake verdict for `required` mode. Unknown claims become
@@ -198,13 +201,8 @@ impl NodeStore {
     /// attempt — approving the queued row is §6's rotation); a revoked
     /// row of the claimant revives to pending when nothing else holds
     /// the alias — a re-decision, never self-service.
-    pub fn verdict(
-        &self,
-        alias: &str,
-        credential: &str,
-        machine: &str,
-    ) -> anyhow::Result<Verdict> {
-        let t = self.table();
+    pub fn verdict(&self, alias: &str, credential: &str, machine: &str) -> anyhow::Result<Verdict> {
+        let t = self.table()?;
         let rows = self.rows_of(alias)?;
         let mine = rows.iter().find(|n| n.credential == credential);
         if let Some(row) = mine.filter(|n| n.status == "approved") {
@@ -230,7 +228,11 @@ impl NodeStore {
                         "this token is bound to machine `{}`, and this node reports `{}` — a \
                          token is minted for one use, and the box that presents it first owns it",
                         row.machine,
-                        if machine.is_empty() { "(none)" } else { machine }
+                        if machine.is_empty() {
+                            "(none)"
+                        } else {
+                            machine
+                        }
                     ),
                 });
             }
@@ -290,7 +292,7 @@ impl NodeStore {
         if alias.is_empty() || credential.is_empty() {
             return Err(anyhow!("alias and credential are required"));
         }
-        let t = self.table();
+        let t = self.table()?;
         // Same (alias, key) already live → idempotent (return the row).
         if let Some(existing) = self
             .rows_of(alias)?
@@ -329,10 +331,12 @@ impl NodeStore {
     /// (an ambiguous queue is refused, never guessed). Approval rotates:
     /// a previously approved key for the alias falls to `revoked` (§6).
     pub fn approve(&self, alias: &str, credential: Option<&str>) -> anyhow::Result<Node> {
-        let t = self.table();
+        let t = self.table()?;
         let rows = self.rows_of(alias)?;
         let target = match credential {
-            Some(k) => rows.iter().find(|n| n.credential == k && n.status != "revoked"),
+            Some(k) => rows
+                .iter()
+                .find(|n| n.credential == k && n.status != "revoked"),
             None => {
                 let mut pending = rows.iter().filter(|n| n.status == "pending");
                 let first = pending.next();
@@ -346,7 +350,10 @@ impl NodeStore {
         }
         .ok_or_else(|| anyhow!("no such record for `{alias}`"))?
         .clone();
-        for old in rows.iter().filter(|n| n.status == "approved" && n.id != target.id) {
+        for old in rows
+            .iter()
+            .filter(|n| n.status == "approved" && n.id != target.id)
+        {
             let mut demoted = old.clone();
             demoted.status = "revoked".into();
             t.put(&NodeKey { id: demoted.id }, &demoted)?;
@@ -362,10 +369,10 @@ impl NodeStore {
     /// approved) record of the alias. Rows survive as `revoked` —
     /// tombstones, not erasure.
     pub fn revoke(&self, alias: &str, credential: Option<&str>) -> anyhow::Result<usize> {
-        let t = self.table();
+        let t = self.table()?;
         let mut n = 0usize;
         for row in self.rows_of(alias)? {
-            let hit = credential.map_or(true, |k| k == row.credential);
+            let hit = credential.is_none_or(|k| k == row.credential);
             if hit && row.status != "revoked" {
                 let mut dead = row;
                 dead.status = "revoked".into();
@@ -382,7 +389,7 @@ impl NodeStore {
     /// Every record, newest id last (the `GET /admin/nodes` listing;
     /// connection-scale table, a full key scan is the cheap shape).
     pub fn list(&self) -> anyhow::Result<Vec<Node>> {
-        let t = self.table();
+        let t = self.table()?;
         let mut ids: Vec<u64> = t
             .scan_keys(&okm_core::PrefixProbe::empty())
             .map(|r| r.map(|k| k.id))
@@ -398,7 +405,7 @@ impl NodeStore {
     }
 
     fn rows_of(&self, alias: &str) -> anyhow::Result<Vec<Node>> {
-        let t = self.table();
+        let t = self.table()?;
         let mut rows = Vec::new();
         for hit in t.scan::<NodeByAlias>(alias.as_bytes()) {
             let (_, _, row) = hit?;
@@ -436,10 +443,16 @@ mod tests {
     fn verdict_lifecycle() {
         let s = store();
         // Fresh claim → pending + a visible row.
-        assert_eq!(s.verdict("home-pc", "KEY-A", "box-1").unwrap(), Verdict::Pending);
+        assert_eq!(
+            s.verdict("home-pc", "KEY-A", "box-1").unwrap(),
+            Verdict::Pending
+        );
         assert_eq!(s.list().unwrap().len(), 1);
         // Retry is idempotent pending (same row, no duplicate).
-        assert_eq!(s.verdict("home-pc", "KEY-A", "box-1").unwrap(), Verdict::Pending);
+        assert_eq!(
+            s.verdict("home-pc", "KEY-A", "box-1").unwrap(),
+            Verdict::Pending
+        );
         assert_eq!(s.list().unwrap().len(), 1);
         // Approve by alias (unique pending) → registered.
         let approved = s.approve("home-pc", None).unwrap();
@@ -451,7 +464,12 @@ mod tests {
             Verdict::Conflict { .. }
         ));
         assert_eq!(
-            s.list().unwrap().iter().find(|n| n.credential == "KEY-B").unwrap().status,
+            s.list()
+                .unwrap()
+                .iter()
+                .find(|n| n.credential == "KEY-B")
+                .unwrap()
+                .status,
             "pending",
             "the conflicting claim is still queued for the operator"
         );
@@ -465,9 +483,28 @@ mod tests {
         // Revocation: B falls to revoked; a revoked key re-claiming is
         // back to pending, never self-service (the revive rewrote B).
         s.revoke("home-pc", None).unwrap();
-        assert_eq!(s.verdict("home-pc", "KEY-B", "box-2").unwrap(), Verdict::Pending);
-        assert_eq!(s.list().unwrap().iter().filter(|n| n.status == "pending").count(), 1, "only B revived");
-        assert_eq!(s.list().unwrap().iter().filter(|n| n.status == "revoked").count(), 1, "A stays a tombstone");
+        assert_eq!(
+            s.verdict("home-pc", "KEY-B", "box-2").unwrap(),
+            Verdict::Pending
+        );
+        assert_eq!(
+            s.list()
+                .unwrap()
+                .iter()
+                .filter(|n| n.status == "pending")
+                .count(),
+            1,
+            "only B revived"
+        );
+        assert_eq!(
+            s.list()
+                .unwrap()
+                .iter()
+                .filter(|n| n.status == "revoked")
+                .count(),
+            1,
+            "A stays a tombstone"
+        );
     }
 
     #[test]
@@ -494,7 +531,11 @@ mod tests {
             }
             other => panic!("expected registered, got {other:?}"),
         }
-        assert_eq!(s.list().unwrap()[0].machine, "box-7", "the box claimed the token");
+        assert_eq!(
+            s.list().unwrap()[0].machine,
+            "box-7",
+            "the box claimed the token"
+        );
 
         // The same machine reconnecting is the same node.
         assert!(registered(s.verdict("laptop", "KEY", "box-7").unwrap()));

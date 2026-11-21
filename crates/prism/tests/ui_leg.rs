@@ -7,7 +7,13 @@
 //! The venue's speech is `inject` into a slot named after the fact it states — `identity` (who am
 //! I), `connect` (a connection opened, which the application answers with its layout) or `notice`
 //! (what failed); everything else is the application's own operations.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -36,7 +42,9 @@ async fn boot_with_idle(
         Some(ms) => Registry::open_with_idle(&dir.keep(), ms).unwrap(),
         None => Registry::open(&dir.keep()).unwrap(),
     };
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     // The login verbs ask the auth booth (a call); the gate test signs up, so it must be live.
     Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
@@ -82,13 +90,24 @@ async fn read_connected(ws: &mut WsClient) -> String {
             // and the credential rides beside it, because a page that loses the token has to log
             // in again, while a page that loses the device id has lost nothing.
             "token" => {
-                assert!(data["token"].as_str().is_some_and(|t| t.len() == 36), "{data}");
-                identity_device =
-                    Some(data["device"].as_str().expect("device id in the token fact").to_string());
+                assert!(
+                    data["token"].as_str().is_some_and(|t| t.len() == 36),
+                    "{data}"
+                );
+                identity_device = Some(
+                    data["device"]
+                        .as_str()
+                        .expect("device id in the token fact")
+                        .to_string(),
+                );
             }
             "connect" => {
-                connect_device =
-                    Some(data["device"].as_str().expect("the fact names the device").to_string());
+                connect_device = Some(
+                    data["device"]
+                        .as_str()
+                        .expect("the fact names the device")
+                        .to_string(),
+                );
             }
             other => panic!("unexpected venue speech on connect: `{other}`"),
         }
@@ -190,7 +209,7 @@ async fn recv_speech(ws: &mut WsClient) -> (String, String, Value) {
 }
 
 async fn send_uplink(ws: &mut WsClient, value: Value) {
-    ws.send(Ws::Text(serde_json::to_string(&value).unwrap().into()))
+    ws.send(Ws::Text(serde_json::to_string(&value).unwrap()))
         .await
         .unwrap();
 }
@@ -199,25 +218,35 @@ async fn send_uplink(ws: &mut WsClient, value: Value) {
 #[tokio::test]
 async fn assets_are_plain_downloads_on_the_shared_loop() {
     let bundle = tempfile::tempdir().unwrap();
-    std::fs::write(bundle.path().join("index.html"), "<!doctype html><div id=main></div>").unwrap();
+    std::fs::write(
+        bundle.path().join("index.html"),
+        "<!doctype html><div id=main></div>",
+    )
+    .unwrap();
     std::fs::write(bundle.path().join("ui_leptos-abc123.js"), "console.log(1)").unwrap();
     let (addr, _gw) = boot(Deployment {
-            assets: Some(AssetRoot::open(bundle.path()).unwrap()),
-            shell: None,
-        })
+        assets: Some(AssetRoot::open(bundle.path()).unwrap()),
+        shell: None,
+    })
     .await;
 
     // Hashed asset: content-typed and immutable for a year.
     let resp = get(addr, "/ui_leptos-abc123.js").await;
     assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
-    assert!(resp.contains("Content-Type: text/javascript; charset=utf-8"), "{resp}");
+    assert!(
+        resp.contains("Content-Type: text/javascript; charset=utf-8"),
+        "{resp}"
+    );
     assert!(resp.contains("immutable"), "{resp}");
     assert!(resp.ends_with("console.log(1)"), "{resp}");
 
     // The mount root is the entry document, revalidated (not immutable).
     let resp = get(addr, "/").await;
     assert!(resp.starts_with("HTTP/1.1 200 OK"), "{resp}");
-    assert!(resp.contains("Content-Type: text/html; charset=utf-8"), "{resp}");
+    assert!(
+        resp.contains("Content-Type: text/html; charset=utf-8"),
+        "{resp}"
+    );
     assert!(resp.contains("no-cache"), "{resp}");
 
     // An escape and a miss are the same answer: 404, no listing, no partial path.
@@ -273,7 +302,11 @@ async fn connect_is_an_event_and_the_application_answers_it() {
         }
     }
     let fact = fact.expect("ui:connect reached the plane");
-    assert_eq!(fact["device"].as_str(), Some(device.as_str()), "the fact names the device: {fact}");
+    assert_eq!(
+        fact["device"].as_str(),
+        Some(device.as_str()),
+        "the fact names the device: {fact}"
+    );
 
     // The application's answer: frames the venue forwards AS the message (one action list).
     aura_realm::Realm::emit(
@@ -316,10 +349,18 @@ async fn a_silent_connection_crosses_the_window_and_a_login_reopens_it() {
 
     // Silence past the window, then one uplink: it is refused with a reason.
     tokio::time::sleep(std::time::Duration::from_millis(320)).await;
-    send_uplink(&mut ws, json!({"dest": "echo_steel", "data": {"text": "late"}})).await;
+    send_uplink(
+        &mut ws,
+        json!({"dest": "echo_steel", "data": {"text": "late"}}),
+    )
+    .await;
     let (slot, name, data) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
-    assert_eq!(data["reason"].as_str(), Some("idle"), "the page must know WHY: {data}");
+    assert_eq!(
+        data["reason"].as_str(),
+        Some("idle"),
+        "the page must know WHY: {data}"
+    );
 
     // The auth verb is not gated: a login on the same connection names the SAME device.
     send_uplink(
@@ -407,8 +448,14 @@ async fn the_peer_leg_keeps_its_own_shape() {
         }
     };
     assert_eq!(frame["ev"], "connected");
-    assert!(frame.get("args").is_some(), "peer leg answers with args: {frame}");
-    assert!(frame.get("content").is_none(), "peer leg carries no Accrete: {frame}");
+    assert!(
+        frame.get("args").is_some(),
+        "peer leg answers with args: {frame}"
+    );
+    assert!(
+        frame.get("content").is_none(),
+        "peer leg carries no Accrete: {frame}"
+    );
 }
 
 /// Application uplinks reach the booth plane: the booth NAMED BY THE EVENT is called, and it is
@@ -454,7 +501,10 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
             .is_some_and(|d| d.contains("echo_gate")),
         "the person is told: {said:?}"
     );
-    assert_eq!(said["auth.required"]["event"], "echo_gate", "the refusal names what it dropped");
+    assert_eq!(
+        said["auth.required"]["event"], "echo_gate",
+        "the refusal names what it dropped"
+    );
 
     // signup on the leg: the account is prism's, and the answer is a fact, not a verb.
     send_uplink(
@@ -475,7 +525,10 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     // AND THE LIFECYCLE SAYS IT TOO (MODELING: facts are named as they happened) — `login` is the
     // fact an application binds, and it carries who bound.
     let login = &landed["login"];
-    assert!(login["user"].as_str().is_some_and(|u| u.len() == 36), "{login}");
+    assert!(
+        login["user"].as_str().is_some_and(|u| u.len() == 36),
+        "{login}"
+    );
     assert!(login["device"].as_str().is_some(), "{login}");
 
     // Bound now: the same declared-auth event reaches the booth and its answer is DRAWN. The
@@ -497,11 +550,17 @@ async fn the_auth_declaration_gates_the_renderer_leg() {
     // the gate reads, and it is cleared on the same socket.
     send_uplink(&mut ws, json!({"dest": "logout", "data": null})).await;
     let gone = recv_named(&mut ws, ["token", "logout"]).await;
-    assert!(gone["logout"]["device"].as_str().is_some(), "{:?}", gone["logout"]);
+    assert!(
+        gone["logout"]["device"].as_str().is_some(),
+        "{:?}",
+        gone["logout"]
+    );
     send_uplink(&mut ws, json!({"dest": "echo_gate", "data": op})).await;
     let again = recv_named(&mut ws, ["auth.required", "notice"]).await;
     assert!(
-        again["notice"]["bind"]["value"]["default"].as_str().is_some(),
+        again["notice"]["bind"]["value"]["default"]
+            .as_str()
+            .is_some(),
         "refused again after the logout: {again:?}"
     );
 }
@@ -515,7 +574,11 @@ async fn revocation_kicks_the_renderer_leg_too() {
     let device = read_connected(&mut ws).await;
 
     // Bind an account so this connection carries an auth field worth clearing.
-    send_uplink(&mut ws, json!({"dest": "signup", "data": {"login_name": "grace", "password": "p"}})).await;
+    send_uplink(
+        &mut ws,
+        json!({"dest": "signup", "data": {"login_name": "grace", "password": "p"}}),
+    )
+    .await;
     recv_named(&mut ws, ["token", "login"]).await;
 
     let resp = post_json(addr, "/admin/revoke", json!({"device_id": device})).await;
@@ -557,7 +620,11 @@ async fn a_view_event_carries_data_into_the_slot_named_by_it() {
     // name — nothing on the page knows what `ui:` means.
     assert_eq!(ops[0]["slot"], "token");
     assert_eq!(ops[0]["name"], "token");
-    assert_eq!(ops[0]["data"]["device"].as_str(), Some(device.as_str()), "{ops:?}");
+    assert_eq!(
+        ops[0]["data"]["device"].as_str(),
+        Some(device.as_str()),
+        "{ops:?}"
+    );
 }
 
 /// The sender does not hear its own emit: the fan-out is the channel minus whoever spoke.
@@ -658,7 +725,8 @@ async fn a_user_address_reaches_every_live_device_of_that_account() {
 
     for (who, ws) in [("first", &mut one), ("second", &mut two)] {
         let given = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(ws)).await;
-        let (slot, name, data) = given.unwrap_or_else(|_| panic!("{who}: the fan-out reaches this device"));
+        let (slot, name, data) =
+            given.unwrap_or_else(|_| panic!("{who}: the fan-out reaches this device"));
         assert_eq!(
             (slot.as_str(), name.as_str()),
             ("sync", "sync"),
@@ -711,7 +779,11 @@ async fn a_page_can_ask_for_its_accounts_devices() {
 
     send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
     let (slot, name, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"), "{data}");
+    assert_eq!(
+        (slot.as_str(), name.as_str()),
+        ("notice", "notice"),
+        "{data}"
+    );
 
     send_uplink(
         &mut ws,
@@ -722,13 +794,24 @@ async fn a_page_can_ask_for_its_accounts_devices() {
 
     send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
     let (slot, name, data) = recv_speech(&mut ws).await;
-    assert_eq!((slot.as_str(), name.as_str()), ("devices", "devices"), "{data}");
+    assert_eq!(
+        (slot.as_str(), name.as_str()),
+        ("devices", "devices"),
+        "{data}"
+    );
     let rows = data["devices"].as_array().expect("rows");
     assert_eq!(rows.len(), 1, "one device so far: {data}");
     assert_eq!(rows[0]["current"], true, "{data}");
-    assert_eq!(rows[0]["alias"], "", "unnamed until the person names it: {data}");
+    assert_eq!(
+        rows[0]["alias"], "",
+        "unnamed until the person names it: {data}"
+    );
 
-    send_uplink(&mut ws, json!({"dest": "alias", "data": {"alias": "laptop"}})).await;
+    send_uplink(
+        &mut ws,
+        json!({"dest": "alias", "data": {"alias": "laptop"}}),
+    )
+    .await;
     let (slot, name, data) = recv_speech(&mut ws).await;
     assert_eq!((slot.as_str(), name.as_str()), ("alias", "alias"), "{data}");
     assert_eq!(data["alias"], "laptop", "{data}");
@@ -780,13 +863,17 @@ async fn a_frame_for_an_asleep_account_waits_for_its_next_device() {
     )
     .await;
     let landed = recv_named(&mut one, ["token", "login"]).await;
-    let user = landed["login"]["user"].as_str().expect("the account").to_string();
+    let user = landed["login"]["user"]
+        .as_str()
+        .expect("the account")
+        .to_string();
 
     // The account signs out: it exists, and no screen of it is awake.
     send_uplink(&mut one, json!({"dest": "logout", "data": {}})).await;
     for _ in 0..2 {
         // `token` and `logout` — drain them so the next reads start clean.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
     }
 
     // Addressed to the account while nothing of theirs is awake.
@@ -846,10 +933,14 @@ async fn a_replay_starts_at_the_last_whole_screen() {
     )
     .await;
     let landed = recv_named(&mut one, ["token", "login"]).await;
-    let user = landed["login"]["user"].as_str().expect("the account").to_string();
+    let user = landed["login"]["user"]
+        .as_str()
+        .expect("the account")
+        .to_string();
     send_uplink(&mut one, json!({"dest": "logout", "data": {}})).await;
     for _ in 0..2 {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
     }
 
     let emit = |name: &str, data: Value| {
@@ -900,7 +991,8 @@ async fn a_replay_starts_at_the_last_whole_screen() {
     // replay is the operation lists, read as they come.
     let mut replayed: Vec<Value> = Vec::new();
     for _ in 0..8 {
-        let Ok(ops) = tokio::time::timeout(std::time::Duration::from_secs(5), recv_ops(&mut one)).await
+        let Ok(ops) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), recv_ops(&mut one)).await
         else {
             break;
         };
@@ -918,11 +1010,21 @@ async fn a_replay_starts_at_the_last_whole_screen() {
         !text.contains("before-screen"),
         "an increment the screen already contains is not replayed: {text}"
     );
-    assert!(text.contains("inside-screen"), "the screen is replayed: {text}");
-    assert!(text.contains("after-screen"), "what moved since is replayed: {text}");
+    assert!(
+        text.contains("inside-screen"),
+        "the screen is replayed: {text}"
+    );
+    assert!(
+        text.contains("after-screen"),
+        "what moved since is replayed: {text}"
+    );
     let screen = replayed
         .iter()
-        .find(|f| serde_json::to_string(f).unwrap_or_default().contains("inside-screen"))
+        .find(|f| {
+            serde_json::to_string(f)
+                .unwrap_or_default()
+                .contains("inside-screen")
+        })
         .expect("the whole screen came back");
     assert_eq!(
         screen[0]["action"].as_str(),
@@ -971,11 +1073,8 @@ async fn one_emit_draws_exactly_one_frame_however_much_was_said_before() {
         );
     }
 
-    let extra = tokio::time::timeout(
-        std::time::Duration::from_millis(300),
-        recv_ops(&mut ws),
-    )
-    .await;
+    let extra =
+        tokio::time::timeout(std::time::Duration::from_millis(300), recv_ops(&mut ws)).await;
     assert!(
         extra.is_err(),
         "a fourth frame arrived after three emits: {:?}",

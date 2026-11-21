@@ -9,7 +9,13 @@
 //! These tests replace `turn_e2e`: the turn itself lives in gravity, so what is left to prove
 //! here is the TRANSPORT — one emit in, one emit out, with the device as the address and the
 //! declaration gate in front of it.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{Body, BoothType, ReceiveDecl, RouteResolution};
 use aura_engine::Engine;
@@ -30,7 +36,9 @@ type WsClient =
 async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     // The auth verbs ask the booth (a call), so the account case below signs up on this leg.
     Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
@@ -49,48 +57,54 @@ async fn boot(app: &str) -> (SocketAddr, Arc<Gateway>) {
             .unwrap();
     }
     if app == "stub" {
-    let booth = BoothType {
-        name: "turn_stub".into(),
-        body: Body::Rust(Arc::new(|ctx, args| {
-            Box::pin(async move {
-                let device = args
-                    .get("device")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                for word in ["hel", "lo"] {
-                    let mut envelope = json!({ "name": "ui:turn.delta", "data": {"delta": word} });
-                    if let Some(device) = &device {
-                        envelope["device"] = json!(device);
+        let booth = BoothType {
+            name: "turn_stub".into(),
+            body: Body::Rust(Arc::new(|ctx, args| {
+                Box::pin(async move {
+                    let device = args
+                        .get("device")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                    for word in ["hel", "lo"] {
+                        let mut envelope =
+                            json!({ "name": "ui:turn.delta", "data": {"delta": word} });
+                        if let Some(device) = &device {
+                            envelope["device"] = json!(device);
+                        }
+                        ctx.emit("ui:turn.delta", envelope).await?;
                     }
-                    ctx.emit("ui:turn.delta", envelope).await?;
-                }
-                let mut done = json!({ "name": "ui:turn.done", "data": {"reply": "hello"} });
-                if let Some(device) = &device {
-                    done["device"] = json!(device);
-                }
-                ctx.emit("ui:turn.done", done).await?;
-                Ok(Value::Null)
-            })
-        })),
-        idle_ttl: None,
-        max_exec: None,
-        hooks: std::collections::BTreeMap::new(),
-        // The fixture's OWN event, not `ui:turn.submit`: that name is declared by the platform's
-        // real turn booth, and a declaration gates the event for everyone routed to it — an
-        // anonymous peer cannot put someone else's gated event on the plane (that is the next
-        // test's subject). This one is about the transport.
-        receives: vec![ReceiveDecl {
-            event: "ui:peer.submit".into(),
-            entry: None,
-            resolution: RouteResolution::Singleton,
-            wildcard: false,
-            auth: false,
-        }],
-        concurrency: aura_booth::Concurrency::Queued,
-    };
-    engine.register(booth).await.unwrap();
+                    let mut done = json!({ "name": "ui:turn.done", "data": {"reply": "hello"} });
+                    if let Some(device) = &device {
+                        done["device"] = json!(device);
+                    }
+                    ctx.emit("ui:turn.done", done).await?;
+                    Ok(Value::Null)
+                })
+            })),
+            idle_ttl: None,
+            max_exec: None,
+            hooks: std::collections::BTreeMap::new(),
+            // The fixture's OWN event, not `ui:turn.submit`: that name is declared by the platform's
+            // real turn booth, and a declaration gates the event for everyone routed to it — an
+            // anonymous peer cannot put someone else's gated event on the plane (that is the next
+            // test's subject). This one is about the transport.
+            receives: vec![ReceiveDecl {
+                event: "ui:peer.submit".into(),
+                entry: None,
+                resolution: RouteResolution::Singleton,
+                wildcard: false,
+                auth: false,
+            }],
+            concurrency: aura_booth::Concurrency::Queued,
+        };
+        engine.register(booth).await.unwrap();
     }
-    let gw = Gateway::with_deployment(engine, registry, prism::nodes::Posture::Open, Deployment::default());
+    let gw = Gateway::with_deployment(
+        engine,
+        registry,
+        prism::nodes::Posture::Open,
+        Deployment::default(),
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let served = Arc::clone(&gw);
@@ -117,7 +131,7 @@ async fn recv_json(ws: &mut WsClient) -> Value {
 }
 
 async fn send_json(ws: &mut WsClient, v: Value) {
-    ws.send(Ws::Text(v.to_string().into())).await.expect("send");
+    ws.send(Ws::Text(v.to_string())).await.expect("send");
 }
 
 /// A program's `ui:<name>` event reaches the booth that declared it, and the booth's answer
@@ -128,7 +142,10 @@ async fn a_program_submits_a_view_event_and_reads_the_answer_back() {
     let mut ws = open_peer(addr).await;
     // The connect frame the peer leg always sends (identity for this socket).
     let first = recv_json(&mut ws).await;
-    assert!(first.get("ev").is_some(), "peer leg frames carry `ev`: {first}");
+    assert!(
+        first.get("ev").is_some(),
+        "peer leg frames carry `ev`: {first}"
+    );
 
     send_json(
         &mut ws,
@@ -143,9 +160,12 @@ async fn a_program_submits_a_view_event_and_reads_the_answer_back() {
             .await
             .expect("the stub must answer");
         match frame.get("ev").and_then(Value::as_str) {
-            Some("turn.delta") => {
-                deltas.push(frame["args"]["delta"].as_str().unwrap_or_default().to_string())
-            }
+            Some("turn.delta") => deltas.push(
+                frame["args"]["delta"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
             Some("turn.done") => {
                 done = Some(frame.clone());
                 break;
@@ -153,7 +173,11 @@ async fn a_program_submits_a_view_event_and_reads_the_answer_back() {
             _ => {}
         }
     }
-    assert_eq!(deltas, vec!["hel".to_string(), "lo".to_string()], "chunks in order");
+    assert_eq!(
+        deltas,
+        vec!["hel".to_string(), "lo".to_string()],
+        "chunks in order"
+    );
     let done = done.expect("the answer ends with turn.done");
     assert_eq!(done["args"]["reply"], "hello", "{done}");
 }
@@ -165,15 +189,26 @@ async fn an_anonymous_program_cannot_put_a_gated_event_on_the_plane() {
     let (addr, _gw) = boot("gated").await;
     let mut ws = open_peer(addr).await;
     let _ = recv_json(&mut ws).await;
-    send_json(&mut ws, json!({"ev": "ui:turn.submit", "args": {"content": "hi"}})).await;
+    send_json(
+        &mut ws,
+        json!({"ev": "ui:turn.submit", "args": {"content": "hi"}}),
+    )
+    .await;
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(&mut ws))
         .await
         .expect("a refusal is an answer, not a silence");
     assert_eq!(frame["ev"], "error", "{frame}");
-    assert_eq!(frame["args"]["message"], "authentication required", "{frame}");
+    assert_eq!(
+        frame["args"]["message"], "authentication required",
+        "{frame}"
+    );
 
     // The socket is still usable: a plain booth call answers as always.
-    send_json(&mut ws, json!({"ev": "echo_steel", "args": {"hello": true}})).await;
+    send_json(
+        &mut ws,
+        json!({"ev": "echo_steel", "args": {"hello": true}}),
+    )
+    .await;
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(&mut ws))
         .await
         .expect("the echo answers");
@@ -248,7 +283,10 @@ async fn a_user_address_reaches_the_programs_of_that_account() {
     for (who, ws) in [("first", &mut one), ("second", &mut two)] {
         let given = tokio::time::timeout(std::time::Duration::from_secs(5), recv_json(ws)).await;
         let frame = given.unwrap_or_else(|_| panic!("{who}: the fan-out reaches this program"));
-        assert_eq!(frame["ev"], "sync", "{who}: the address is not on the peer leg's frame");
+        assert_eq!(
+            frame["ev"], "sync",
+            "{who}: the address is not on the peer leg's frame"
+        );
         assert_eq!(frame["args"]["mark"], "for-ada", "{who}: {frame}");
     }
 
@@ -298,10 +336,17 @@ async fn a_device_list_belongs_to_the_account() {
     let _ = recv_json(&mut two).await;
 
     // The name is the person's own, and the answer says the name back.
-    send_json(&mut two, json!({"ev": "alias", "args": {"alias": "  phone  "}})).await;
+    send_json(
+        &mut two,
+        json!({"ev": "alias", "args": {"alias": "  phone  "}}),
+    )
+    .await;
     let named = recv_json(&mut two).await;
     assert_eq!(named["ev"], "alias.result", "{named}");
-    assert_eq!(named["args"]["alias"], "phone", "trimmed on the way in: {named}");
+    assert_eq!(
+        named["args"]["alias"], "phone",
+        "trimmed on the way in: {named}"
+    );
 
     send_json(&mut two, json!({"ev": "devices"})).await;
     let listed = recv_json(&mut two).await;
@@ -317,7 +362,10 @@ async fn a_device_list_belongs_to_the_account() {
         .iter()
         .find(|r| r["current"] == false)
         .expect("the other device is listed too");
-    assert!(other["device"].as_str().is_some_and(|d| d.len() == 36), "{other}");
+    assert!(
+        other["device"].as_str().is_some_and(|d| d.len() == 36),
+        "{other}"
+    );
     assert!(other["first_seen"].as_u64().is_some(), "{other}");
 
     // A name is display only: an empty one is refused as an error value, not stored as the name.

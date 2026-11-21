@@ -5,7 +5,13 @@
 //! body — because "the client learns here" is the property the ladder exists for; a test that
 //! only asserted our own function's `Result` would pass with the venue closing the socket
 //! silently instead.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
 use futures_util::StreamExt;
@@ -21,7 +27,9 @@ use tokio_tungstenite::tungstenite::Message;
 async fn boot() -> SocketAddr {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let gw = Gateway::new(engine, registry, Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -68,8 +76,8 @@ async fn a_subprotocol_offer_is_accepted_echoed_and_the_codec_is_in_force() {
     // server trims, so a browser's `chat, accrete-cbor` parses identically there.
     let (mut ws, response) =
         tokio_tungstenite::connect_async(request(addr, "", Some("chat,accrete-cbor")))
-    .await
-    .expect("the offer is accepted");
+            .await
+            .expect("the offer is accepted");
     assert_eq!(response.status().as_u16(), 101);
     assert_eq!(
         response
@@ -88,10 +96,9 @@ async fn the_query_rungs_work_and_nothing_said_is_json() {
     let addr = boot().await;
 
     // `?codec=` — the renderer's spelling.
-    let (mut ws, response) =
-        tokio_tungstenite::connect_async(request(addr, "?codec=cbor", None))
-            .await
-            .expect("?codec=cbor");
+    let (mut ws, response) = tokio_tungstenite::connect_async(request(addr, "?codec=cbor", None))
+        .await
+        .expect("?codec=cbor");
     assert!(
         response.headers().get("sec-websocket-protocol").is_none(),
         "no subprotocol was offered, so none is echoed"
@@ -117,13 +124,9 @@ async fn the_query_rungs_work_and_nothing_said_is_json() {
 #[tokio::test]
 async fn an_accrete_word_we_do_not_speak_is_refused_4xx() {
     let addr = boot().await;
-    let refused = tokio_tungstenite::connect_async(request(
-        addr,
-        "",
-        Some("accrete-msgpack"),
-    ))
-    .await
-    .expect_err("`accrete-msgpack` is our namespace and not ours to serve");
+    let refused = tokio_tungstenite::connect_async(request(addr, "", Some("accrete-msgpack")))
+        .await
+        .expect_err("`accrete-msgpack` is our namespace and not ours to serve");
     let tokio_tungstenite::tungstenite::Error::Http(response) = refused else {
         panic!("a refusal is an HTTP answer, not a dropped socket: {refused:?}");
     };

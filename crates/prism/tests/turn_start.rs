@@ -23,8 +23,8 @@
     clippy::panic_in_result_fn
 )]
 
-use prism::{identity::Registry, mounts::MountDecl, Gateway};
 use futures_util::StreamExt;
+use prism::{identity::Registry, mounts::MountDecl, Gateway};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -307,9 +307,6 @@ async fn sse_server(
 // deadlock this test first hit).
 #[tokio::test]
 async fn a_plan_and_a_bare_row_both_run_on_the_node() {
-    // What the step's script prints — one JSON document, an arithmetic fact no
-    // stub can fake: the number comes from the inputs the PLAN declares.
-    const PRODUCED: &str = r#"{"sum":7}"#;
     // The second step's own document: a DIFFERENT code row, which is what makes
     // this turn a composition rather than a retry (k10r ADR-0016).
     const PRODUCED_2: &str = r#"{"total":9}"#;
@@ -324,7 +321,7 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     std::env::set_var("GRAVITY_TURN_BIN", format!("{gravity_bins}/gravity-turn"));
 
     let py_spec = format!("python3 {}", runner_path("runner_py.py"));
-    let http_port = serve_sources(&[py_spec.clone()]);
+    let http_port = serve_sources(std::slice::from_ref(&py_spec));
 
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
@@ -413,7 +410,9 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
             })).await;
         code_ids.push(code["code_id"].as_u64().unwrap());
     }
-    let skill: Value = post_json(&format!("{store_url}/skills/37"), json!({
+    let skill: Value = post_json(
+        &format!("{store_url}/skills/37"),
+        json!({
             "name": "add-three",
             "title": "adds three",
             "content": "Adds three to a number on this deployment's node.",
@@ -432,35 +431,37 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
                 ]
             })
             .to_string(),
-        })).await;
+        }),
+    )
+    .await;
     let skill_id = skill["node_id"].as_u64().unwrap();
 
     // A task BOUND to the first step (gravity ADR-0003 §3): the binding is an
     // ordinary fact (k10r ADR-0024 made the code row a vertex, so a fact can point
     // at it), and the call that finishes that code row closes it — no `move_task`
     // anywhere in this turn, and none asked for.
-    let opened: Value = post_json(&format!("{store_url}/tasks/37"), json!({
+    let opened: Value = post_json(
+        &format!("{store_url}/tasks/37"),
+        json!({
             "name": "add three to four",
             "next": "run the step",
             "finishes_on": [code_ids[0]],
             "ts_ms": 1_000,
-        })).await;
+        }),
+    )
+    .await;
     let task_id = opened["node_id"].as_u64().unwrap();
 
     // The turn's deployment facts are ROWS in its own namespace now (gravity ADR-0007); only the
     // two spawn specs are environment, because they are where the binary lives.
-    let (endpoint, seen) =
-        sse_server(skill_id, code_ids[1], "\"total\":7", PRODUCED_2).await;
+    let (endpoint, seen) = sse_server(skill_id, code_ids[1], "\"total\":7", PRODUCED_2).await;
     seed_turn_rows(&engine, &store_url, &endpoint).await;
     std::env::set_var("GRAVITY_TEST_KEY", "test-key");
 
     let mut ws = connect(addr).await;
     send(
         &mut ws,
-        &prism_protocol::Frame::new(
-            "signup",
-            json!({ "login_name": "alice", "password": "pw" }),
-        ),
+        &prism_protocol::Frame::new("signup", json!({ "login_name": "alice", "password": "pw" })),
     )
     .await;
     let f = recv(&mut ws).await;
@@ -583,7 +584,11 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
         Some(1),
         "the skill was walked once; the second row was run directly: {skill_node}"
     );
-    assert_eq!(skill_node["invoke_ok"].as_u64(), Some(1), "and it came back");
+    assert_eq!(
+        skill_node["invoke_ok"].as_u64(),
+        Some(1),
+        "and it came back"
+    );
     // The counters ride the row's VERTEX (the same place a skill's live), not the
     // /code read, which answers the script and its contract.
     let second_row = raw["nodes"]
@@ -600,7 +605,11 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     assert_eq!(second_row["invoke_ok"].as_u64(), Some(1), "{second_row}");
 
     // Nothing promoted itself: the resolver still answers only the real skill.
-    let resolved: Value = post_json(&format!("{store_url}/skills/37/resolve"), json!({ "query": "add three" })).await;
+    let resolved: Value = post_json(
+        &format!("{store_url}/skills/37/resolve"),
+        json!({ "query": "add three" }),
+    )
+    .await;
     let names: Vec<&str> = resolved
         .as_array()
         .unwrap()
@@ -622,9 +631,8 @@ async fn connect(addr: SocketAddr) -> WsClient {
     ws
 }
 
-type WsClient = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsClient =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn send(ws: &mut WsClient, frame: &prism_protocol::Frame) {
     use futures_util::SinkExt;

@@ -7,7 +7,13 @@
 //! the path and the frame state the alias twice (one fact), and the
 //! registration dies with the connection (replacement discipline,
 //! ADR-0015 §7).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{Body, BoothType, InstanceId, InstanceKey};
 use prism::{identity::Registry, Gateway};
@@ -196,7 +202,10 @@ async fn effector_mount_remote_call_roundtrip() {
     // against prism's own realm.
     let out = engine
         .invoke(
-            InstanceId { booth_type: "remote-counter".into(), key: InstanceKey::Named("k".into()) },
+            InstanceId {
+                booth_type: "remote-counter".into(),
+                key: InstanceKey::Named("k".into()),
+            },
             "double",
             serde_json::json!({"n": 4}),
         )
@@ -219,11 +228,9 @@ async fn effector_mount_refuses_alias_mismatch() {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-        "ws://{addr}/effector/test-node"
-    ))
-    .await
-    .expect("ws handshake on the mount path");
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/effector/test-node"))
+        .await
+        .expect("ws handshake on the mount path");
 
     // The node declares a shape; there is nothing to answer. The WRONG alias (path said
     // test-node) is what this test is about.
@@ -233,7 +240,7 @@ async fn effector_mount_refuses_alias_mismatch() {
         carriers: vec!["steel".into()],
         machine: "box-test".into(),
     };
-    ws.send(Message::Text(serde_json::to_string(&frame).unwrap().into()))
+    ws.send(Message::Text(serde_json::to_string(&frame).unwrap()))
         .await
         .unwrap();
 
@@ -242,9 +249,18 @@ async fn effector_mount_refuses_alias_mismatch() {
     let mut refused = false;
     for _ in 0..2 {
         match ws.next().await {
-            None => { refused = true; break; } // stream ended
-            Some(Err(_)) => { refused = true; break; } // close frames as error
-            Some(Ok(Message::Close(_))) => { refused = true; break; }
+            None => {
+                refused = true;
+                break;
+            } // stream ended
+            Some(Err(_)) => {
+                refused = true;
+                break;
+            } // close frames as error
+            Some(Ok(Message::Close(_))) => {
+                refused = true;
+                break;
+            }
             Some(Ok(_)) => continue,
         }
     }

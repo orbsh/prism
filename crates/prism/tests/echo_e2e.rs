@@ -2,12 +2,18 @@
 //! echoes, drive every verb over a REAL WebSocket — JSON debug codec
 //! and CBOR default both exercised. This is the acceptance map for the
 //! prism Phase 0+1 landing (ADR-0017 §4 shape, reduced to echo scope).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
+use futures_util::{SinkExt, StreamExt};
 use prism::{booths, identity::Registry, Gateway};
 use prism_protocol::{Codec, Frame};
-use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
@@ -20,7 +26,9 @@ type WsClient =
 async fn boot() -> SocketAddr {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -143,8 +151,12 @@ async fn broadcast_reaches_every_connection() {
     let mut a = connect(addr, Codec::Json).await;
     let mut b = connect(addr, Codec::Json).await;
 
-    send_frame(&mut a, Codec::Json, &Frame::new("broadcast", serde_json::json!({"hi": "all"})))
-        .await;
+    send_frame(
+        &mut a,
+        Codec::Json,
+        &Frame::new("broadcast", serde_json::json!({"hi": "all"})),
+    )
+    .await;
     let fa = recv_frame(&mut a, Codec::Json).await;
     let fb = recv_frame(&mut b, Codec::Json).await;
     for f in [fa, fb] {
@@ -159,12 +171,22 @@ async fn broadcast_reaches_every_connection() {
 async fn unknown_type_is_error_value_not_close() {
     let addr = boot().await;
     let mut ws = connect(addr, Codec::Json).await;
-    send_frame(&mut ws, Codec::Json, &Frame::new("nope", serde_json::json!({}))).await;
+    send_frame(
+        &mut ws,
+        Codec::Json,
+        &Frame::new("nope", serde_json::json!({})),
+    )
+    .await;
     let f = recv_frame(&mut ws, Codec::Json).await;
     assert_eq!(f.ev, "error");
     assert_eq!(f.args["ev"], "nope");
     // still alive: ping round-trips
-    send_frame(&mut ws, Codec::Json, &Frame::new("ping", serde_json::Value::Null)).await;
+    send_frame(
+        &mut ws,
+        Codec::Json,
+        &Frame::new("ping", serde_json::Value::Null),
+    )
+    .await;
     let f = recv_frame(&mut ws, Codec::Json).await;
     assert_eq!(f.ev, "ping.result");
 }
@@ -175,10 +197,15 @@ async fn unknown_type_is_error_value_not_close() {
 async fn garbage_is_error_value_not_close() {
     let addr = boot().await;
     let mut ws = connect(addr, Codec::Json).await;
-    ws.send(Message::Binary(b"not json".to_vec())).await.unwrap();
+    ws.send(Message::Binary(b"not json".to_vec()))
+        .await
+        .unwrap();
     let f = recv_frame(&mut ws, Codec::Json).await;
     assert_eq!(f.ev, "error");
-    assert!(f.args["message"].as_str().unwrap().contains("protocol error"));
+    assert!(f.args["message"]
+        .as_str()
+        .unwrap()
+        .contains("protocol error"));
 }
 
 /// The echo sources are the documented ones (drift guard: if aura's
@@ -187,7 +214,8 @@ async fn garbage_is_error_value_not_close() {
 fn echo_sources_match_carrier_shapes() {
     let list = booths::echo_booths();
     let has = |name: &str, lang: &str, needle: &str| {
-        list.iter().any(|e| e.type_name == name && e.language == lang && e.source.contains(needle))
+        list.iter()
+            .any(|e| e.type_name == name && e.language == lang && e.source.contains(needle))
     };
     #[cfg(feature = "steel")]
     assert!(has("echo_steel", "steel", "(define (echo_steel"));

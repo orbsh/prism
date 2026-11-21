@@ -6,7 +6,13 @@
 //! address — self-verifying by construction. Also locks: 404 on an
 //! unknown hash, 400 on a malformed address, and the WS path alive on
 //! the same port (the head-replay regression).
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
 use aura_realm::meta;
@@ -20,7 +26,9 @@ const ECHO_STEEL: &str = "(define (echo_steel args) args)";
 async fn boot() -> std::net::SocketAddr {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -60,7 +68,10 @@ async fn code_export_serves_registered_source() {
         "{resp}"
     );
     let body = resp.split("\r\n\r\n").nth(1).expect("head/body split");
-    assert_eq!(body, ECHO_STEEL, "served bytes differ from the registered source");
+    assert_eq!(
+        body, ECHO_STEEL,
+        "served bytes differ from the registered source"
+    );
     // The self-verification claim, executed: the body hashes to the URL.
     assert_eq!(meta::code_hex(&meta::code_hash(body)), hex);
 }
@@ -78,7 +89,10 @@ async fn unknown_hash_is_404() {
 #[tokio::test]
 async fn malformed_address_is_400() {
     let addr = boot().await;
-    for path in ["/code/deadbeef", "/code/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"] {
+    for path in [
+        "/code/deadbeef",
+        "/code/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    ] {
         let resp = text(&get(addr, path).await);
         assert!(resp.starts_with("HTTP/1.1 400"), "{path} → {resp}");
     }
@@ -107,9 +121,7 @@ async fn ws_still_upgrades_on_the_shared_loop() {
     assert_eq!(f.ev, "connected");
 
     ws.send(Message::Text(
-        serde_json::to_string(&Frame::new("echo_steel", serde_json::json!({"msg": "hi"})))
-            .unwrap()
-            .into(),
+        serde_json::to_string(&Frame::new("echo_steel", serde_json::json!({"msg": "hi"}))).unwrap(),
     ))
     .await
     .unwrap();

@@ -58,7 +58,10 @@ impl AssetRoot {
     /// Read the mount from `PRISM_ASSETS`. Absent is legal — an install with no front end
     /// still serves identity, turns and the peer leg; the boot line says so.
     pub fn from_env() -> anyhow::Result<Option<Self>> {
-        match std::env::var("PRISM_ASSETS").ok().filter(|s| !s.trim().is_empty()) {
+        match std::env::var("PRISM_ASSETS")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+        {
             Some(dir) => Ok(Some(Self::open(Path::new(dir.trim()))?)),
             None => Ok(None),
         }
@@ -157,7 +160,9 @@ fn bundle_rel(path: &str) -> Option<&str> {
 /// Does this head ask for a WebSocket upgrade? Checked on the raw head bytes: the handshake
 /// callback cannot answer early, and this branch runs before it.
 fn is_upgrade(head: &Head) -> bool {
-    String::from_utf8_lossy(&head.bytes).to_ascii_lowercase().contains("upgrade: websocket")
+    String::from_utf8_lossy(&head.bytes)
+        .to_ascii_lowercase()
+        .contains("upgrade: websocket")
 }
 
 /// Link the venue's stylesheet into an HTML document: before `</head>` when the document has
@@ -220,7 +225,10 @@ fn content_type(path: &Path) -> &'static str {
 /// hash in the filename). Everything else revalidates, so a rebuilt entry document is not
 /// served from a year-old cache.
 fn immutable(path: &Path) -> bool {
-    matches!(path.extension().and_then(|e| e.to_str()), Some("js") | Some("wasm"))
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("js") | Some("wasm")
+    )
 }
 
 #[cfg(test)]
@@ -236,7 +244,9 @@ mod tests {
             "the link goes before </head>: {out}"
         );
         let ours = out.find("/app.css").expect("the link is there");
-        let bundle = out.find("/assets/main.css").expect("the bundle's sheet stays");
+        let bundle = out
+            .find("/assets/main.css")
+            .expect("the bundle's sheet stays");
         assert!(bundle < ours, "after the bundle's sheets: {out}");
         assert_eq!(out.matches("/app.css").count(), 1, "linked once");
 
@@ -244,7 +254,6 @@ mod tests {
         let bare = String::from_utf8(link_app_css(b"<p>hi</p>")).expect("utf8");
         assert_eq!(bare, "<p>hi</p><link rel=\"stylesheet\" href=\"/app.css\">");
     }
-
 
     use super::*;
 
@@ -270,7 +279,9 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).expect("mkdir");
         assert!(root.resolve("sub").is_none());
         // Empty remainder resolves to the entry document.
-        let entry = root.resolve("").and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+        let entry = root
+            .resolve("")
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
         assert_eq!(entry.as_deref(), Some("index.html"));
     }
 
@@ -280,6 +291,9 @@ mod tests {
         assert!(immutable(Path::new("ui_leptos-abc_bg.wasm")));
         assert!(!immutable(Path::new("index.html")));
         assert_eq!(content_type(Path::new("x.wasm")), "application/wasm");
-        assert_eq!(content_type(Path::new("x.unknown")), "application/octet-stream");
+        assert_eq!(
+            content_type(Path::new("x.unknown")),
+            "application/octet-stream"
+        );
     }
 }

@@ -5,7 +5,13 @@
 //!   standard error naming the missing type, and the rest of the leg keeps working;
 //! - the booth is replaceable: a different `auth` type answers the same call and prism binds the
 //!   user id IT named, without a line of prism changing.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
 use futures_util::{SinkExt, StreamExt};
@@ -24,7 +30,9 @@ type WsClient =
 async fn boot_shipped() -> SocketAddr {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, prism::nodes::Posture::Open);
@@ -37,7 +45,9 @@ async fn boot_shipped() -> SocketAddr {
 /// The renderer's leg: upstream `Outflow`, downstream an array of operations.
 async fn open_ui(addr: SocketAddr) -> WsClient {
     let url = format!("ws://{addr}/channel?codec=json");
-    let (ws, _) = tokio_tungstenite::connect_async(url).await.expect("renderer handshake");
+    let (ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("renderer handshake");
     ws
 }
 
@@ -96,7 +106,11 @@ async fn the_booth_draws_the_login_screen_and_the_signed_in_line() {
     let mut ws = open_ui(addr).await;
 
     // The seeker is an ordinary uplink with the BARE name; the venue adds the marker.
-    send_uplink(&mut ws, serde_json::json!({"dest": "auth.request", "data": {"mode": "login"}})).await;
+    send_uplink(
+        &mut ws,
+        serde_json::json!({"dest": "auth.request", "data": {"mode": "login"}}),
+    )
+    .await;
     let login = screen_into(&mut ws, "login").await;
     let kinds: Vec<&str> = login["children"]
         .as_array()
@@ -104,8 +118,15 @@ async fn the_booth_draws_the_login_screen_and_the_signed_in_line() {
         .iter()
         .filter_map(|c| c["type"].as_str())
         .collect();
-    assert_eq!(kinds, vec!["text", "input", "input", "button"], "a heading, two fields, a submit");
-    assert_eq!(login["children"][2]["bind"]["value"]["type"], "password", "the secret is a password field");
+    assert_eq!(
+        kinds,
+        vec!["text", "input", "input", "button"],
+        "a heading, two fields, a submit"
+    );
+    assert_eq!(
+        login["children"][2]["bind"]["value"]["type"], "password",
+        "the secret is a password field"
+    );
 
     // Signing up is the same screen with one more field, and the venue's answer lands as the
     // signed-in line — the booth reads its own account row for the name. The payload is written the
@@ -121,8 +142,14 @@ async fn the_booth_draws_the_login_screen_and_the_signed_in_line() {
     )
     .await;
     let signed = screen_into(&mut ws, "logout").await;
-    assert_eq!(signed["children"][0]["bind"]["value"]["default"], "signed in as Ada");
-    assert_eq!(signed["children"][1]["type"], "button", "one control ends the binding");
+    assert_eq!(
+        signed["children"][0]["bind"]["value"]["default"],
+        "signed in as Ada"
+    );
+    assert_eq!(
+        signed["children"][1]["type"], "button",
+        "one control ends the binding"
+    );
 }
 
 /// Boot a venue that registers the echoes and NOTHING ELSE — no auth booth. Returns the address plus
@@ -130,7 +157,9 @@ async fn the_booth_draws_the_login_screen_and_the_signed_in_line() {
 async fn boot() -> (SocketAddr, Engine) {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine.clone(), registry, prism::nodes::Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -149,8 +178,14 @@ async fn install_sentinel(engine: &Engine, password: &str) -> prism::identity::U
         body: aura_booth::Body::Rust(Arc::new(move |_ctx, args| {
             let password = password.clone();
             Box::pin(async move {
-                let op = args.get("op").and_then(serde_json::Value::as_str).unwrap_or("");
-                let asked = args.get("password").and_then(serde_json::Value::as_str).unwrap_or("");
+                let op = args
+                    .get("op")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                let asked = args
+                    .get("password")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
                 match op {
                     "verify" | "register" if asked == password => {
                         Ok(serde_json::json!({ "user": user.to_string() }))
@@ -172,14 +207,18 @@ async fn install_sentinel(engine: &Engine, password: &str) -> prism::identity::U
 
 async fn connect(addr: SocketAddr, query: &str) -> (WsClient, serde_json::Value) {
     let url = format!("ws://{addr}/ws?protocol=json{query}");
-    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.expect("ws handshake");
+    let (mut ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("ws handshake");
     let f = recv(&mut ws).await;
     assert_eq!(f.ev, "connected");
     (ws, f.args)
 }
 
 async fn send(ws: &mut WsClient, frame: &Frame) {
-    ws.send(Message::Text(serde_json::to_string(frame).unwrap())).await.unwrap();
+    ws.send(Message::Text(serde_json::to_string(frame).unwrap()))
+        .await
+        .unwrap();
 }
 
 async fn recv(ws: &mut WsClient) -> Frame {
@@ -201,9 +240,16 @@ async fn a_venue_without_an_auth_booth_refuses_login_and_still_serves() {
     let (mut ws, _) = connect(addr, "").await;
 
     for ev in ["login", "signup"] {
-        send(&mut ws, &Frame::new(ev, serde_json::json!({"login_name": "a", "password": "b"}))).await;
+        send(
+            &mut ws,
+            &Frame::new(ev, serde_json::json!({"login_name": "a", "password": "b"})),
+        )
+        .await;
         let f = recv(&mut ws).await;
-        assert_eq!(f.ev, "error", "a login with no booth is an error VALUE, not a close");
+        assert_eq!(
+            f.ev, "error",
+            "a login with no booth is an error VALUE, not a close"
+        );
         let message = f.args["message"].as_str().unwrap_or_default();
         assert!(
             message.contains("auth booth"),
@@ -223,27 +269,47 @@ async fn a_swapped_auth_booth_names_the_user_and_prism_binds_it() {
     let (addr, engine) = boot().await;
     let user = install_sentinel(&engine, "open sesame").await;
     let (mut ws, ident) = connect(addr, "").await;
-    let device = ident["device_id"].as_str().expect("a device id is issued").to_string();
+    let device = ident["device_id"]
+        .as_str()
+        .expect("a device id is issued")
+        .to_string();
 
     send(
         &mut ws,
-        &Frame::new("login", serde_json::json!({"login_name": "ada", "password": "open sesame"})),
+        &Frame::new(
+            "login",
+            serde_json::json!({"login_name": "ada", "password": "open sesame"}),
+        ),
     )
     .await;
     let f = recv(&mut ws).await;
     assert_eq!(f.ev, "login.result");
     assert_eq!(f.args["user_id"].as_str(), Some(user.to_string().as_str()));
-    let token = f.args["token"].as_str().expect("the login rotates the token").to_string();
+    let token = f.args["token"]
+        .as_str()
+        .expect("the login rotates the token")
+        .to_string();
 
     // The binding is prism's, not the booth's: the token it just minted restores the same user AND
     // the same device (an alias and a first-seen date survive with it).
     let (_ws2, ident2) = connect(addr, &format!("&token={token}")).await;
     assert_eq!(ident2["user_id"].as_str(), Some(user.to_string().as_str()));
-    assert_eq!(ident2["device_id"].as_str(), Some(device.as_str()), "the same device comes back");
+    assert_eq!(
+        ident2["device_id"].as_str(),
+        Some(device.as_str()),
+        "the same device comes back"
+    );
 
     // A wrong password is the booth's refusal, relayed as the standard error value.
     let (mut ws3, _) = connect(addr, "").await;
-    send(&mut ws3, &Frame::new("login", serde_json::json!({"login_name": "ada", "password": "nope"}))).await;
+    send(
+        &mut ws3,
+        &Frame::new(
+            "login",
+            serde_json::json!({"login_name": "ada", "password": "nope"}),
+        ),
+    )
+    .await;
     let f = recv(&mut ws3).await;
     assert_eq!(f.ev, "error");
     assert_eq!(f.args["message"].as_str(), Some("invalid credentials"));
@@ -258,7 +324,11 @@ async fn a_refused_gated_event_opens_the_login_screen() {
     let mut ws = open_ui(addr).await;
 
     // `echo_gate` declares `auth` in its interface_schema (the echo fixture the gate tests use).
-    send_uplink(&mut ws, serde_json::json!({"dest": "echo_gate", "data": {}})).await;
+    send_uplink(
+        &mut ws,
+        serde_json::json!({"dest": "echo_gate", "data": {}}),
+    )
+    .await;
 
     let login = screen_into(&mut ws, "login").await;
     assert_eq!(

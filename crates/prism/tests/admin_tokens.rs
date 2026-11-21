@@ -4,7 +4,13 @@
 //! takes the password once and hands back the same thing a login hands a page — a device bound to
 //! the account, and the token that proves it. The password is the whole authorization: without it
 //! the answer is 401 and nothing is minted, which is what keeps this from being an operator power.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
 use prism::{identity::Registry, nodes::Posture, Gateway};
@@ -17,7 +23,9 @@ use tokio::net::{TcpListener, TcpStream};
 async fn boot_with_account(login: &str, password: &str) -> (std::net::SocketAddr, String) {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_auth(&engine, &registry).await.unwrap();
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, Posture::Open);
@@ -27,20 +35,25 @@ async fn boot_with_account(login: &str, password: &str) -> (std::net::SocketAddr
 
     use futures_util::SinkExt;
     let url = format!("ws://{addr}/ws?protocol=json");
-    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.expect("ws handshake");
+    let (mut ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("ws handshake");
     assert_eq!(next(&mut ws).await.ev, "connected");
     let signup = prism_protocol::Frame::new(
         "signup",
         json!({ "login_name": login, "password": password }),
     );
     ws.send(tokio_tungstenite::tungstenite::Message::Text(
-        serde_json::to_string(&signup).unwrap().into(),
+        serde_json::to_string(&signup).unwrap(),
     ))
     .await
     .unwrap();
     let answer = next(&mut ws).await;
     assert_eq!(answer.ev, "signup.result", "{}", answer.args);
-    let user = answer.args["user_id"].as_str().expect("a user id").to_string();
+    let user = answer.args["user_id"]
+        .as_str()
+        .expect("a user id")
+        .to_string();
     (addr, user)
 }
 
@@ -101,7 +114,11 @@ async fn a_password_buys_a_token_and_that_token_is_the_account() {
     )
     .await;
     assert_eq!(status, 201, "minted: {body}");
-    assert_eq!(body["user_id"], json!(user), "the account it proves: {body}");
+    assert_eq!(
+        body["user_id"],
+        json!(user),
+        "the account it proves: {body}"
+    );
     assert_eq!(
         body["device_id"].as_str().unwrap().len(),
         36,
@@ -112,7 +129,9 @@ async fn a_password_buys_a_token_and_that_token_is_the_account() {
     // The token is the credential: presenting it on the wire restores the binding, which is exactly
     // what a login does — that is why this route is login over HTTP and not a second identity.
     let url = format!("ws://{addr}/ws?protocol=json&token={token}");
-    let (mut ws, _) = tokio_tungstenite::connect_async(url).await.expect("ws handshake");
+    let (mut ws, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("ws handshake");
     let frame = next(&mut ws).await;
     assert_eq!(frame.ev, "connected");
     assert_eq!(

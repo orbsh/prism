@@ -26,11 +26,19 @@
 //! The frame's field set must stay shape-compatible across both (maintenance
 //! rule: one model, two codec impls, a conformance round-trip over every variant).
 
-
 // Unit tests may use the unwrap/panic vocabulary the production targets are
 // denied (a panicking test is a failing test). `cfg(test)` is on only for this
 // crate's own test build; `tests/` crates set the same line at their own root.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unwrap_in_result,
+        clippy::panic_in_result_fn
+    )
+)]
 use serde::{Deserialize, Serialize};
 
 /// The one wire frame. `args` is the event payload — the same object a
@@ -47,7 +55,10 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(ev: impl Into<String>, args: serde_json::Value) -> Self {
-        Self { ev: ev.into(), args }
+        Self {
+            ev: ev.into(),
+            args,
+        }
     }
 }
 
@@ -139,12 +150,8 @@ impl Codec {
 
     pub fn decode(&self, bytes: &[u8]) -> Result<Frame, ProtocolError> {
         match self {
-            Codec::Json => {
-                serde_json::from_slice(bytes).map_err(|e| ProtocolError(e.to_string()))
-            }
-            Codec::Cbor => {
-                ciborium::from_reader(bytes).map_err(|e| ProtocolError(e.to_string()))
-            }
+            Codec::Json => serde_json::from_slice(bytes).map_err(|e| ProtocolError(e.to_string())),
+            Codec::Cbor => ciborium::from_reader(bytes).map_err(|e| ProtocolError(e.to_string())),
         }
     }
 }
@@ -158,7 +165,10 @@ pub enum Refusal {
     /// `?codec=` or `?protocol=` carried a value that is not `json`/`cbor`.
     BadQuery { name: &'static str, value: String },
     /// A valid choice, refused by the deployment's `PRISM_CODECS` pin.
-    Pinned { codec: Codec, allowed: &'static [Codec] },
+    Pinned {
+        codec: Codec,
+        allowed: &'static [Codec],
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -255,9 +265,10 @@ pub fn negotiate(
 fn codec_param(v: Option<&str>) -> Result<Option<Codec>, Refusal> {
     match v {
         None => Ok(None),
-        Some(v) => Codec::parse(v)
-            .map(Some)
-            .ok_or_else(|| Refusal::BadQuery { name: "codec", value: v.to_string() }),
+        Some(v) => Codec::parse(v).map(Some).ok_or_else(|| Refusal::BadQuery {
+            name: "codec",
+            value: v.to_string(),
+        }),
     }
 }
 
@@ -267,9 +278,10 @@ fn codec_param(v: Option<&str>) -> Result<Option<Codec>, Refusal> {
 fn protocol_param(v: Option<&str>) -> Result<Option<Codec>, Refusal> {
     match v {
         None => Ok(None),
-        Some(v) => Codec::parse(v)
-            .map(Some)
-            .ok_or_else(|| Refusal::BadQuery { name: "protocol", value: v.to_string() }),
+        Some(v) => Codec::parse(v).map(Some).ok_or_else(|| Refusal::BadQuery {
+            name: "protocol",
+            value: v.to_string(),
+        }),
     }
 }
 
@@ -296,7 +308,10 @@ mod tests {
             Frame::new("echo", serde_json::json!({"msg": "hi"})),
             Frame::new("echo", serde_json::json!(null)),
             Frame::new("order.created", serde_json::json!([1, 2, {"u": "a"}])),
-            Frame { ev: "ping".into(), args: serde_json::Value::Null },
+            Frame {
+                ev: "ping".into(),
+                args: serde_json::Value::Null,
+            },
         ];
         for f in &frames {
             for codec in [Codec::Json, Codec::Cbor] {
@@ -337,38 +352,59 @@ mod tests {
         // 1. subprotocol, echoed.
         assert_eq!(
             one(&["accrete-cbor"], None, None),
-            Ok(Negotiated { codec: Codec::Cbor, echo: Some("accrete-cbor") })
+            Ok(Negotiated {
+                codec: Codec::Cbor,
+                echo: Some("accrete-cbor")
+            })
         );
         // …and it outranks both query rungs.
         assert_eq!(
             one(&["accrete-json"], Some("cbor"), Some("cbor")),
-            Ok(Negotiated { codec: Codec::Json, echo: Some("accrete-json") }),
+            Ok(Negotiated {
+                codec: Codec::Json,
+                echo: Some("accrete-json")
+            }),
             "the highest rung wins, not the most specific one"
         );
         // 2. `?codec=`.
         assert_eq!(
             one(&[], Some("cbor"), Some("json")),
-            Ok(Negotiated { codec: Codec::Cbor, echo: None })
+            Ok(Negotiated {
+                codec: Codec::Cbor,
+                echo: None
+            })
         );
         // 3. the legacy `?protocol=`.
         assert_eq!(
             one(&[], None, Some("json")),
-            Ok(Negotiated { codec: Codec::Json, echo: None })
+            Ok(Negotiated {
+                codec: Codec::Json,
+                echo: None
+            })
         );
         // 4. nothing: json, the debuggable one.
         assert_eq!(
             one(&[], None, None),
-            Ok(Negotiated { codec: Codec::Json, echo: None })
+            Ok(Negotiated {
+                codec: Codec::Json,
+                echo: None
+            })
         );
         // A foreign protocol in the list is somebody else's and is skipped, not refused.
         assert_eq!(
             one(&["chat", "accrete-cbor"], None, None),
-            Ok(Negotiated { codec: Codec::Cbor, echo: Some("accrete-cbor") })
+            Ok(Negotiated {
+                codec: Codec::Cbor,
+                echo: Some("accrete-cbor")
+            })
         );
         // A client that lists ours twice in both orders gets its first.
         assert_eq!(
             one(&["accrete-cbor", "accrete-json"], None, None),
-            Ok(Negotiated { codec: Codec::Cbor, echo: Some("accrete-cbor") })
+            Ok(Negotiated {
+                codec: Codec::Cbor,
+                echo: Some("accrete-cbor")
+            })
         );
     }
 
@@ -383,16 +419,25 @@ mod tests {
         );
         assert_eq!(
             negotiate(&[], Some("msgpack"), None, BOTH),
-            Err(Refusal::BadQuery { name: "codec", value: "msgpack".into() })
+            Err(Refusal::BadQuery {
+                name: "codec",
+                value: "msgpack".into()
+            })
         );
         assert_eq!(
             negotiate(&[], Some(""), None, BOTH),
-            Err(Refusal::BadQuery { name: "codec", value: String::new() }),
+            Err(Refusal::BadQuery {
+                name: "codec",
+                value: String::new()
+            }),
             "present but empty is a value the client wrote"
         );
         assert_eq!(
             negotiate(&[], None, Some("binary"), BOTH),
-            Err(Refusal::BadQuery { name: "protocol", value: "binary".into() }),
+            Err(Refusal::BadQuery {
+                name: "protocol",
+                value: "binary".into()
+            }),
             "the legacy rung stopped meaning `anything = CBOR`"
         );
     }
@@ -406,21 +451,33 @@ mod tests {
 
         assert_eq!(
             negotiate(&["accrete-cbor"], None, None, JSON_ONLY),
-            Err(Refusal::Pinned { codec: Codec::Cbor, allowed: JSON_ONLY })
+            Err(Refusal::Pinned {
+                codec: Codec::Cbor,
+                allowed: JSON_ONLY
+            })
         );
         assert_eq!(
             negotiate(&[], Some("cbor"), None, JSON_ONLY),
-            Err(Refusal::Pinned { codec: Codec::Cbor, allowed: JSON_ONLY })
+            Err(Refusal::Pinned {
+                codec: Codec::Cbor,
+                allowed: JSON_ONLY
+            })
         );
         assert_eq!(
             negotiate(&[], None, None, JSON_ONLY),
-            Ok(Negotiated { codec: Codec::Json, echo: None })
+            Ok(Negotiated {
+                codec: Codec::Json,
+                echo: None
+            })
         );
         // Absent everything under a CBOR-only pin: the pin IS the answer (otherwise the flag
         // could never take effect for a client that asks for nothing).
         assert_eq!(
             negotiate(&[], None, None, CBOR_ONLY),
-            Ok(Negotiated { codec: Codec::Cbor, echo: None })
+            Ok(Negotiated {
+                codec: Codec::Cbor,
+                echo: None
+            })
         );
     }
 
@@ -432,7 +489,11 @@ mod tests {
             assert_eq!(Codec::parse(codec.as_str()), Some(codec));
             assert_eq!(codec.subprotocol(), format!("accrete-{}", codec.as_str()));
         }
-        assert_eq!(Codec::from_subprotocol("json"), None, "the prefix is not optional");
+        assert_eq!(
+            Codec::from_subprotocol("json"),
+            None,
+            "the prefix is not optional"
+        );
         assert_eq!(Codec::from_subprotocol("accrete-CBOR"), None);
         assert_eq!(Codec::parse("CBOR"), None);
     }

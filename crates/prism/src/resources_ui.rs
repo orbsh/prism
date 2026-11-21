@@ -46,7 +46,6 @@ pub(crate) async fn install(engine: &aura_engine::Engine) {
         name: BOOTH.to_string(),
         body: aura_booth::Body::Rust(Arc::new(move |ctx, args| {
             let resources = resources.clone();
-            let ctx = ctx.clone();
             Box::pin(async move {
                 let ops = match answer(&resources, &args) {
                     Ok(ops) => ops,
@@ -95,7 +94,9 @@ pub(crate) async fn install(engine: &aura_engine::Engine) {
         concurrency: aura_booth::Concurrency::Queued,
     };
     match engine.register(booth).await {
-        Ok(()) => println!("prism: `{ADMIN_PREFIX}<verb>` reaches the grant page (booth `{BOOTH}`)"),
+        Ok(()) => {
+            println!("prism: `{ADMIN_PREFIX}<verb>` reaches the grant page (booth `{BOOTH}`)")
+        }
         Err(e) => eprintln!("prism: the grant page booth did not register: {e}"),
     }
 }
@@ -161,12 +162,18 @@ fn answer(resources: &Registry, envelope: &Value) -> anyhow::Result<Vec<Value>> 
             if let Some(value) = secret {
                 resources.secret(&kind, value)?;
             }
-            vec![set_list(&rows(resources)?), notice(&format!("declared `{kind}`"))]
+            vec![
+                set_list(&rows(resources)?),
+                notice(&format!("declared `{kind}`")),
+            ]
         }
         REVOKE_EVENT => {
             let kind = text("kind")?;
             resources.revoke(&kind)?;
-            vec![set_list(&rows(resources)?), notice(&format!("withdrew `{kind}`"))]
+            vec![
+                set_list(&rows(resources)?),
+                notice(&format!("withdrew `{kind}`")),
+            ]
         }
         other => {
             eprintln!("prism: admin page heard `{other}` and has no answer for it");
@@ -359,7 +366,10 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let line = rows[0].to_string();
         assert!(line.contains("git"), "{line}");
-        assert!(line.contains("[rw]"), "the mode is rendered as the row's own: {line}");
+        assert!(
+            line.contains("[rw]"),
+            "the mode is rendered as the row's own: {line}"
+        );
         assert!(line.contains("GIT_TOKEN"), "the KEY IS NAMED: {line}");
         assert!(
             !line.contains("a-credential"),
@@ -396,7 +406,8 @@ mod tests {
         assert_eq!(ops.len(), 2, "create + the list, one answer: {ops:?}");
         assert_eq!(ops[0]["action"], "create");
 
-        let elsewhere = json!({ "name": CONNECT_EVENT, "device": "d", "island": "gravity-model", "data": {} });
+        let elsewhere =
+            json!({ "name": CONNECT_EVENT, "device": "d", "island": "gravity-model", "data": {} });
         assert!(
             answer(&registry, &elsewhere).unwrap().is_empty(),
             "the same broadcast for another island is not this page's to draw"

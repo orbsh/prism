@@ -26,7 +26,6 @@ use effector_protocol::{Frame, HostFrame};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
-
 /// Whose resources a remote call may touch. The realm recorded the owner when it dispatched the
 /// call (stamped from the turn's envelope); this plane only parses the text it is given. It does
 /// NOT look at the instance key: that key's shape is ADR-0018's vocabulary and belongs to the
@@ -197,9 +196,9 @@ pub(crate) async fn serve_mounted(
     // is stated, never silent (the same disclosure rule the alias-replacement
     // line above follows); it is NOT a refusal — a call into an un-carried
     // language answers with the carrier's own error value per call.
-    if let Some(line) = gw.with_mount_table(|table| {
-        crate::mounts::dial_in_note(table, &node_alias, &carriers)
-    }) {
+    if let Some(line) =
+        gw.with_mount_table(|table| crate::mounts::dial_in_note(table, &node_alias, &carriers))
+    {
         eprintln!("{line}");
     }
     // What contains this node (ADR-0003 §1): the one fact that decides whether it may be handed code
@@ -217,7 +216,10 @@ pub(crate) async fn serve_mounted(
 
     // Writer channel: realm calls push frames; this task owns the sink.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Frame>();
-    let entry = aura_realm::ActuatorConn { sender: tx.clone(), peer };
+    let entry = aura_realm::ActuatorConn {
+        sender: tx.clone(),
+        peer,
+    };
     {
         // The venue's pool, not this realm's own map (aura ADR-0053): every realm the engine
         // creates borrows it, so a job dispatched a moment later can find this node.
@@ -251,7 +253,11 @@ pub(crate) async fn serve_mounted(
             // reading is right; saying it is the whole job (effector ADR-0006).
             eprintln!(
                 "effector mount: machine '{}' is also connected as {}",
-                if machine.is_empty() { "(unidentified)" } else { &machine },
+                if machine.is_empty() {
+                    "(unidentified)"
+                } else {
+                    &machine
+                },
                 admitted.same_machine.join(", ")
             );
         }
@@ -265,7 +271,11 @@ pub(crate) async fn serve_mounted(
     // Writer task: drain the channel into the socket.
     tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
-            if sink.send(Message::Text(serde_json::to_string(&frame)?)).await.is_err() {
+            if sink
+                .send(Message::Text(serde_json::to_string(&frame)?))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -395,7 +405,9 @@ struct PresenceGuard {
 
 impl Drop for PresenceGuard {
     fn drop(&mut self) {
-        let Some(realm) = self.realm.take() else { return };
+        let Some(realm) = self.realm.take() else {
+            return;
+        };
         let alias = std::mem::take(&mut self.alias);
         let channel = self.channel.clone();
         tokio::spawn(async move {

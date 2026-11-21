@@ -70,7 +70,10 @@ pub(crate) async fn read_head(stream: &mut TcpStream) -> Option<Head> {
             let method = parts.next().unwrap_or("").to_string();
             let target = parts.next().unwrap_or("");
             let path = target.split('?').next().unwrap_or(target).to_string();
-            let query = target.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
+            let query = target
+                .split_once('?')
+                .map(|(_, q)| q.to_string())
+                .unwrap_or_default();
             let head_bytes = bytes[..pos].to_vec();
             // Body: whatever arrived past the header + the announced
             // Content-Length, read to completion (bounded by the same
@@ -87,7 +90,13 @@ pub(crate) async fn read_head(stream: &mut TcpStream) -> Option<Head> {
                 }
                 body.extend_from_slice(&chunk[..n]);
             }
-            return Some(Head { bytes: head_bytes, path, query, method, body });
+            return Some(Head {
+                bytes: head_bytes,
+                path,
+                query,
+                method,
+                body,
+            });
         }
         if bytes.len() > BOUND {
             return None;
@@ -101,7 +110,8 @@ fn content_length(head_text: &str) -> usize {
         .skip(1)
         .find_map(|l| {
             let (k, v) = l.split_once(':')?;
-            k.trim().eq_ignore_ascii_case("content-length")
+            k.trim()
+                .eq_ignore_ascii_case("content-length")
                 .then(|| v.trim().parse::<usize>().ok())
                 .flatten()
         })
@@ -191,7 +201,10 @@ pub(crate) struct Prefixed {
 
 impl Prefixed {
     pub(crate) fn new(head: Vec<u8>, inner: TcpStream) -> Self {
-        Self { prefix: std::io::Cursor::new(head), inner }
+        Self {
+            prefix: std::io::Cursor::new(head),
+            inner,
+        }
     }
 }
 

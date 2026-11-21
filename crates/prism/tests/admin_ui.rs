@@ -24,7 +24,9 @@ use serde_json::json;
 async fn boot() -> std::sync::Arc<Gateway> {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::new(engine, registry, Posture::Open);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

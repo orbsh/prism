@@ -21,12 +21,7 @@
 
 use aura_engine::Engine;
 use futures_util::SinkExt;
-use prism::{
-    identity::Registry,
-    nodes::Posture,
-    shell::Shell,
-    Gateway,
-};
+use prism::{identity::Registry, nodes::Posture, shell::Shell, Gateway};
 use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as Ws;
@@ -51,7 +46,9 @@ async fn boot(frame: &str) -> (std::net::SocketAddr, std::sync::Arc<Gateway>) {
     let file = dir.path().join("shell.json");
     std::fs::write(&file, frame).unwrap();
     let registry = Registry::open(&dir.keep().join("data")).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     Gateway::with_echoes(&engine).await.unwrap();
     let gw = Gateway::with_deployment(
         engine,
@@ -101,7 +98,9 @@ async fn the_frame_is_drawn_from_the_file_before_the_application_is_asked() {
     // first thing it recognises.
     for _ in 0..8 {
         let frame = recv_json(&mut ws).await;
-        let Some(ops) = frame.as_array() else { continue };
+        let Some(ops) = frame.as_array() else {
+            continue;
+        };
         seen.extend(ops.iter().cloned());
         if created.is_none() {
             if let Some(op) = ops
@@ -122,7 +121,9 @@ async fn the_frame_is_drawn_from_the_file_before_the_application_is_asked() {
     let create = created.expect("the frame is created on connect");
 
     // The file travels unchanged: the venue wraps it in a `create`, it does not rewrite it.
-    let children = create["data"]["children"].as_array().expect("a case has children");
+    let children = create["data"]["children"]
+        .as_array()
+        .expect("a case has children");
     assert_eq!(children.len(), 2, "{}", create["data"]);
     assert_eq!(
         create["data"]["regions"][0]["booth"], "gravity-model",
@@ -187,12 +188,15 @@ async fn an_islands_slots_arrive_namespaced() {
     let mut landed = None;
     for _ in 0..40 {
         let frame = recv_json(&mut ws).await;
-        let Some(ops) = frame.as_array() else { continue };
+        let Some(ops) = frame.as_array() else {
+            continue;
+        };
         // The venue's own frame data also arrives as `set` (the `user` slot), so this looks for the
         // one thing under test: an application frame that has been moved into a namespace.
         if let Some(op) = ops.iter().find(|op| {
             op.get("action").and_then(Value::as_str) == Some("set")
-                && op.get("slot")
+                && op
+                    .get("slot")
                     .and_then(Value::as_str)
                     .is_some_and(|s| s.starts_with("island:"))
         }) {
@@ -227,7 +231,9 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
     let mut opened = None;
     for _ in 0..6 {
         let frame = recv_json(&mut ws).await;
-        let Some(ops) = frame.as_array() else { continue };
+        let Some(ops) = frame.as_array() else {
+            continue;
+        };
         if let Some(op) = ops
             .iter()
             .find(|op| op.get("action").and_then(Value::as_str) == Some("inject"))
@@ -255,8 +261,7 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
             "dest": "island",
             "data": "beta"
         }))
-        .unwrap()
-        .into(),
+        .unwrap(),
     ))
     .await
     .expect("the uplink goes out");
@@ -264,7 +269,9 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
     let mut moved = None;
     for _ in 0..6 {
         let frame = recv_json(&mut ws).await;
-        let Some(ops) = frame.as_array() else { continue };
+        let Some(ops) = frame.as_array() else {
+            continue;
+        };
         if let Some(op) = ops
             .iter()
             .find(|op| op.get("action").and_then(Value::as_str) == Some("inject"))
@@ -278,7 +285,6 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
     let moved = moved.expect("the walk is answered");
     assert_eq!(moved["island"].as_str(), Some("beta"), "{moved}");
 }
-
 
 /// The frame's two dynamic slots, filled by the venue (ADR-0019): who is looking, and what the
 /// navigation offers. Both are facts a booth is never told, and both are needed BEFORE any
@@ -296,7 +302,9 @@ async fn the_frame_gets_its_viewer_and_its_navigation() {
     let mut pages = Vec::new();
     for _ in 0..10 {
         let frame = recv_json(&mut ws).await;
-        let Some(ops) = frame.as_array() else { continue };
+        let Some(ops) = frame.as_array() else {
+            continue;
+        };
         for op in ops {
             match op["action"].as_str() {
                 Some("set") if op["slot"] == "user" => user = Some(op.clone()),
@@ -318,7 +326,11 @@ async fn the_frame_gets_its_viewer_and_its_navigation() {
     // "nobody yet" is an answer and an empty header is not.
     assert!(shown.contains("guest"), "{user}");
 
-    assert_eq!(nav.len(), 1, "one item per island the frame declares: {nav:?}");
+    assert_eq!(
+        nav.len(),
+        1,
+        "one item per island the frame declares: {nav:?}"
+    );
     // The pager's row: the same id as the navigation item (so a click can only name a page that
     // exists), holding the binding that shows the region.
     assert_eq!(pages.len(), 1, "one page per island: {pages:?}");

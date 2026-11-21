@@ -3,7 +3,13 @@
 //! This test lives in its OWN integration-test binary on purpose: the pin is read once per
 //! process (`OnceLock`), exactly as a deployment reads it once at boot, so a second value could
 //! not take effect in a process that had already served a handshake. One file, one value.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_engine::Engine;
 use futures_util::StreamExt;
@@ -19,7 +25,9 @@ use tokio_tungstenite::tungstenite::Message;
 async fn boot() -> SocketAddr {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(&dir.keep()).unwrap();
-    let engine = Engine::start(&Default::default()).await.expect("engine boot");
+    let engine = Engine::start(&Default::default())
+        .await
+        .expect("engine boot");
     let gw = Gateway::new(engine, registry, Posture::Open);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -70,7 +78,8 @@ async fn a_pinned_deployment_refuses_the_other_codec_and_still_serves_its_own() 
             panic!("a pinned refusal is an HTTP answer: {refused:?}");
         };
         assert_eq!(response.status().as_u16(), 400);
-        let body = String::from_utf8_lossy(response.body().as_deref().unwrap_or_default()).to_string();
+        let body =
+            String::from_utf8_lossy(response.body().as_deref().unwrap_or_default()).to_string();
         assert!(
             body.contains("PRISM_CODECS"),
             "the refusal names the flag that refused it: {body:?}"

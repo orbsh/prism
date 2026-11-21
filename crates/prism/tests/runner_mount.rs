@@ -8,7 +8,13 @@
 //! reference for the operation itself (the mount's source is the runner, and
 //! only the runner). The delivered script prints one JSON document; a failed
 //! script returns an error VALUE rather than a masked carrier failure.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unwrap_in_result, clippy::panic_in_result_fn)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_in_result,
+    clippy::panic_in_result_fn
+)]
 
 use aura_booth::{Body, InstanceId, InstanceKey};
 use prism::{identity::Registry, mounts::MountDecl, Gateway};
@@ -145,8 +151,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     };
     let _node = tokio::spawn(effector_runtime::remote::run(config));
     for _ in 0..50 {
-        if engine.realm_set.pool().contains("runner-node")
-        {
+        if engine.realm_set.pool().contains("runner-node") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
