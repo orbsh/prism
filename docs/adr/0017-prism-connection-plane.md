@@ -265,7 +265,15 @@ The plane promises no order between two facts. A page binds both and assumes nei
 Under `/admin`, JSON in and JSON out on the same accept loop: the four node-approval endpoints from
 ADR-0015 (`POST /nodes`, `GET /nodes`, `POST /nodes/{alias}/approve`, `DELETE /nodes/{alias}`), plus
 `POST /admin/revoke {device_id}` and `GET /admin/dead` — the engine's dead ring, listing events that
-reached nobody and deliveries that reached a queue but could not call the body. The node registry
+reached nobody and deliveries that reached a queue but could not call the body.
+
+`POST /admin/tokens {login_name, password, alias?}` mints an account's token for an UNATTENDED
+caller, and it is the one route here that authenticates: the password is the proof, and the answer is
+what a login would give a page — a device of its own, bound to the account, and the token that proves
+it. A script cannot hold a socket open for a login and should not carry a password, so this is login
+over HTTP rather than an operator power: without the password it answers 401 and mints nothing, and
+an unknown account gets the same answer as a wrong password (no account enumeration). The token then
+rides the dial (`?token=`), which is the same path a page's reconnect takes. The node registry
 lives in prism's own okm instance (ns 52) beside the identity tables.
 
 Booth code is not delivered through this prefix. A booth is a registered type in the running process
