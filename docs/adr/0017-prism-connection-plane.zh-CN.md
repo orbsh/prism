@@ -130,7 +130,7 @@ Rust 摊位的函数体拿不到触发它的事件名（具体名字被派发层
 合法是 fluxen 判的。不是 Accrete 操作的帧会被点名并跳过，所以一处笔误仍然画出其余部分。同一份数据
 也会以 `{ev, args}` 到达这条事件所寻址的对端连接——一次 emit，两种呈现。
 
-**上行。** 页面发裸 `dest`；场馆给它加上标记，以 `{name, device, sender: {device, user|null},
+**上行。** 页面发裸 `dest`；场馆给它加上标记，以 `{name, device, sender: {device, user|null, display_name?},
 data}` 发 `ui:<dest>`。sender 是这条 socket 自己的身份，只查一次：页面没有任何字段可以冒称别人。
 在这一侧标记属于场馆，因为渲染器的不同使用方对裸名字的理解不同，谁都不该为这个场馆的拼法买单。`/ws`
 上的程序自己写标记；中间没有场馆替它加。
@@ -147,7 +147,9 @@ data}` 发 `ui:<dest>`。sender 是这条 socket 自己的身份，只查一次�
 没有它，事件名就是 handler 名，脚本会被要求提供一个叫 `ui:add_to_cart` 的函数——语言里根本写不
 出来——而且投递会被丢掉。摊位声明带标记的订阅、函数保持原名，就是标记的全部代价。
 
-**身份经载荷到达。** handler 收到 `{name, device, sender: {device, user|null}, data}`。`Ctx`、
+**名字由场馆来说。** `sender.display_name` 是账户的名字（昵称，否则登录名），它放在这里而不是应用里，理由和 id 放在这里一样：名册是这一层的。应用若想把一个人的名字放进自己的行里，就只能把登录名抄进一个不拥有它的存储 —— 那是一个改名就过期、且只能靠猜的事实 —— 所以场馆陈述它，应用把它传下去。**缺席而非空串**：匿名设备没有账户，`auth` 摊位转接外部 IdP 的部署可能在这里根本没有行。读到缺席的读法显示 id。
+
+**身份经载荷到达。** handler 收到 `{name, device, sender: {device, user|null, display_name?}, data}`。`Ctx`、
 `Job`、`InstanceId` 不带身份字段；身份同样刻意不作为存储分区 key：分区可按任何业务维度
 （partitioning.md §2.1）——地址回答「谁串行处理」，信封回答「谁发起」。
 

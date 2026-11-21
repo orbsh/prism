@@ -190,8 +190,8 @@ rest. The same data reaches the program leg as `{ev, args}`, in the peer connect
 addresses — one emit, two renderings.
 
 **Uplink.** The page sends a bare `dest`; the venue puts the marker on it and emits `ui:<dest>` with
-`{name, device, sender: {device, user|null}, data}`. The sender is this socket's own identity, looked
-up once: a page has no field with which to claim another. The marker belongs to the venue on this
+`{name, device, sender: {device, user|null, display_name?}, data}`. The sender is this socket's own
+identity, looked up once: a page has no field with which to claim another. The marker belongs to the venue on this
 side because different consumers of a renderer make different sense of a bare name, and none of them
 should have to learn this venue's spelling. A program on `/ws` writes the marker itself; there is no
 venue in between to add it.
@@ -212,10 +212,18 @@ script would be asked for a function called `ui:add_to_cart` — unnameable — 
 dropped. A booth that declares the marked subscription and keeps its plain name is the whole cost of
 the marker.
 
-**Identity rides the payload.** A handler receives `{name, device, sender: {device, user|null},
-data}`. `Ctx`, `Job` and `InstanceId` carry no identity fields, and identity is deliberately not the
+**Identity rides the payload.** A handler receives `{name, device, sender: {device, user|null,
+display_name?}, data}`. `Ctx`, `Job` and `InstanceId` carry no identity fields, and identity is deliberately not the
 storage partition key either: a partition may be keyed by any business dimension (partitioning.md
 §2.1) — the address answers "who serially processes", the envelope answers "who initiated".
+
+**The name is the venue's to say.** `sender.display_name` is the account's name (nickname, else login
+name), and it is here rather than in the application for the same reason the ids are: the registry is
+this layer's. An application that wanted a person's name in its own rows would otherwise copy a login
+name into a store that does not own it — a fact that goes stale on a rename and can only be guessed
+at — so the venue states it and the application passes it on. Absent, never empty, when there is
+nothing to say: an anonymous device has no account, and a deployment whose `auth` booth delegates to
+an external IdP may have no row here at all. A reader that finds it absent shows the id.
 
 **A booth never answers into the page.** A delivery discards a return value; a booth that wants the
 page to see something EMITS `ui:<name>`. An answer that is not an operation list draws nothing, and
