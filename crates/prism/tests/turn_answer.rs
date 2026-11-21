@@ -271,9 +271,11 @@ async fn an_answer_moves_the_run_and_never_reaches_the_model() {
         &mut ws,
         &prism_protocol::Frame::new(
             "ui:turn.submit",
+            // NO `member_id`: a page does not name its speaker, the venue stamps it. (A number in
+            // that field is what this fixture used to send, and k10r refuses it — member ids are
+            // uuids — which is a usage error surfacing as a turn failure.)
             json!({
                 "channel_id": 7,
-                "member_id": 1,
                 "user_message": "which way?",
                 "event": "ui:turn.delta",
                 "mounts": [],

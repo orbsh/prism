@@ -476,7 +476,8 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
             "ui:turn.submit",
             json!({
                 "channel_id": 7,
-                "member_id": 1,
+                // NO `member_id`: a page does not name its speaker — the venue stamps the account.
+                // (A number here is refused by k10r, whose member ids are uuids.)
                 "user_message": "add three to four",
                 "event": "ui:turn.delta",
                 "mounts": [{"language": "python", "type": "runner_py"}],

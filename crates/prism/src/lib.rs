@@ -1198,10 +1198,7 @@ impl Gateway {
             let envelope = serde_json::json!({
                 "name": ev,
                 "device": device.to_string(),
-                "sender": {
-                    "device": device.to_string(),
-                    "user": (!identity::is_anonymous(user)).then(|| user.to_string()),
-                },
+                "sender": self.sender_json(device, user),
                 "data": args,
             });
             if let Err(e) = aura_realm::Realm::emit(&self.engine.realm, None, &ev, envelope).await {
@@ -1236,10 +1233,7 @@ impl Gateway {
         // results now carry the envelope (the ADR's shape, not a
         // compatibility surface).
         let envelope = serde_json::json!({
-            "sender": {
-                "device": device.to_string(),
-                "user": (!identity::is_anonymous(user)).then(|| user.to_string()),
-            },
+            "sender": self.sender_json(device, user),
             "args": args,
         });
         let target = InstanceId { booth_type: ev.clone(), key: InstanceKey::Named("ws".into()) };
@@ -1440,6 +1434,31 @@ impl Gateway {
             .any(|route| route.auth)
     }
 
+
+    /// WHO SENT IT, as the venue knows it: the device, the account, and the account's NAME.
+    ///
+    /// The name belongs here and only here. A booth writes rows into a memory store that has its own
+    /// member rows; if the booth had to copy a login name into that store it would be inventing a
+    /// fact it does not own (and would go stale on a rename). The venue is the one layer holding the
+    /// account registry, so it says the name in the envelope and the application passes it on —
+    /// `display_name` is absent for an anonymous sender, and absent when the registry has no row for
+    /// the account (a booth swapped for an external IdP), which the readers treat as "show the id".
+    pub(crate) fn sender_json(
+        &self,
+        device: identity::DeviceId,
+        user: identity::UserId,
+    ) -> serde_json::Value {
+        let mut sender = serde_json::json!({
+            "device": device.to_string(),
+            "user": (!identity::is_anonymous(user)).then(|| user.to_string()),
+        });
+        if !identity::is_anonymous(user) {
+            if let Ok(Some(name)) = auth::AuthStore::new(self.registry.store()).display_name(user) {
+                sender["display_name"] = serde_json::json!(name);
+            }
+        }
+        sender
+    }
 
     fn identities(&self, id: u64) -> (identity::DeviceId, identity::UserId) {
         let guard = self.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

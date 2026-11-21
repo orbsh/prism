@@ -132,7 +132,7 @@ async fn a_program_submits_a_view_event_and_reads_the_answer_back() {
 
     send_json(
         &mut ws,
-        json!({"ev": "ui:peer.submit", "args": {"content": "hi", "channel_id": 1, "member_id": 1}}),
+        json!({"ev": "ui:peer.submit", "args": {"content": "hi", "channel_id": 1}}),
     )
     .await;
 

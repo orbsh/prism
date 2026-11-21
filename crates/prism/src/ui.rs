@@ -924,10 +924,10 @@ async fn dispatch(
                 // saw a payload, and the run waited for a reply nobody could address.
                 "device": device.to_string(),
                 "id": uplink.id.clone(),
-                "sender": {
-                    "device": device.to_string(),
-                    "user": (!identity::is_anonymous(bound)).then(|| bound.to_string()),
-                },
+                // ONE SENDER SHAPE, from the one place that can say it: the venue's registry is
+                // what knows an account's name, so the same helper builds the sender on every leg
+                // (a renderer's uplink is a sender like any other).
+                "sender": gw.sender_json(device, bound),
                 "data": data,
             });
             gw.emit(&event, envelope).await;

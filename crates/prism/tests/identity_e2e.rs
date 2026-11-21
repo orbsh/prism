@@ -227,6 +227,38 @@ async fn plain_echo_wraps_args_in_envelope() {
     assert_eq!(f.args["sender"]["device"], serde_json::json!(ident.device));
 }
 
+/// THE ENVELOPE NAMES THE ACCOUNT, because the venue is the only layer that can: it holds the
+/// registry, so `sender.display_name` (nickname, else login name) is a statement it makes and an
+/// application passes on — the alternative is every booth copying a login name into a store that
+/// does not own it. Absent, not empty, when there is nothing to say: an anonymous device has no
+/// account, and a reader then shows the id (k10r ADR-0009 §4).
+#[tokio::test]
+async fn the_envelope_names_the_account_it_was_sent_as() {
+    let addr = boot().await;
+    let (mut ws, _) = connect(addr).await;
+
+    send(&mut ws, &Frame::new("echo_steel", serde_json::json!({"msg": "anon"}))).await;
+    let f = recv(&mut ws).await;
+    assert!(
+        f.args["sender"].get("display_name").is_none(),
+        "anonymous: nobody to name, and no key to misread: {}",
+        f.args["sender"]
+    );
+
+    send(&mut ws, &Frame::new("signup", serde_json::json!(
+        {"login_name": "carol", "password": "correct-horse", "nickname": "Carol"}))).await;
+    assert_eq!(recv(&mut ws).await.ev, "signup.result");
+
+    send(&mut ws, &Frame::new("echo_steel", serde_json::json!({"msg": "named"}))).await;
+    let f = recv(&mut ws).await;
+    assert_eq!(
+        f.args["sender"]["display_name"],
+        serde_json::json!("Carol"),
+        "the nickname wins over the login name: {}",
+        f.args["sender"]
+    );
+}
+
 /// Per-event auth ENFORCEMENT (ADR-0017 §2, PLAN Phase 1 remaining):
 /// `echo_priv` declares `{auth: {echo_priv: "required"}}` in its
 /// interface_schema — the persisted copy the gateway reads at dispatch.
