@@ -23,7 +23,7 @@ use serde_json::Value;
 /// environment's problem to fix, not a reason to make every operator tick boxes.
 const VOCABULARY: &str = r#"[
   {"language": "nu", "carrier": "induction", "runner": "/runners/runner_nu.nu", "encoding": "cbor"},
-  {"language": "python", "carrier": "exec", "runner": "/runners/runner_py_guest.py"}
+  {"language": "python", "carrier": "exec", "runner": "/runners/runner_py.py"}
 ]"#;
 
 /// The same entry with a field missing: a declaration is a deployment FACT (gravity ADR-0001), so

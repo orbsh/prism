@@ -93,7 +93,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     // only the runner. It is identical for every operation that mount serves.
     let nu_spec = format!("nu {}", runner_path("runner_nu.nu"));
     let py_spec = format!("python3 {}", runner_path("runner_py.py"));
-    let resident_spec = format!("python3 {}", runner_path("runner_py_guest.py"));
+    let resident_spec = format!("python3 {}", runner_path("runner_py.py"));
     let http_port = serve_sources(&[nu_spec.clone(), py_spec.clone(), resident_spec.clone()]);
 
     let registry = Registry::open(&tempfile::tempdir().unwrap().keep()).unwrap();
@@ -181,7 +181,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     };
 
     // Operation 1: the delivered script runs on the node.
-    let out = invoke("{sum: (($env.TOOLRUNNER_ARGS | from json | get n) + 3)} | to json")
+    let out = invoke("let req = (open --raw /dev/stdin | from json)\n{sum: ($req.args.n + 3)} | to json")
         .await
         .unwrap();
     assert_eq!(
@@ -220,7 +220,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
             },
             "execute",
             serde_json::json!({
-                "code": "import json, os\nn = json.loads(os.environ[\"TOOLRUNNER_ARGS\"])[\"n\"]\nprint(json.dumps({\"doubled\": n * 2}))",
+                "code": "import json, sys\nn = json.load(sys.stdin)[\"args\"][\"n\"]\nprint(json.dumps({\"doubled\": n * 2}))",
                 "args": { "n": 21 }
             }),
         )
@@ -285,7 +285,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
             "execute",
             serde_json::json!({
                 "code": "import json\nr = ctx_invoke('runner_nu', 'runner-1', 'execute', \
-                         {'code': '{sum: (($env.TOOLRUNNER_ARGS | from json | get n) + 3)} | to json', \
+                         {'code': 'let req = (open --raw /dev/stdin | from json)\\n{sum: ($req.args.n + 3)} | to json', \
                          'args': {'n': 4}})\nprint(json.dumps({'bridged': r}))"
             }),
         )
@@ -345,8 +345,8 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
     // validates the name (effector keeps no table), so a caller that invents
     // one still lands on the delivered code, and the name it sent is DATA the
     // script can read rather than a key that decides dispatch. The one-shot
-    // runner hands it over as TOOLRUNNER_ENTRY; the resident runner serves its
-    // one job under any name at all.
+    // runner forwards it as the request document's `handler`; the resident runner
+    // serves its one job under any name at all.
     let out = engine
         .invoke(
             InstanceId {
@@ -355,7 +355,7 @@ async fn a_mount_runs_delivered_code_with_zero_per_operation_registration() {
             },
             "the_caller_made_this_name_up",
             serde_json::json!({
-                "code": "{entry: $env.TOOLRUNNER_ENTRY, ran: true} | to json",
+                "code": "let req = (open --raw /dev/stdin | from json)\n{entry: $req.handler, ran: true} | to json",
                 "args": {}
             }),
         )

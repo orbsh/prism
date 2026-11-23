@@ -393,11 +393,11 @@ async fn a_plan_and_a_bare_row_both_run_on_the_node() {
     for (description, source) in [
         (
             "adds three",
-            "import json, os\nn = json.loads(os.environ['TOOLRUNNER_ARGS']).get('n', 0)\nprint(json.dumps({'sum': n + 3}))\n",
+            "import json, sys\nn = json.load(sys.stdin).get('args', {}).get('n', 0)\nprint(json.dumps({'sum': n + 3}))\n",
         ),
         (
             "doubles and adds one",
-            "import json, os\nn = json.loads(os.environ['TOOLRUNNER_ARGS']).get('n', 0)\nprint(json.dumps({'total': n * 2 + 1}))\n",
+            "import json, sys\nn = json.load(sys.stdin).get('args', {}).get('n', 0)\nprint(json.dumps({'total': n * 2 + 1}))\n",
         ),
     ] {
         // A code row is scoped since k10r ADR-0024 (it is a vertex of that
