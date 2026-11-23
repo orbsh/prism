@@ -22,7 +22,7 @@ use serde_json::Value;
 /// WHOLE vocabulary — a machine that lacks python's runner fails on the call, and that is the
 /// environment's problem to fix, not a reason to make every operator tick boxes.
 const VOCABULARY: &str = r#"[
-  {"language": "nu", "carrier": "induction", "runner": "/runners/runner_nu.nu", "encoding": "cbor"},
+  {"language": "nu", "carrier": "exec", "runner": "/runners/runner_nu.nu"},
   {"language": "python", "carrier": "exec", "runner": "/runners/runner_py.py"}
 ]"#;
 
@@ -106,8 +106,10 @@ async fn a_mount_is_the_product_of_the_vocabulary_and_an_approved_alias() {
         .expect("the nu mount");
     assert_eq!(nu["alias"], "u1-mbp");
     assert_eq!(nu["language"], "nu");
-    assert_eq!(nu["carrier"], "induction");
-    assert_eq!(nu["encoding"], "cbor");
+    // nu rides `exec`: its runner cannot host a delivered row in-process (no evaluation), so a
+    // framed carrier would cost a protocol and buy no state or ctx.
+    assert_eq!(nu["carrier"], "exec");
+    assert_eq!(nu["encoding"], "json", "the default codec, said rather than implied");
     assert_eq!(nu["requires"], "container", "absent means the container");
     assert_eq!(nu["registered"], true);
     assert_eq!(
