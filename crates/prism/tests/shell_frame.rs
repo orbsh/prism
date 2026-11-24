@@ -191,14 +191,15 @@ async fn an_islands_slots_arrive_namespaced() {
         let Some(ops) = frame.as_array() else {
             continue;
         };
-        // The venue's own frame data also arrives as `set` (the `user` slot), so this looks for the
-        // one thing under test: an application frame that has been moved into a namespace.
+        // The venue's own facts arrive as `set`s too and are namespaced the same way — `connect`
+        // among them, and it comes first because the page has to be told which island it opens on
+        // before anything answers. This looks for the one thing under test: an application frame
+        // moved into a namespace.
         if let Some(op) = ops.iter().find(|op| {
             op.get("action").and_then(Value::as_str) == Some("set")
-                && op
-                    .get("slot")
-                    .and_then(Value::as_str)
-                    .is_some_and(|s| s.starts_with("island:"))
+                && op.get("slot").and_then(Value::as_str).is_some_and(|s| {
+                    s.starts_with("island:") && !s.ends_with("/connect")
+                })
         }) {
             landed = Some(op.clone());
             break;
@@ -234,14 +235,18 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
         let Some(ops) = frame.as_array() else {
             continue;
         };
-        if let Some(op) = ops
-            .iter()
-            .find(|op| op.get("action").and_then(Value::as_str) == Some("inject"))
-        {
-            if op.get("name").and_then(Value::as_str) == Some("connect") {
-                opened = Some(op["data"].clone());
-                break;
-            }
+        // The venue's connect fact is a `set` on the `connect` slot now: it used to ride an
+        // `inject` with a `name` beside it, and the operation is gone (fluxen ADR 0038 §1). The
+        // slot may carry the island's namespace, so the tail is what identifies it.
+        if let Some(op) = ops.iter().find(|op| {
+            op.get("action").and_then(Value::as_str) == Some("set")
+                && op
+                    .get("slot")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s == "connect" || s.ends_with("/connect"))
+        }) {
+            opened = Some(op["data"].clone());
+            break;
         }
     }
     let opened = opened.expect("the page is told which island it opens on");
@@ -272,14 +277,18 @@ async fn a_page_opens_on_the_first_island_and_moves_on_request() {
         let Some(ops) = frame.as_array() else {
             continue;
         };
-        if let Some(op) = ops
-            .iter()
-            .find(|op| op.get("action").and_then(Value::as_str) == Some("inject"))
-        {
-            if op.get("name").and_then(Value::as_str) == Some("connect") {
-                moved = Some(op["data"].clone());
-                break;
-            }
+        // The venue's connect fact is a `set` on the `connect` slot now: it used to ride an
+        // `inject` with a `name` beside it, and the operation is gone (fluxen ADR 0038 §1). The
+        // slot may carry the island's namespace, so the tail is what identifies it.
+        if let Some(op) = ops.iter().find(|op| {
+            op.get("action").and_then(Value::as_str) == Some("set")
+                && op
+                    .get("slot")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| s == "connect" || s.ends_with("/connect"))
+        }) {
+            moved = Some(op["data"].clone());
+            break;
         }
     }
     let moved = moved.expect("the walk is answered");

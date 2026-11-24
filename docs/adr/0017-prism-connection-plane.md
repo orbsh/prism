@@ -182,8 +182,10 @@ concrete name). The venue strips the marker, excludes the `sender` from the fan-
 hear its own input echoed — and forwards the payload.
 
 **Two payload shapes, both legal.** An operation list is DRAWN. Anything else is DATA and goes out as
-`inject {slot: <name>, name: <name>, data}` — the surface is the vals plane, exactly as if the page
-had emitted that name itself. The venue does not pre-validate beyond decoding: a host that checked
+`set {slot: <name>, data}` — the surface is the slot named by the event, exactly as if the page had
+emitted that name itself. (This used to be `inject`, a write to the page's local half; fluxen deleted
+the operation in ADR 0038 §1, because a remote write belongs on the data half and the page's own value
+wins where it has one. The venue's facts are values, so nothing it says wanted that override.) The venue does not pre-validate beyond decoding: a host that checked
 would be enforcing a second vocabulary on top of fluxen's, and fluxen is where a frame's validity is
 decided. A frame that is not an Accrete operation is named and skipped, so one typo still draws the
 rest. The same data reaches the program leg as `{ev, args}`, in the peer connections the event
@@ -326,7 +328,7 @@ path no route claimed is that file inside it — so the artifact works exactly a
 no `--public-url` and no link rewriting, one build serving both reflux (page root) and prism. The
 reserved prefixes (`/ws`, `/channel`, `/code/…`, `/admin/…`, `/effector/<alias>`, `/app.css`) are
 routed first, so a bundle can never shadow a verb. `/assets/…` inside that tree is the bundle's OWN
-directory (`main.css`, the module media), not the mount point. Hashed `.js`/`.wasm` are immutable for
+directory (`core.css`, the module media), not the mount point. Hashed `.js`/`.wasm` are immutable for
 a year and everything else revalidates; a directory, a `..` and a miss are the same 404. The venue's
 own stylesheet is compiled in and linked into the entry document after the bundle's sheets, so the
 page's layout wins by order rather than by specificity.

@@ -233,8 +233,8 @@ type HeldFrame = (String, Vec<content::Content<serde_json::Value>>);
 /// is replaying a state; replaying the log that led to it is guessing at one.
 #[derive(Default)]
 pub(crate) struct Held {
-    /// DATA frames (an `inject` into a vals slot): a slot's value stands on its own, so these are
-    /// owed as they came, whatever the screen did meanwhile.
+    /// DATA frames (a `set` on a slot that is not a region): a slot's value stands on its own, so
+    /// these are owed as they came, whatever the screen did meanwhile.
     data: VecDeque<HeldFrame>,
     /// The newest frame that redrew a whole screen or region, when one was held.
     screen: Option<HeldFrame>,
@@ -254,9 +254,19 @@ impl Held {
     }
 
     fn push(&mut self, name: &str, ops: Vec<content::Content<serde_json::Value>>) {
-        // A page's payload that is not an operation list arrives as ONE `inject` — a slot value,
-        // not a step in drawing the tree. It is owed whatever the layout did.
-        let is_data = matches!(ops.as_slice(), [content::Content::Inject(_)]);
+        // A page's payload that is not an operation list arrives as ONE `set` — a slot value, not a
+        // step in drawing the tree. It is owed whatever the layout did.
+        //
+        // The wire used to say which was which: a value was an `inject`, a drawing step was a `set`.
+        // That bit is gone (fluxen ADR 0038 §1 deleted the operation), so what is left is where the
+        // value lands — a region carries the `island:` prefix and nothing else does. The same
+        // convention `redraws_whole` below already leans on, so the two agree by construction
+        // rather than by two spellings of one idea.
+        let is_data = matches!(
+            ops.as_slice(),
+            [content::Content::Set(influx)]
+                if !influx.slot.is_empty() && !influx.slot.starts_with("island:")
+        );
         if is_data {
             self.data.push_back((name.to_string(), ops));
             while self.data.len() > MISSED_CAP {

@@ -65,7 +65,7 @@ async fn recv_named(
 ) -> std::collections::BTreeMap<String, Value> {
     let mut got = std::collections::BTreeMap::new();
     while got.len() < wanted.len() {
-        let (slot, name, data) = recv_speech(ws).await;
+        let (slot, name, data) = recv_speech(ws, &wanted).await;
         assert_eq!(slot, name, "the slot is named after the fact: {name}");
         assert!(wanted.contains(&name.as_str()), "unexpected fact `{name}`");
         got.insert(name, data);
@@ -83,7 +83,7 @@ async fn read_connected(ws: &mut WsClient) -> String {
     let mut identity_device: Option<String> = None;
     let mut connect_device: Option<String> = None;
     for _ in 0..2 {
-        let (slot, name, data) = recv_speech(ws).await;
+        let (slot, name, data) = recv_speech(ws, &["token", "connect"]).await;
         assert_eq!(slot, name, "the slot is named after the fact: {name}");
         match name.as_str() {
             // The device id is a uuid: TEXT on this wire (a 128-bit id is not a JSON number) —
@@ -183,15 +183,20 @@ async fn recv_ops(ws: &mut WsClient) -> Vec<Value> {
 /// carries application frames — the shipped auth booth answers `ui:login` with a screen, exactly as
 /// any booth may — so this reader SKIPS what is not the venue's speech instead of asserting on
 /// arrival order. A test that wants the booth's frames reads them directly.
-async fn recv_speech(ws: &mut WsClient) -> (String, String, Value) {
+async fn recv_speech(ws: &mut WsClient, want: &[&str]) -> (String, String, Value) {
     loop {
         let ops = recv_ops(ws).await;
         let [op] = ops.as_slice() else { continue };
+        // A FACT is a value in the slot named after it, and so is a booth's answer: both are `set`s
+        // now (fluxen ADR 0038 §1 deleted `inject`, the kind that told them apart), so the reader is
+        // TOLD which facts it is waiting for and skips everything else on the leg. The slot IS the
+        // fact's name — there is no second name to read, which is why it is reported twice.
         match op["action"].as_str() {
-            // A FACT: injected into the slot named after it.
-            Some("inject") => {
-                if let (Some(slot), Some(name)) = (op["slot"].as_str(), op["name"].as_str()) {
-                    return (slot.to_string(), name.to_string(), op["data"].clone());
+            Some("set") => {
+                if let Some(slot) = op["slot"].as_str() {
+                    if want.contains(&slot) {
+                        return (slot.to_string(), slot.to_string(), op["data"].clone());
+                    }
                 }
             }
             // A NOTICE IS A ROW (say()'s rule): it is APPENDED to the `notice` rack with an id of
@@ -354,7 +359,7 @@ async fn a_silent_connection_crosses_the_window_and_a_login_reopens_it() {
         json!({"dest": "echo_steel", "data": {"text": "late"}}),
     )
     .await;
-    let (slot, name, data) = recv_speech(&mut ws).await;
+    let (slot, name, data) = recv_speech(&mut ws, &["notice"]).await;
     assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
     assert_eq!(
         data["reason"].as_str(),
@@ -615,11 +620,11 @@ async fn a_view_event_carries_data_into_the_slot_named_by_it() {
 
     let ops = recv_ops(&mut ws).await;
     assert_eq!(ops.len(), 1, "{ops:?}");
-    assert_eq!(ops[0]["action"], "inject");
-    // The marker is stripped: the page's slot is `token`, and the name it sees is the same
-    // name — nothing on the page knows what `ui:` means.
+    assert_eq!(ops[0]["action"], "set");
+    // The marker is stripped: the page's slot is `token`, and that is the whole of what it is
+    // told — nothing on the page knows what `ui:` means, and there is no second name on the wire.
     assert_eq!(ops[0]["slot"], "token");
-    assert_eq!(ops[0]["name"], "token");
+    assert!(ops[0].get("name").is_none(), "{ops:?}");
     assert_eq!(
         ops[0]["data"]["device"].as_str(),
         Some(device.as_str()),
@@ -724,7 +729,7 @@ async fn a_user_address_reaches_every_live_device_of_that_account() {
     .expect("emit ui:sync");
 
     for (who, ws) in [("first", &mut one), ("second", &mut two)] {
-        let given = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(ws)).await;
+        let given = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(ws, &["sync"])).await;
         let (slot, name, data) =
             given.unwrap_or_else(|_| panic!("{who}: the fan-out reaches this device"));
         assert_eq!(
@@ -778,7 +783,7 @@ async fn a_page_can_ask_for_its_accounts_devices() {
     read_connected(&mut ws).await;
 
     send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
-    let (slot, name, data) = recv_speech(&mut ws).await;
+    let (slot, name, data) = recv_speech(&mut ws, &["notice"]).await;
     assert_eq!(
         (slot.as_str(), name.as_str()),
         ("notice", "notice"),
@@ -793,7 +798,7 @@ async fn a_page_can_ask_for_its_accounts_devices() {
     recv_named(&mut ws, ["token", "login"]).await;
 
     send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
-    let (slot, name, data) = recv_speech(&mut ws).await;
+    let (slot, name, data) = recv_speech(&mut ws, &["devices"]).await;
     assert_eq!(
         (slot.as_str(), name.as_str()),
         ("devices", "devices"),
@@ -812,13 +817,13 @@ async fn a_page_can_ask_for_its_accounts_devices() {
         json!({"dest": "alias", "data": {"alias": "laptop"}}),
     )
     .await;
-    let (slot, name, data) = recv_speech(&mut ws).await;
+    let (slot, name, data) = recv_speech(&mut ws, &["alias"]).await;
     assert_eq!((slot.as_str(), name.as_str()), ("alias", "alias"), "{data}");
     assert_eq!(data["alias"], "laptop", "{data}");
 
     // The list reads the name back — the rename was storage, not a receipt.
     send_uplink(&mut ws, json!({"dest": "devices", "data": {}})).await;
-    let (_, _, data) = recv_speech(&mut ws).await;
+    let (_, _, data) = recv_speech(&mut ws, &["devices"]).await;
     assert_eq!(data["devices"][0]["alias"], "laptop", "{data}");
 }
 
@@ -873,7 +878,7 @@ async fn a_frame_for_an_asleep_account_waits_for_its_next_device() {
     for _ in 0..2 {
         // `token` and `logout` — drain them so the next reads start clean.
         let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one, &["token", "logout"])).await;
     }
 
     // Addressed to the account while nothing of theirs is awake.
@@ -899,7 +904,7 @@ async fn a_frame_for_an_asleep_account_waits_for_its_next_device() {
 
     let mut seen = None;
     for _ in 0..6 {
-        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one))
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one, &["sync"]))
             .await
             .expect("the held frame reaches the account's device");
         if frame.0 == "sync" {
@@ -940,7 +945,7 @@ async fn a_replay_starts_at_the_last_whole_screen() {
     send_uplink(&mut one, json!({"dest": "logout", "data": {}})).await;
     for _ in 0..2 {
         let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one)).await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), recv_speech(&mut one, &["token", "logout"])).await;
     }
 
     let emit = |name: &str, data: Value| {
@@ -996,7 +1001,14 @@ async fn a_replay_starts_at_the_last_whole_screen() {
         else {
             break;
         };
-        if ops.iter().any(|op| op["action"] == "inject") {
+        // The venue's own speech is a value in a slot that belongs to no island; the replay this
+        // test reads is the operation lists that draw.
+        if ops.iter().any(|op| {
+            op["action"] == "set"
+                && op["slot"]
+                    .as_str()
+                    .is_some_and(|s| !s.starts_with("island:"))
+        }) {
             continue;
         }
         let text = serde_json::to_string(&ops).unwrap_or_default();

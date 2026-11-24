@@ -31,7 +31,7 @@
 use std::sync::Arc;
 
 use content::codec::ActiveCodec;
-use content::{Content, InjectOp, Outflow};
+use content::{Content, Influx, Outflow};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -405,10 +405,6 @@ fn namespace(ops: Vec<Content<Value>>, island: &str) -> Vec<Content<Value>> {
                 x.slot = one(&x.slot, island);
                 Content::Patch(x)
             }
-            Content::Inject(mut x) => {
-                x.slot = one(&x.slot, island);
-                Content::Inject(x)
-            }
             other => other,
         })
         .collect()
@@ -506,8 +502,8 @@ pub(crate) fn forward(
                 .or_else(|| s.as_str())
         })
         .map(str::to_string);
-    // What it is: an operation list is DRAWN; anything else is DATA and takes the vals plane,
-    // injected into the slot named by the event. Both shapes are legal on this wire and the
+    // What it is: an operation list is DRAWN; anything else is DATA and rides a `set` into the
+    // slot named by the event. Both shapes are legal on this wire and the
     // renderer decides what it can do with them — a host that pre-validated would be teaching
     // the page a second vocabulary.
     if payload.get("data").is_none() && payload.get("args").is_some() {
@@ -533,7 +529,7 @@ pub(crate) fn forward(
     }
     let ops: Vec<Content<Value>> = match body {
         Value::Array(frames) => ops_of(frames, "view"),
-        other => inject(&name, &name, other),
+        other => slot_value(&name, other),
     };
     // A NAMESPACE THE APPLICATIONS CANNOT SPELL (ADR-0019). An island booth addresses its own
     // slots by their bare names (`pages`, `notice`) and the venue puts the prefix on — so writing
@@ -1030,7 +1026,7 @@ fn ops_of(frames: Vec<Value>, what: &str) -> Vec<Content<Value>> {
 
 /// THE VENUE SAYS THINGS AS EVENTS. It is an emitter on this wire like any other: a fact it
 /// wants a page to hold is `ui:<fact>`, forwarded by its own renderer booth and landing in the
-/// vals slot named by the fact. Two names are conventions, not law: `identity` (who am I:
+/// slot named by the fact. Two names are conventions, not law: `identity` (who am I:
 /// `{device, user}`) and `notice` (what failed: `{detail}`).
 async fn say(gw: &Gateway, device: identity::DeviceId, fact: &str, data: Value) {
     let event = format!("{UI_PREFIX}{fact}");
@@ -1101,13 +1097,16 @@ async fn said_too_late(gw: &Gateway, device: identity::DeviceId) {
     .await;
 }
 
-/// One `inject` into a named slot. Every way this leg speaks goes through here, so the shape of
-/// "the venue says something" exists once.
-fn inject(slot: &str, name: &str, data: Value) -> Vec<Content<Value>> {
-    vec![Content::Inject(InjectOp {
+/// One value into the slot named by the event. Every way this leg speaks goes through here, so
+/// the shape of "the venue says something" exists once.
+///
+/// It is a `set`. The far side's vocabulary no longer has a separate "write the page's local half"
+/// operation: a remote write lands on the slot's data half and the page's own value wins where it
+/// has one (fluxen ADR 0031 §1, ADR 0038 §1). A venue fact is a value, not a drawing — and a `set`
+/// is how a value arrives now.
+fn slot_value(slot: &str, data: Value) -> Vec<Content<Value>> {
+    vec![Content::Set(Influx {
         slot: slot.to_string(),
-        name: Some(name.to_string()),
-        id: None,
         data,
     })]
 }
@@ -1127,14 +1126,13 @@ mod tests {
                 Content::Append(x) => x.slot,
                 Content::Remove(x) => x.slot,
                 Content::Patch(x) => x.slot,
-                Content::Inject(x) => x.slot,
                 other => panic!("unexpected op: {other:?}"),
             })
             .collect()
     }
 
     /// The default: an application writes its bare names and the venue puts them in its namespace.
-    /// Five operations, because a namespace that only covered `set` would let `append` write into
+    /// Every operation, because a namespace that only covered `set` would let `append` write into
     /// another island's list — the same hole with a different door.
     #[test]
     fn every_operation_is_namespaced_not_just_set() {
@@ -1143,7 +1141,6 @@ mod tests {
             {"action": "append", "slot": "notice", "position": 0, "data": {}},
             {"action": "remove", "slot": "notice", "id": "1"},
             {"action": "patch", "slot": "scene", "path": "/nodes", "op": "replace", "value": 1},
-            {"action": "inject", "slot": "messages", "data": {}},
         ]))
         .unwrap();
         assert_eq!(
@@ -1153,7 +1150,6 @@ mod tests {
                 "island:gravity-model/notice",
                 "island:gravity-model/notice",
                 "island:gravity-model/scene",
-                "island:gravity-model/messages",
             ]
         );
     }

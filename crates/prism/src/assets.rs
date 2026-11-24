@@ -4,7 +4,7 @@
 //!
 //! Mount shape: the bundle IS the origin. `/` answers `<root>/index.html`; every other
 //! unreserved path is `<root>/<path>` — so the artifact's own references (`/ui_leptos-*.js`,
-//! `/assets/main.css`) work as trunk emitted them, with NO rebuild flag and no link
+//! `/assets/core.css`) work as trunk emitted them, with NO rebuild flag and no link
 //! rewriting. That is also stage's shape (`crates/stage`: everything not a route is static),
 //! and the same build serves reflux, which serves the bundle at its page root too. The
 //! reserved prefixes are `/channel`, `/ws`, `/code/…`, `/admin/…` and `/effector/<alias>`; they
@@ -237,7 +237,7 @@ mod tests {
     /// order is how the page's layout wins, not specificity.
     #[test]
     fn the_app_sheet_is_linked_into_the_entry_document() {
-        let html = b"<html><head><link rel=\"stylesheet\" href=\"/assets/main.css\"></head><body></body></html>";
+        let html = b"<html><head><link rel=\"stylesheet\" href=\"/assets/core.css\"></head><body></body></html>";
         let out = String::from_utf8(link_app_css(html)).expect("utf8");
         assert!(
             out.ends_with("</head><body></body></html>") || out.contains("</head><body>"),
@@ -245,7 +245,7 @@ mod tests {
         );
         let ours = out.find("/app.css").expect("the link is there");
         let bundle = out
-            .find("/assets/main.css")
+            .find("/assets/core.css")
             .expect("the bundle's sheet stays");
         assert!(bundle < ours, "after the bundle's sheets: {out}");
         assert_eq!(out.matches("/app.css").count(), 1, "linked once");
@@ -269,7 +269,7 @@ mod tests {
         let root = root(dir.path());
         assert_eq!(bundle_rel("/"), Some(""));
         assert_eq!(bundle_rel("/app.js"), Some("app.js"));
-        assert_eq!(bundle_rel("/assets/main.css"), Some("assets/main.css"));
+        assert_eq!(bundle_rel("/assets/core.css"), Some("assets/core.css"));
         // The path is only the bundle-relative half; the reserved prefixes never reach here.
         assert_eq!(bundle_rel(""), Some(""));
         assert!(root.resolve("app.js").is_some());
