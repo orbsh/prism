@@ -3,9 +3,10 @@
 # Two images meet here. The RUNTIME half is this repo's `prism` binary, which needs
 # a Python 3.14 shared library because the python booth is embedded (pyo3), so the
 # base is `python:3.14-slim` rather than a slim Debian with Python bolted on. The
-# GUEST half is gravity's two binaries, copied out of the gravity image — prism
-# spawns them per turn, so a version skew between the venue and its guests would be
-# invisible until a turn ran; copying from a tag keeps them one artifact.
+# GUEST half is gravity's turn binary, copied out of the gravity image — prism
+# spawns it per turn, so a version skew between the venue and its guests would be
+# invisible until a turn ran; copying from a tag keeps them one artifact. (The provider
+# stopped being a second binary: gravity 4d61f2c made it a stream on a thread.)
 #
 # Build context is workspace-shaped: prism at `prism/`, its path dependencies beside
 # it (memory-stack/build.sh assembles the tree).
@@ -48,6 +49,8 @@ COPY aura/ aura/
 COPY effector/ effector/
 COPY induction/ induction/
 COPY krystallizer/ krystallizer/
+# a PATH dependency of gravity's booth: the manifest resolves it before any build step
+COPY schematic/ schematic/
 COPY gravity/ gravity/
 # fluxen is a PATH dependency of the renderer leg (`content = { path = "../../../fluxen/..." }`):
 # the wire type lives in that repo, so the build needs the checkout even though nothing of
@@ -77,7 +80,6 @@ RUN apt-get update \
 
 COPY --from=build /out/prism /usr/local/bin/prism
 COPY --from=guests /usr/local/bin/gravity-turn /usr/local/bin/gravity-turn
-COPY --from=guests /usr/local/bin/gravity-provider /usr/local/bin/gravity-provider
 
 # The renderer's face (ADR-0017 §8): the bundle IS the origin, and it is the ONLY artifact the
 # build harness stages into `venue/` — the image carries it, so the front end is never rebuilt
