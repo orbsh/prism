@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>prism</title>
+  <!-- THE BUNDLE IS THE ORIGIN (crates/prism/src/assets.rs): this file is `<root>/index.html`, the
+       renderer's dist sits beside it, and every reference is absolute. Drop it in the deployment's
+       asset root next to the fluxen bundle (manifest.json + the hashed js/wasm). -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/core.css">
+  <link rel="stylesheet" href="/custom.css">
+</head>
+<body>
+  <div id="ui"></div>
+  <script type="module">
+    // THE PAGE OWNS THREE THINGS THE RENDERER MUST NOT GUESS (fluxen ADR-0046):
+    //   the codec  - what this deployment speaks on the wire;
+    //   the token  - a session is one more query parameter, put there by whoever holds it;
+    //   the address - prism reads `token` off the upgrade query (crates/prism/src/lib.rs:1046).
+    const TOKEN_KEY = "prism:token";
+    const codec = new URLSearchParams(location.search).get("codec") || "json";
+    const said = new URLSearchParams(location.search).get("token");
+    const token = said || localStorage.getItem(TOKEN_KEY) || "";
+    if (said) localStorage.setItem(TOKEN_KEY, said);
+
+    const manifest = await (await fetch("/manifest.json")).json();
+    const { default: init, mount } = await import("/" + manifest.entry.js);
+    await init({ module_or_path: "/" + manifest.entry.wasm });
+    await mount(document.querySelector("#ui"), {
+      codec,
+      path: "/channel",           // prism's UI leg (ui::UI_PATH)
+      query: token ? { token } : {},
+    });
+
+    // NOT DONE, AND NAMED SO IT IS NOT MISTAKEN FOR DONE: prism says a fresh credential with a `set` into
+    // the `ui:token` slot (crates/prism/src/ui.rs:1080, 1129). Nothing in the renderer turns that into a
+    // storage write, and this page has no verified way to observe a slot — so today a reload without a
+    // `?token=` on the address is a NEW device. Closing that needs one of: a renderer hook for a slot, or
+    // prism serving `/` with the token appended and this page stripping it into storage.
+  </script>
+</body>
+</html>
