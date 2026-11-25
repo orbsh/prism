@@ -14,7 +14,7 @@ prism 的页面是一份**bundle**（`crates/prism/src/assets.rs`：`/` 答 `<ro
 
 所以"刷新之后还是同一台设备"不是 prism 保证的：prism 只做两件事——地址上有 token 就认（`lib.rs:1046`），签发新 token 就作为事实写进 `ui:token` 槽（`ui.rs:1080`、`1129`）。**消费 `ui:token` 的是部署给的页面**（prism 仓库里没有任何 HTML/JS，页面来自 `deployment.root` 那个目录）。页面若存了它并在下次 `mount` 时传回，刷新才是同一个人；不存，每次刷新就是一台新 device。
 
-已裁决要把这段前半移出渲染器（fluxen ADR-0046）：boot 不再读页面地址的 `?token=` / `?codec=`，
+闭环靠渲染器的槽钩子（fluxen ADR 0047）：页面 `hooks.slots["ui:token"]` 观察这个槽，订阅时补发当前值——这一点是必须的，因为 prism 在连接期就把它说了，那时页面还没 `mount` 完。已裁决要把这段前半移出渲染器（fluxen ADR-0046）：boot 不再读页面地址的 `?token=` / `?codec=`，
 改由宿主在 `mount(el, {codec, token, query})` 里显式给；渲染器只拼接、不解释。届时这条链只剩
 "宿主给它什么，它就用什么"，而 prism 的部署页面必须自己把 token 带回来。
 
