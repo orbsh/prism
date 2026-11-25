@@ -8,7 +8,11 @@ prism 的页面是一份**bundle**（`crates/prism/src/assets.rs`：`/` 答 `<ro
 
 - 活 token → 命名 `(device, user)` 并滑动过期；
 - 没有可用 token → **当场铸一个新 device 和一个新 token**（所以客户端永远带着"下次能交回来的东西"离开）；
-- 超过 idle 窗口 → 以匿名连接，但 device id 保留（别名活着、权限没了），并 `say(NOTICE_EVENT, {reason:"idle"})` 告诉页面。
+- 超出 idle 窗口 → 以匿名连接，但 device id 保留（别名活着、权限没了），并 `say(NOTICE_EVENT, {reason:"idle"})` 告诉页面。
+
+这条链的前半段在渲染器：`mount(el, {token})` 或页面地址上的 `?token=` 由 `Boot::resolve` 取（`opts` 优先、地址兜底，fluxen `settings.rs:89`），拼成 `ws://{host}{path}?token=…&codec=…`（`ui_leptos/src/lib.rs:134`）。**渲染器到此为止**——`transport-ws` 里没有一行读写浏览器存储的代码，它不认识 `ui:token`，也不会替你把它带回来。
+
+所以"刷新之后还是同一台设备"不是 prism 保证的：prism 只做两件事——地址上有 token 就认（`lib.rs:1046`），签发新 token 就作为事实写进 `ui:token` 槽（`ui.rs:1080`、`1129`）。**消费 `ui:token` 的是部署给的页面**（prism 仓库里没有任何 HTML/JS，页面来自 `deployment.root` 那个目录）。页面若存了它并在下次 `mount` 时传回，刷新才是同一个人；不存，每次刷新就是一台新 device。
 
 ## 二、连接：服务端先铺三层，才轮到 booth
 
