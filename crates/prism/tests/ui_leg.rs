@@ -1093,3 +1093,86 @@ async fn one_emit_draws_exactly_one_frame_however_much_was_said_before() {
         extra.ok()
     );
 }
+
+/// The transport's probe, on the wire. A renderer that has heard nothing asks `__ping__` (fluxen ADR
+/// 0044 §2), and the answer is a bare `__pong__` map — the one frame a renderer swallows before any
+/// decoder ever sees it. Three things are asserted at once, because all three are the same decision:
+/// the probe is ANSWERED (an unanswered one is a page that closes its own socket every dead window
+/// and reconnects forever), it is NOT an event (a venue that dispatches it asks a booth named
+/// `__ping__`, which no one meant to write), and it is NOT activity: a page probing every five
+/// seconds is not a person talking, so the idle window must run out anyway.
+#[tokio::test]
+async fn a_probe_is_answered_but_is_not_an_event_and_not_activity() {
+    let (addr, gw) = boot_with_idle(Some(300), Deployment::default()).await;
+    // A booth named exactly like the probe: if the probe were ever dispatched, this is what would
+    // answer it, so the counter is how the test says it was not.
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&asked);
+    gw.engine
+        .register(aura_booth::BoothType {
+            name: "__ping__".into(),
+            body: aura_booth::Body::Rust(std::sync::Arc::new(move |_ctx, _args| {
+                let counter = std::sync::Arc::clone(&counter);
+                Box::pin(async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(Value::Null)
+                })
+            })),
+            idle_ttl: None,
+            max_exec: None,
+            hooks: std::collections::BTreeMap::new(),
+            receives: vec![aura_booth::ReceiveDecl {
+                event: "ui:__ping__".into(),
+                entry: None,
+                resolution: aura_booth::RouteResolution::Singleton,
+                wildcard: false,
+                auth: false,
+            }],
+            concurrency: aura_booth::Concurrency::Queued,
+        })
+        .await
+        .expect("register a booth named like the probe");
+
+    let mut ws = open_ui(addr).await;
+    read_connected(&mut ws).await;
+
+    send_uplink(&mut ws, json!({ "dest": "__ping__", "data": null })).await;
+    let pong = recv_json(&mut ws).await;
+    assert_eq!(
+        pong["dest"], "__pong__",
+        "the probe is answered on the wire: {pong}"
+    );
+    assert!(
+        pong.get("action").is_none() && pong.get("slot").is_none(),
+        "the answer is a transport frame, not an action list: {pong}"
+    );
+    // Nothing follows it: no refusal, no notice, and no answer from the booth named like the probe.
+    let quiet =
+        tokio::time::timeout(std::time::Duration::from_millis(200), recv_json(&mut ws)).await;
+    assert!(
+        quiet.is_err(),
+        "the probe produced nothing else: {:?}",
+        quiet.ok()
+    );
+    assert_eq!(
+        asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no booth is asked about a probe"
+    );
+
+    // Past the window now: a real uplink is refused exactly as it would have been without the ping,
+    // which is what proves the probe did not refresh the clock.
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    send_uplink(
+        &mut ws,
+        json!({ "dest": "echo_steel", "data": { "text": "late" } }),
+    )
+    .await;
+    let (slot, name, data) = recv_speech(&mut ws, &["notice"]).await;
+    assert_eq!((slot.as_str(), name.as_str()), ("notice", "notice"));
+    assert_eq!(
+        data["reason"].as_str(),
+        Some("idle"),
+        "the probe did not hold the window open: {data}"
+    );
+}

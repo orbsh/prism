@@ -157,7 +157,13 @@ envelope belongs to the host, and this is the host. Upstream is `Outflow {dest, 
 fluxen's own uplink; the venue reads `dest` and `data`.
 
 Two shapes on one leg would put the split into every frame's parser, and the peer leg's tests, the
-CLI and the effector dial-in all read `args`.
+CLI and the effector dial-in all read `args`. The one exception is the TRANSPORT's own traffic, and it
+is not a shape of this venue's: a renderer that has heard nothing for its probe window asks
+`Outflow {dest: "__ping__"}`, and the answer is `Outflow {dest: "__pong__"}` — a map, because that is
+what the renderer swallows before any decoder sees it (fluxen ADR 0044). The venue answers it before
+any surface logic, in the encoding the connection pinned, and, because a probe is transport rather
+than speech, neither dispatch nor activity: it reaches no booth, and it does not refresh the idle
+window, or a page probing every five seconds would hold a window open that a person's silence closed.
 
 Both legs answer a connect: `/ws` with `{ev: "connected", args: {device_id, user_id, token}}`, and
 `/channel` with the facts of §6 — a renderer's page needs no handshake verb of its own.

@@ -17,6 +17,7 @@ The model lives in `docs/MODELING.md`, the decisions in `docs/adr/`, the archite
 - [x] 6 — A refusal opens the login surface (`ui:auth.required {event}`) — 2026-11-06
 - [x] 7 — User addressing: an emit names `device` or `user` — 2026-11-09 — [ADR-0018](adr/0018-device-is-not-a-channel.md) §3
 - [x] 8 — The account device surface: `devices` and `alias` — 2026-11-09
+- [x] 9 — The transport's probe on `/channel`: `__ping__` answered `__pong__` before any surface logic, in the pinned encoding, through the single writer; not dispatched (no booth is named like a probe) and not activity (a page probing every five seconds must not hold the idle window open) — 2026-11-25 — [ADR-0017](adr/0017-prism-connection-plane.md) §4, fluxen ADR 0044
 
 ## Next
 

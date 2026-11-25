@@ -22,6 +22,11 @@
 //! EVENT (the peer leg's rule: type == handler == `event`), and its answer is a frame list —
 //! a handler may return a layout, one operation, or a list, and the renderer only draws.
 //!
+//! One frame on this leg is not the venue's: the transport's own `__ping__`, answered `__pong__`
+//! before any surface logic (fluxen ADR 0044 §2). It is neither dispatched nor counted as activity —
+//! a page that probes is not a person who spoke, and counting it would hold the idle window open for
+//! as long as the socket lives.
+//!
 //! The instance key is `Named("ui")`: the renderer's leg is ONE instance, and it stays one. The
 //! wildcard `renderer` booth only ROUTES, and the fan-out already walks one sender per live
 //! connection, so a per-client instance would add identity to something that holds no per-client
@@ -612,6 +617,10 @@ pub(crate) async fn serve(
     } = identified;
     let (mut write, mut read) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<Content<Value>>>();
+    // A second, small channel for a TRANSPORT frame: the answer to a probe is an `Outflow`, and the
+    // wire's downstream contract is an action list (fluxen ADR 0021 §6). It cannot ride `tx` without
+    // lying about its shape, so it arrives already encoded and the same writer still owns the socket.
+    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (id, user) = gw.register_ui(tx, device, user0);
     // A device whose token still names the account is that account's screen from the first frame;
     // whatever arrived while no screen of theirs was awake is owed to it now.
@@ -645,14 +654,30 @@ pub(crate) async fn serve(
     // so the socket has exactly one owner (the peer leg's discipline, on this leg's frames).
     let writer_codec = codec.clone();
     let pump = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            match writer_codec.encode(&msg) {
-                Ok(bytes) => {
-                    if write.send(Ws::Binary(bytes)).await.is_err() {
-                        break;
+        let mut raw_open = true;
+        loop {
+            let bytes = tokio::select! {
+                msg = rx.recv() => match msg {
+                    Some(msg) => match writer_codec.encode(&msg) {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            eprintln!("prism: /channel encode failed: {e}");
+                            continue;
+                        }
+                    },
+                    // The table dropped our sender — revocation or disconnect — so the socket is done.
+                    None => break,
+                },
+                raw = raw_rx.recv(), if raw_open => match raw {
+                    Some(raw) => raw,
+                    None => {
+                        raw_open = false;
+                        continue;
                     }
-                }
-                Err(e) => eprintln!("prism: /channel encode failed: {e}"),
+                },
+            };
+            if write.send(Ws::Binary(bytes)).await.is_err() {
+                break;
             }
         }
         // Channel closed (the table dropped our sender — revocation or disconnect): close
@@ -709,6 +734,30 @@ pub(crate) async fn serve(
                 continue;
             }
         };
+        // THE TRANSPORT'S PROBE, before any surface logic (fluxen ADR 0044 §2). A renderer that has
+        // heard nothing for its probe window asks with `__ping__`, and one unanswered probe is a page
+        // that closes its own socket at every dead window and reconnects forever. Answered in the
+        // encoding this connection pinned, through the same single writer, and NOT as an event: no
+        // venue has a `__ping__` booth, so a dispatch would be a refusal nobody asked for.
+        //
+        // `spoke_at` is deliberately NOT refreshed: a page probing every five seconds is not a person
+        // talking, and counting it would hold the idle window open for as long as the socket lives,
+        // which is the same as not having a window. The probe is answered even past the window, for
+        // the same reason the log-in verbs are not gated: the answer is transport, not permission.
+        if uplink.dest == content::PING_DEST {
+            let pong = Outflow {
+                dest: content::PONG_DEST.to_owned(),
+                id: None,
+                data: Value::Null,
+            };
+            match codec.encode(&pong) {
+                Ok(bytes) => {
+                    let _ = raw_tx.send(bytes);
+                }
+                Err(e) => eprintln!("prism: /channel could not encode the probe answer: {e}"),
+            }
+            continue;
+        }
         // THE WINDOW IS CHECKED PER MESSAGE, not per connection: a socket can live for days, and a
         // connection nobody has used for longer than the window is not authenticated any more. The
         // page stays connected — it is told to log in, which is cheaper than a reconnect and is the
