@@ -30,14 +30,25 @@
     await mount(document.querySelector("#ui"), {
       codec,
       path: "/channel",           // prism's UI leg (ui::UI_PATH)
+      // The handshake still carries the token: prism resolves identity at the upgrade so it can push the
+      // shell before reading a byte (ui.rs:695-713). One RTT is the price of doing it the other way.
       query: token ? { token } : {},
+      hooks: {
+        // A rotated credential arrives as a `set` into `ui:token` (ui.rs:1080, 1129). The slot reports
+        // its newest value once per pass, and the current value is replayed on subscribe - which is what
+        // makes this work at all, since prism says it during the connection, before mount returns.
+        slots: {
+          "ui:token": (value) => {
+            const fresh = value && (value.token ?? value);
+            if (typeof fresh === "string" && fresh) localStorage.setItem(TOKEN_KEY, fresh);
+          },
+        },
+      },
     });
 
-    // NOT DONE, AND NAMED SO IT IS NOT MISTAKEN FOR DONE: prism says a fresh credential with a `set` into
-    // the `ui:token` slot (crates/prism/src/ui.rs:1080, 1129). Nothing in the renderer turns that into a
-    // storage write, and this page has no verified way to observe a slot — so today a reload without a
-    // `?token=` on the address is a NEW device. Closing that needs one of: a renderer hook for a slot, or
-    // prism serving `/` with the token appended and this page stripping it into storage.
+    // The loop is closed by `hooks.slots` above (fluxen ADR 0047): a reload now finds the rotated token in
+    // storage and hands it back on the address. Without that hook this page could not see the token at all
+    // and every reload was a new device.
   </script>
 </body>
 </html>
